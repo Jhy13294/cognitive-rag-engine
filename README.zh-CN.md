@@ -10,8 +10,9 @@
 - TXT、Markdown、PDF、Word 文档加载
 - 保守型文本清洗
 - 面向向量入库的文本切分和元数据保留
+- 生产级 Embedding 和向量库适配器
 
-Embedding、向量数据库、检索、重排、缓存、监控、权限控制等企业级能力尚未实现。
+重排、缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
@@ -35,10 +36,13 @@ Embedding、向量数据库、检索、重排、缓存、监控、权限控制�
 - 用于测试管线的本地确定性 Hash Embedding Provider
 - 向量库抽象层
 - 用于本地检索测试的内存向量库
+- 支持批量写入、metadata 过滤、payload index 和重试机制的 Qdrant 生产级向量库适配器
+- 向量库工厂和 CLI provider 选择
 - 最小 RAG 管线：检索、上下文组装、LLM 生成、引用来源返回
 
 尚未完成：
 
+- 索引构建和查询命令拆分
 - 重排序
 - 缓存层
 - 评估与监控
@@ -69,7 +73,9 @@ Embedding、向量数据库、检索、重排、缓存、监控、权限控制�
 │   └── hash_provider.py       # 用于测试的本地确定性 Provider
 ├── vector_store/
 │   ├── base.py                # 向量库接口和记录模型
-│   └── memory_store.py        # 内存向量库
+│   ├── factory.py             # 向量库工厂
+│   ├── memory_store.py        # 内存向量库
+│   └── qdrant_store.py        # Qdrant 向量库适配器
 ├── rag/
 │   └── pipeline.py            # 最小 RAG 管线
 ├── text_cleaner/
@@ -78,6 +84,8 @@ Embedding、向量数据库、检索、重排、缓存、监控、权限控制�
 │   ├── fixtures/              # TXT 和 Markdown 样例文档
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
+│   ├── test_qdrant_store_mock.py
+│   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
 │   ├── test_rag_pipeline.py
 │   └── test_rag_cli.py
@@ -98,6 +106,14 @@ pip install -r requirements.txt
 ```env
 DEEPSEEK_API_KEY=your_api_key_here
 DEEPSEEK_API_URL=https://api.deepseek.com/v1/chat/completions
+
+EMBEDDING_PROVIDER=openai
+EMBEDDING_API_KEY=your_openai_api_key_here
+EMBEDDING_MODEL_NAME=text-embedding-3-small
+EMBEDDING_DIMENSION=512
+
+VECTOR_STORE_PROVIDER=memory
+VECTOR_STORE_COLLECTION=enterprise_kb
 ```
 
 ## 使用
@@ -127,6 +143,7 @@ python rag_cli.py knowledge_base \
   --question "What does the knowledge base say about deployment?" \
   --embedding-provider openai \
   --embedding-dimension 512 \
+  --vector-store qdrant \
   --top-k 5 \
   --chunk-size 800 \
   --chunk-overlap 120 \
@@ -162,7 +179,7 @@ from document_loader import load_documents
 documents = load_documents("knowledge_base", recursive=True, clean=True)
 ```
 
-使用本地确定性测试 Provider 生成向量：
+使用生产级 Embedding Provider 生成向量：
 
 ```python
 from document_loader import load_and_split_document
@@ -189,6 +206,28 @@ store.add_documents(embedded_chunks)
 
 query_embedding = provider.embed_text("What does this document say about RAG?")
 results = store.similarity_search(query_embedding, top_k=3)
+```
+
+使用 Qdrant 向量库：
+
+```python
+from document_loader import load_and_split_document
+from embeddings import OpenAIEmbeddingProvider
+from vector_store import QdrantVectorStore
+
+chunks = load_and_split_document("example.md", clean=True)
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_chunks = provider.embed_documents(chunks)
+
+store = QdrantVectorStore(
+    collection_name="enterprise_kb",
+    dimension=provider.dimension,
+    url="http://localhost:6333",
+)
+store.add_documents(embedded_chunks)
+
+query_embedding = provider.embed_text("What does this document say about RAG?")
+results = store.similarity_search(query_embedding, top_k=3, metadata_filter={"file_type": "markdown"})
 ```
 
 运行最小 RAG 管线：
@@ -234,7 +273,7 @@ python -m unittest discover -s tests -v
 ## 后续路线
 
 1. 增加更多文档入库边界样例。
-2. 增加生产可用的向量库适配器。
-3. 增加生产可用的重排器。
-4. 增加缓存、可观测性和权限控制。
-5. 增加检索评估数据集和指标。
+2. 拆分索引构建和查询命令。
+3. 增加检索评估数据集和指标。
+4. 增加生产可用的重排器。
+5. 增加缓存、可观测性和权限控制。

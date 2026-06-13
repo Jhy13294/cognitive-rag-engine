@@ -26,6 +26,14 @@ def _env_float(name: str, default: float) -> float:
     return float(raw_value)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean from the environment."""
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value == "":
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -48,6 +56,33 @@ class Config:
     EMBEDDING_BASE_DELAY = _env_float("EMBEDDING_BASE_DELAY", 1.0)
     EMBEDDING_MAX_DELAY = _env_float("EMBEDDING_MAX_DELAY", 30.0)
     EMBEDDING_USER = os.getenv("EMBEDDING_USER")
+
+    VECTOR_STORE_PROVIDER = os.getenv("VECTOR_STORE_PROVIDER", "memory")
+    VECTOR_STORE_HOST = os.getenv("VECTOR_STORE_HOST") or os.getenv("QDRANT_HOST", "localhost")
+    VECTOR_STORE_PORT = _env_int("VECTOR_STORE_PORT", _env_int("QDRANT_PORT", 6333))
+    VECTOR_STORE_URL = os.getenv("VECTOR_STORE_URL") or os.getenv("QDRANT_URL")
+    VECTOR_STORE_API_KEY = os.getenv("VECTOR_STORE_API_KEY") or os.getenv("QDRANT_API_KEY")
+    VECTOR_STORE_COLLECTION = (
+        os.getenv("VECTOR_STORE_COLLECTION") or os.getenv("QDRANT_COLLECTION", "enterprise_kb")
+    )
+    VECTOR_STORE_DISTANCE_METRIC = (
+        os.getenv("VECTOR_STORE_DISTANCE_METRIC") or os.getenv("QDRANT_DISTANCE", "cosine")
+    )
+    VECTOR_STORE_BATCH_SIZE = _env_int("VECTOR_STORE_BATCH_SIZE", _env_int("QDRANT_BATCH_SIZE", 64))
+    VECTOR_STORE_TIMEOUT = _env_float("VECTOR_STORE_TIMEOUT", _env_float("QDRANT_TIMEOUT", 30.0))
+    VECTOR_STORE_MAX_RETRIES = _env_int(
+        "VECTOR_STORE_MAX_RETRIES",
+        _env_int("QDRANT_MAX_RETRIES", 3),
+    )
+    VECTOR_STORE_BASE_DELAY = _env_float(
+        "VECTOR_STORE_BASE_DELAY",
+        _env_float("QDRANT_BASE_DELAY", 0.5),
+    )
+    VECTOR_STORE_MAX_DELAY = _env_float(
+        "VECTOR_STORE_MAX_DELAY",
+        _env_float("QDRANT_MAX_DELAY", 8.0),
+    )
+    VECTOR_STORE_RECREATE = _env_bool("VECTOR_STORE_RECREATE", _env_bool("QDRANT_RECREATE", False))
 
     @classmethod
     def validate(cls):
@@ -75,4 +110,32 @@ class Config:
         logger.debug("Embedding API URL: %s", cls.EMBEDDING_API_URL)
         logger.debug("Embedding model: %s", cls.EMBEDDING_MODEL_NAME)
         logger.debug("Embedding dimension: %s", cls.EMBEDDING_DIMENSION)
+        return True
+
+    @classmethod
+    def validate_vector_store(cls, provider: str = None):
+        """Validate vector-store configuration."""
+        selected_provider = (provider or cls.VECTOR_STORE_PROVIDER).lower()
+
+        if selected_provider == "memory":
+            return True
+
+        if selected_provider != "qdrant":
+            raise ValueError(f"Unsupported vector store provider: {selected_provider}")
+
+        if not cls.VECTOR_STORE_COLLECTION:
+            raise ValueError("VECTOR_STORE_COLLECTION is required for Qdrant.")
+        if cls.VECTOR_STORE_PORT <= 0:
+            raise ValueError("VECTOR_STORE_PORT must be greater than 0.")
+        if cls.VECTOR_STORE_BATCH_SIZE <= 0:
+            raise ValueError("VECTOR_STORE_BATCH_SIZE must be greater than 0.")
+        if cls.VECTOR_STORE_DISTANCE_METRIC.lower() not in {"cosine", "dot", "euclid", "euclidean"}:
+            raise ValueError("VECTOR_STORE_DISTANCE_METRIC must be one of: cosine, dot, euclid.")
+
+        logger.debug("Vector store provider: %s", selected_provider)
+        logger.debug("Vector store host: %s", cls.VECTOR_STORE_HOST)
+        logger.debug("Vector store port: %s", cls.VECTOR_STORE_PORT)
+        logger.debug("Vector store url: %s", cls.VECTOR_STORE_URL)
+        logger.debug("Vector store collection: %s", cls.VECTOR_STORE_COLLECTION)
+        logger.debug("Vector store distance metric: %s", cls.VECTOR_STORE_DISTANCE_METRIC)
         return True

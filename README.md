@@ -10,8 +10,9 @@ The current codebase focuses on the foundation:
 - Document loading for TXT, Markdown, PDF, and Word files
 - Conservative text cleaning
 - Metadata-preserving text chunking for later vector indexing
+- Production embedding and vector-store adapters
 
-Embedding, vector storage, retrieval, reranking, caching, monitoring, and permission control are planned but not implemented yet.
+Reranking, caching, monitoring, API service, and permission control are planned but not implemented yet.
 
 ## Project Status
 
@@ -35,10 +36,13 @@ Implemented:
 - Deterministic local hash embedding provider for tests
 - Vector store abstraction
 - In-memory vector store for local retrieval tests
+- Qdrant production vector store adapter with batching, metadata filters, payload indexes, and retry handling
+- Vector-store factory and CLI provider selection
 - Minimal RAG pipeline with retrieval, context assembly, chat generation, and sources
 
 Not implemented yet:
 
+- Separate ingest and query commands
 - Reranking
 - Cache layer
 - Evaluation and monitoring
@@ -69,7 +73,9 @@ Not implemented yet:
 │   └── hash_provider.py       # Deterministic local provider for tests
 ├── vector_store/
 │   ├── base.py                # Vector store interface and record models
-│   └── memory_store.py        # In-memory vector store
+│   ├── factory.py             # Vector store factory
+│   ├── memory_store.py        # In-memory vector store
+│   └── qdrant_store.py        # Qdrant vector store adapter
 ├── rag/
 │   └── pipeline.py            # Minimal RAG pipeline
 ├── text_cleaner/
@@ -78,6 +84,8 @@ Not implemented yet:
 │   ├── fixtures/              # Sample TXT and Markdown fixtures
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
+│   ├── test_qdrant_store_mock.py
+│   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
 │   ├── test_rag_pipeline.py
 │   └── test_rag_cli.py
@@ -98,6 +106,14 @@ Create a `.env` file:
 ```env
 DEEPSEEK_API_KEY=your_api_key_here
 DEEPSEEK_API_URL=https://api.deepseek.com/v1/chat/completions
+
+EMBEDDING_PROVIDER=openai
+EMBEDDING_API_KEY=your_openai_api_key_here
+EMBEDDING_MODEL_NAME=text-embedding-3-small
+EMBEDDING_DIMENSION=512
+
+VECTOR_STORE_PROVIDER=memory
+VECTOR_STORE_COLLECTION=enterprise_kb
 ```
 
 ## Usage
@@ -127,6 +143,7 @@ python rag_cli.py knowledge_base \
   --question "What does the knowledge base say about deployment?" \
   --embedding-provider openai \
   --embedding-dimension 512 \
+  --vector-store qdrant \
   --top-k 5 \
   --chunk-size 800 \
   --chunk-overlap 120 \
@@ -162,7 +179,7 @@ from document_loader import load_documents
 documents = load_documents("knowledge_base", recursive=True, clean=True)
 ```
 
-Embed chunks with the local deterministic test provider:
+Embed chunks with the production embedding provider:
 
 ```python
 from document_loader import load_and_split_document
@@ -189,6 +206,28 @@ store.add_documents(embedded_chunks)
 
 query_embedding = provider.embed_text("What does this document say about RAG?")
 results = store.similarity_search(query_embedding, top_k=3)
+```
+
+Use Qdrant as the vector store:
+
+```python
+from document_loader import load_and_split_document
+from embeddings import OpenAIEmbeddingProvider
+from vector_store import QdrantVectorStore
+
+chunks = load_and_split_document("example.md", clean=True)
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_chunks = provider.embed_documents(chunks)
+
+store = QdrantVectorStore(
+    collection_name="enterprise_kb",
+    dimension=provider.dimension,
+    url="http://localhost:6333",
+)
+store.add_documents(embedded_chunks)
+
+query_embedding = provider.embed_text("What does this document say about RAG?")
+results = store.similarity_search(query_embedding, top_k=3, metadata_filter={"file_type": "markdown"})
 ```
 
 Run the minimal RAG pipeline:
@@ -234,7 +273,7 @@ python -m unittest discover -s tests -v
 ## Roadmap
 
 1. Add more ingestion edge-case fixtures.
-2. Add a production vector store adapter.
-3. Add a production reranker.
-4. Add caching, observability, and access-control features.
-5. Add retrieval evaluation datasets and metrics.
+2. Split indexing and querying commands.
+3. Add retrieval evaluation datasets and metrics.
+4. Add a production reranker.
+5. Add caching, observability, and access-control features.

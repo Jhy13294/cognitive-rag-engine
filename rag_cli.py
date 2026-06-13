@@ -8,7 +8,7 @@ from document_loader import load_and_split_documents
 from embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
 from logger import setup_logger
 from rag import RAGPipeline, RAGResponse
-from vector_store import InMemoryVectorStore
+from vector_store import create_vector_store
 
 logger = setup_logger(__name__, level=logging.INFO)
 
@@ -28,6 +28,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Embedding provider. Defaults to EMBEDDING_PROVIDER.",
     )
     parser.add_argument("--embedding-dimension", type=int, default=None, help="Embedding dimension override.")
+    parser.add_argument(
+        "--vector-store",
+        choices=["memory", "qdrant"],
+        default=None,
+        help="Vector store provider. Defaults to VECTOR_STORE_PROVIDER.",
+    )
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
@@ -61,6 +67,7 @@ def build_rag_pipeline_from_path(
     chunk_overlap: int = 120,
     embedding_provider_name: Optional[str] = None,
     embedding_dimension: Optional[int] = None,
+    vector_store_name: Optional[str] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
@@ -82,7 +89,10 @@ def build_rag_pipeline_from_path(
     )
     embedded_chunks = embedding_provider.embed_documents(chunks)
 
-    vector_store = InMemoryVectorStore(dimension=embedding_provider.dimension)
+    vector_store = create_vector_store(
+        provider_name=vector_store_name,
+        dimension=embedding_provider.dimension,
+    )
     vector_store.add_documents(embedded_chunks)
 
     if chat_client is None:
@@ -93,10 +103,11 @@ def build_rag_pipeline_from_path(
         chat_client = APIClient(Config.API_KEY, Config.API_URL)
 
     logger.info(
-        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s",
+        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s",
         len(chunks),
         embedding_provider.model_name,
         embedding_provider.dimension,
+        vector_store_name or Config.VECTOR_STORE_PROVIDER,
     )
     return RAGPipeline(
         embedding_provider=embedding_provider,
@@ -205,6 +216,7 @@ def main(argv=None) -> int:
             chunk_overlap=args.chunk_overlap,
             embedding_provider_name=args.embedding_provider,
             embedding_dimension=args.embedding_dimension,
+            vector_store_name=args.vector_store,
             top_k=args.top_k,
             max_context_chars=args.max_context_chars,
         )

@@ -18,6 +18,7 @@
 - 本地确定性 Hash Embedding Provider
 - 向量库抽象层
 - 内存向量库
+- Qdrant 生产级向量库适配器
 - 最小 RAG 检索链路
 - RAG 应用命令行入口
 
@@ -55,7 +56,7 @@ RAG 系统的质量很大程度取决于入库前处理。如果文档解析、�
 2. 区分测试 Provider 和生产 Provider：OpenAIEmbeddingProvider 用于真实语义向量，HashEmbeddingProvider 只用于本地验证。
 3. 学习向量数据库：先理解向量记录、相似度分数、top-k 和 metadata filter。
 4. 增加召回质量评估：准备问题集、期望来源和命中率指标。
-5. 逐步替换测试组件：当前 embedding 已有生产 Provider，下一步重点是生产向量库。
+5. 拆分索引和查询：当前已有 Qdrant 适配器，下一步重点是避免每次提问都重复全量入库。
 
 ## Embedding 抽象层的意义
 
@@ -81,7 +82,7 @@ Embedding 抽象层把“文本转向量”的能力从 RAG 主流程里拆出�
 
 ## 向量库抽象层的意义
 
-向量库抽象层负责存储和检索已经生成的向量。当前的 `InMemoryVectorStore` 用于本地验证，不适合生产长期存储。
+向量库抽象层负责存储和检索已经生成的向量。当前的 `InMemoryVectorStore` 用于本地验证，不适合生产长期存储。项目已经新增 `QdrantVectorStore`，用于连接 Qdrant 做持久化向量存储。
 
 它能验证这些能力：
 
@@ -92,7 +93,17 @@ Embedding 抽象层把“文本转向量”的能力从 RAG 主流程里拆出�
 - 验证向量维度一致性。
 - 打通“文档加载 -> 切分 -> embedding -> 入库 -> 检索”的本地链路。
 
-后续接入 Chroma、Qdrant 或 Milvus 时，应保持同一套 `VectorStore` 接口，减少对 RAG 主流程的影响。
+Qdrant 适配器保持同一套 `VectorStore` 接口，因此 `RAGPipeline` 不需要感知底层是内存库还是 Qdrant。
+
+当前 Qdrant 适配器重点能力：
+
+- collection 创建和维度校验。
+- source、file_type、acl、chunk_index 的 payload index。
+- 批量 upsert，避免逐条网络写入。
+- metadata filter 翻译为 Qdrant 检索前过滤。
+- 稳定业务 id 到 Qdrant UUID 的确定性映射。
+- 429、5xx、超时和网络抖动重试。
+- mock 单元测试和可选本地 Docker 集成测试。
 
 ## 最小 RAG 管线
 
@@ -112,12 +123,12 @@ Embedding 抽象层把“文本转向量”的能力从 RAG 主流程里拆出�
 1. 指定文档或目录。
 2. 自动加载、清洗、切分。
 3. 使用本地测试 embedding provider 生成向量。
-4. 写入内存向量库。
+4. 写入内存向量库或 Qdrant 向量库。
 5. 接收问题并调用 RAGPipeline。
 6. 输出答案和引用来源。
 
-它适合本地演示和端到端验证。当前 CLI 默认可通过 `EMBEDDING_PROVIDER=openai` 使用 OpenAI 生产级 embedding，但向量库仍是内存实现；真实企业级部署还需要持久化向量库。
+它适合本地演示和端到端验证。当前 CLI 默认可通过 `EMBEDDING_PROVIDER=openai` 使用 OpenAI 生产级 embedding，并可通过 `VECTOR_STORE_PROVIDER=qdrant` 或 `--vector-store qdrant` 使用 Qdrant。
 
 ## 当前风险
 
-当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、最小 RAG 管线和 RAG CLI，但测试样例还比较基础。下一步建议补真实向量库适配器，同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。
+当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线和 RAG CLI，但测试样例还比较基础。下一步建议拆分索引构建和查询命令，并建立检索评估数据集；同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。

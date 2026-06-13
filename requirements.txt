@@ -11,6 +11,8 @@ python-docx>=1.0.0       # Word processing, import name: docx
 # Text processing
 regex>=2023.0.0          # Advanced regular expressions
 
+# Vector storage
+qdrant-client>=1.9.0     # Qdrant SDK, import name: qdrant_client
+
 # Optional dependency: YAML parsing for Markdown Front Matter
 PyYAML>=6.0
-

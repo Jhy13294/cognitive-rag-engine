@@ -46,6 +46,8 @@ class RAGCLITests(unittest.TestCase):
                 "64",
                 "--embedding-provider",
                 "hash",
+                "--vector-store",
+                "memory",
                 "--no-clean",
                 "--non-recursive",
             ]
@@ -58,6 +60,7 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(args.chunk_overlap, 10)
         self.assertEqual(args.embedding_dimension, 64)
         self.assertEqual(args.embedding_provider, "hash")
+        self.assertEqual(args.vector_store, "memory")
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
@@ -85,6 +88,7 @@ class RAGCLITests(unittest.TestCase):
             chunk_overlap=10,
             embedding_provider_name="hash",
             embedding_dimension=64,
+            vector_store_name="memory",
             top_k=2,
             max_context_chars=1000,
         )
@@ -106,6 +110,7 @@ class RAGCLITests(unittest.TestCase):
             chunk_overlap=10,
             embedding_provider_name="hash",
             embedding_dimension=64,
+            vector_store_name="memory",
             top_k=2,
             max_context_chars=1000,
         )
