@@ -1,0 +1,16 @@
+
+# API calls
+requests>=2.28.0
+python-dotenv>=1.0.0
+
+# Document processing
+PyMuPDF>=1.23.0          # PDF processing, import name: fitz
+pdfplumber>=0.10.0       # PDF table extraction
+python-docx>=1.0.0       # Word processing, import name: docx
+
+# Text processing
+regex>=2023.0.0          # Advanced regular expressions
+
+# Optional dependency: YAML parsing for Markdown Front Matter
+PyYAML>=6.0
+

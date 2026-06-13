@@ -1,0 +1,5 @@
+AI QA Assistant is a small RAG ingestion prototype.
+
+This sample text file is used to verify document loading, cleaning, and chunking behavior.
+
+Each paragraph is intentionally short so tests can exercise chunk metadata without relying on external services.

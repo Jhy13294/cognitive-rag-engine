@@ -1,0 +1,240 @@
+# AI QA Assistant
+
+An early-stage Python project for building an enterprise-grade RAG knowledge base.
+
+The current codebase focuses on the foundation:
+
+- DeepSeek-compatible chat API client
+- Environment-based configuration
+- Rotating file logging
+- Document loading for TXT, Markdown, PDF, and Word files
+- Conservative text cleaning
+- Metadata-preserving text chunking for later vector indexing
+
+Embedding, vector storage, retrieval, reranking, caching, monitoring, and permission control are planned but not implemented yet.
+
+## Project Status
+
+Current milestone: document ingestion foundation.
+
+Implemented:
+
+- Basic LLM API call flow
+- Reusable API client with retry handling
+- Document model and loader interface
+- TXT loader
+- Markdown loader with Front Matter support
+- PDF loader with optional table extraction
+- Word `.docx` loader
+- Text cleaner
+- Text splitter for RAG chunks
+- Unified document loading entry point
+- Sample fixtures and ingestion tests
+- Embedding provider abstraction
+- OpenAI production embedding provider with dimensions support, batching, retries, and usage logging
+- Deterministic local hash embedding provider for tests
+- Vector store abstraction
+- In-memory vector store for local retrieval tests
+- Minimal RAG pipeline with retrieval, context assembly, chat generation, and sources
+
+Not implemented yet:
+
+- Reranking
+- Cache layer
+- Evaluation and monitoring
+- API service layer
+- Enterprise access control
+
+## Directory Structure
+
+```text
+.
+├── api_client.py              # LLM API client
+├── config.py                  # Environment-based configuration
+├── logger.py                  # Logging utilities
+├── main.py                    # CLI chat entry point
+├── rag_cli.py                 # RAG application CLI
+├── requirements.txt           # Python dependencies
+├── document_loader/
+│   ├── base.py                # Document model and loader interface
+│   ├── chunking.py            # Text chunking
+│   ├── loader.py              # Unified loading entry point
+│   ├── md_loader.py           # Markdown loader
+│   ├── pdf_loader.py          # PDF loader
+│   ├── txt_loader.py          # TXT loader
+│   └── word_loader.py         # Word loader
+├── embeddings/
+│   ├── base.py                # Embedding interface and vector utilities
+│   ├── openai_provider.py     # OpenAI production embedding provider
+│   └── hash_provider.py       # Deterministic local provider for tests
+├── vector_store/
+│   ├── base.py                # Vector store interface and record models
+│   └── memory_store.py        # In-memory vector store
+├── rag/
+│   └── pipeline.py            # Minimal RAG pipeline
+├── text_cleaner/
+│   └── cleaner.py             # Text cleaning
+├── tests/
+│   ├── fixtures/              # Sample TXT and Markdown fixtures
+│   ├── test_document_ingestion.py
+│   ├── test_embeddings.py
+│   ├── test_vector_store.py
+│   ├── test_rag_pipeline.py
+│   └── test_rag_cli.py
+└── docs/
+    └── learning_notes.zh-CN.md
+```
+
+## Setup
+
+Create and activate a virtual environment, then install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Create a `.env` file:
+
+```env
+DEEPSEEK_API_KEY=your_api_key_here
+DEEPSEEK_API_URL=https://api.deepseek.com/v1/chat/completions
+```
+
+## Usage
+
+Run the basic CLI chat flow:
+
+```bash
+python main.py
+```
+
+Run the RAG CLI with one question:
+
+```bash
+python rag_cli.py tests/fixtures --question "What is this project?"
+```
+
+Run the RAG CLI in interactive mode:
+
+```bash
+python rag_cli.py tests/fixtures
+```
+
+Useful RAG CLI options:
+
+```bash
+python rag_cli.py knowledge_base \
+  --question "What does the knowledge base say about deployment?" \
+  --embedding-provider openai \
+  --embedding-dimension 512 \
+  --top-k 5 \
+  --chunk-size 800 \
+  --chunk-overlap 120 \
+  --metadata-filter "{\"file_type\":\"markdown\"}"
+```
+
+Load a document through the unified entry point:
+
+```python
+from document_loader import load_document
+
+document = load_document("example.md", clean=True)
+```
+
+Load and split a document:
+
+```python
+from document_loader import load_and_split_document
+
+chunks = load_and_split_document(
+    "example.md",
+    clean=True,
+    chunk_size=800,
+    chunk_overlap=120,
+)
+```
+
+Load all supported files from a directory:
+
+```python
+from document_loader import load_documents
+
+documents = load_documents("knowledge_base", recursive=True, clean=True)
+```
+
+Embed chunks with the local deterministic test provider:
+
+```python
+from document_loader import load_and_split_document
+from embeddings import OpenAIEmbeddingProvider
+
+chunks = load_and_split_document("example.md", clean=True)
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_chunks = provider.embed_documents(chunks)
+```
+
+Store and search embedded chunks in memory:
+
+```python
+from document_loader import load_and_split_document
+from embeddings import OpenAIEmbeddingProvider
+from vector_store import InMemoryVectorStore
+
+chunks = load_and_split_document("example.md", clean=True)
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_chunks = provider.embed_documents(chunks)
+
+store = InMemoryVectorStore(dimension=provider.dimension)
+store.add_documents(embedded_chunks)
+
+query_embedding = provider.embed_text("What does this document say about RAG?")
+results = store.similarity_search(query_embedding, top_k=3)
+```
+
+Run the minimal RAG pipeline:
+
+```python
+from api_client import APIClient
+from config import Config
+from document_loader import load_and_split_document
+from embeddings import OpenAIEmbeddingProvider
+from rag import RAGPipeline
+from vector_store import InMemoryVectorStore
+
+chunks = load_and_split_document("example.md", clean=True)
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_chunks = provider.embed_documents(chunks)
+
+store = InMemoryVectorStore(dimension=provider.dimension)
+store.add_documents(embedded_chunks)
+
+client = APIClient(Config.API_KEY, Config.API_URL)
+pipeline = RAGPipeline(provider, store, client)
+
+response = pipeline.answer("What does this document say about RAG?")
+print(response.answer)
+print(response.sources)
+```
+
+Run the test suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Development Conventions
+
+- Code identifiers use English.
+- Class and function docstrings are written in English.
+- Key implementation comments are written in English.
+- `README.md` is the primary English project document.
+- `README.zh-CN.md` is the Chinese project document.
+- Chinese learning notes are kept separately under `docs/`.
+
+## Roadmap
+
+1. Add more ingestion edge-case fixtures.
+2. Add a production vector store adapter.
+3. Add a production reranker.
+4. Add caching, observability, and access-control features.
+5. Add retrieval evaluation datasets and metrics.
