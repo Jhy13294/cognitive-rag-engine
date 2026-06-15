@@ -48,6 +48,10 @@ class RAGCLITests(unittest.TestCase):
                 "hash",
                 "--vector-store",
                 "memory",
+                "--rerank-provider",
+                "none",
+                "--rerank-fetch-k",
+                "8",
                 "--no-clean",
                 "--non-recursive",
             ]
@@ -61,6 +65,8 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(args.embedding_dimension, 64)
         self.assertEqual(args.embedding_provider, "hash")
         self.assertEqual(args.vector_store, "memory")
+        self.assertEqual(args.rerank_provider, "none")
+        self.assertEqual(args.rerank_fetch_k, 8)
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
@@ -89,6 +95,7 @@ class RAGCLITests(unittest.TestCase):
             embedding_provider_name="hash",
             embedding_dimension=64,
             vector_store_name="memory",
+            rerank_provider_name="none",
             top_k=2,
             max_context_chars=1000,
         )
@@ -98,6 +105,26 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(response.answer, "CLI answer with citation [1].")
         self.assertEqual(len(chat_client.calls), 1)
         self.assertGreaterEqual(len(response.sources), 1)
+
+    def test_explicit_rerank_provider_enables_reranker(self):
+        pipeline = build_rag_pipeline_from_path(
+            str(FIXTURES_DIR),
+            chat_client=FakeChatClient(),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider_name="hash",
+            embedding_dimension=64,
+            vector_store_name="memory",
+            rerank_provider_name="deterministic",
+            rerank_fetch_k=8,
+            top_k=2,
+            max_context_chars=1000,
+        )
+
+        self.assertIsNotNone(pipeline.reranker)
+        self.assertEqual(pipeline.fetch_k, 8)
 
     def test_format_response_includes_answer_and_sources(self):
         chat_client = FakeChatClient()
@@ -111,6 +138,7 @@ class RAGCLITests(unittest.TestCase):
             embedding_provider_name="hash",
             embedding_dimension=64,
             vector_store_name="memory",
+            rerank_provider_name="none",
             top_k=2,
             max_context_chars=1000,
         )

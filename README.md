@@ -11,8 +11,9 @@ The current codebase focuses on the foundation:
 - Conservative text cleaning
 - Metadata-preserving text chunking for later vector indexing
 - Production embedding and vector-store adapters
+- Deterministic retrieval evaluation and optional reranking
 
-Reranking, caching, monitoring, API service, and permission control are planned but not implemented yet.
+Caching, monitoring, API service, and permission control are planned but not implemented yet.
 
 ## Project Status
 
@@ -40,11 +41,12 @@ Implemented:
 - Vector-store factory and CLI provider selection
 - Minimal RAG pipeline with retrieval, context assembly, chat generation, and sources
 - Deterministic retrieval evaluation with a JSONL golden set, HashEmbeddingProvider baseline, and JSON/Markdown reports
+- Reranker abstraction with deterministic offline reranker and Cohere neural reranker provider
+- Optional rerank insertion in `RAGPipeline.retrieve`: dense fetch, rerank, top-k selection, and dense fallback on failure
 
 Not implemented yet:
 
 - Separate ingest and query commands
-- Reranking
 - Cache layer
 - Monitoring
 - API service layer
@@ -85,6 +87,11 @@ Not implemented yet:
 │   ├── run.py                 # python -m eval.run entry point
 │   ├── fixtures/              # Evaluation knowledge-base fixtures
 │   └── reports/               # Generated evaluation reports
+├── rerank/
+│   ├── base.py                # Reranker interface and result models
+│   ├── deterministic.py       # Offline deterministic lexical reranker
+│   ├── cohere_provider.py     # Cohere Rerank provider with retries
+│   └── factory.py             # Reranker factory
 ├── rag/
 │   └── pipeline.py            # Minimal RAG pipeline
 ├── text_cleaner/
@@ -94,6 +101,7 @@ Not implemented yet:
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
+│   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
@@ -124,6 +132,11 @@ EMBEDDING_DIMENSION=512
 
 VECTOR_STORE_PROVIDER=memory
 VECTOR_STORE_COLLECTION=enterprise_kb
+
+RERANK_ENABLED=false
+RERANK_PROVIDER=deterministic
+RERANK_FETCH_K=30
+RERANK_TOP_N=5
 ```
 
 ## Usage
@@ -155,6 +168,8 @@ python rag_cli.py knowledge_base \
   --embedding-dimension 512 \
   --vector-store qdrant \
   --top-k 5 \
+  --rerank-provider deterministic \
+  --rerank-fetch-k 30 \
   --chunk-size 800 \
   --chunk-overlap 120 \
   --metadata-filter "{\"file_type\":\"markdown\"}"
@@ -265,6 +280,15 @@ print(response.answer)
 print(response.sources)
 ```
 
+Run the pipeline with a deterministic offline reranker:
+
+```python
+from rerank import DeterministicReranker
+
+reranker = DeterministicReranker(top_n=5, fetch_k=30)
+pipeline = RAGPipeline(provider, store, client, top_k=5, reranker=reranker, fetch_k=30)
+```
+
 Run the test suite:
 
 ```bash
@@ -277,7 +301,15 @@ Run the deterministic retrieval baseline:
 python -m eval.run
 ```
 
+Run the deterministic rerank evaluation:
+
+```bash
+python -m eval.run --rerank-provider deterministic --rerank-fetch-k 30 --rerank-top-n 10
+```
+
 The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
+
+Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The latest rerank report is under `eval/reports/`.
 
 ## Development Conventions
 
@@ -292,6 +324,6 @@ The evaluator only depends on a `retrieve(question, top_k)` callable. It does no
 
 1. Add more ingestion edge-case fixtures.
 2. Split indexing and querying commands.
-3. Add a production reranker.
-4. Add hybrid retrieval and query rewrite experiments measured against the golden set.
+3. Add hybrid retrieval and query rewrite experiments measured against the golden set.
+4. Add score thresholding or abstain logic for negative queries.
 5. Add caching, observability, and access-control features.

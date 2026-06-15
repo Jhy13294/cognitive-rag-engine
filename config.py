@@ -84,6 +84,19 @@ class Config:
     )
     VECTOR_STORE_RECREATE = _env_bool("VECTOR_STORE_RECREATE", _env_bool("QDRANT_RECREATE", False))
 
+    RERANK_ENABLED = _env_bool("RERANK_ENABLED", False)
+    RERANK_PROVIDER = os.getenv("RERANK_PROVIDER", "deterministic")
+    RERANK_MODEL = os.getenv("RERANK_MODEL", "deterministic-lexical-reranker")
+    RERANK_FETCH_K = _env_int("RERANK_FETCH_K", 30)
+    RERANK_TOP_N = _env_int("RERANK_TOP_N", 5)
+    RERANK_BATCH_SIZE = _env_int("RERANK_BATCH_SIZE", 32)
+    RERANK_API_KEY = os.getenv("RERANK_API_KEY") or os.getenv("COHERE_API_KEY")
+    RERANK_API_URL = os.getenv("RERANK_API_URL", "https://api.cohere.com/v2/rerank")
+    RERANK_TIMEOUT = _env_float("RERANK_TIMEOUT", 30.0)
+    RERANK_MAX_RETRIES = _env_int("RERANK_MAX_RETRIES", 3)
+    RERANK_BASE_DELAY = _env_float("RERANK_BASE_DELAY", 0.5)
+    RERANK_MAX_DELAY = _env_float("RERANK_MAX_DELAY", 8.0)
+
     @classmethod
     def validate(cls):
         """Validate required configuration values."""
@@ -138,4 +151,29 @@ class Config:
         logger.debug("Vector store url: %s", cls.VECTOR_STORE_URL)
         logger.debug("Vector store collection: %s", cls.VECTOR_STORE_COLLECTION)
         logger.debug("Vector store distance metric: %s", cls.VECTOR_STORE_DISTANCE_METRIC)
+        return True
+
+    @classmethod
+    def validate_rerank(cls, provider: str = None):
+        """Validate reranker configuration."""
+        selected_provider = (provider or cls.RERANK_PROVIDER).lower()
+
+        if selected_provider in {"none", "off", "disabled"}:
+            return True
+        if selected_provider not in {"deterministic", "cohere"}:
+            raise ValueError(f"Unsupported rerank provider: {selected_provider}")
+        if cls.RERANK_FETCH_K <= 0:
+            raise ValueError("RERANK_FETCH_K must be greater than 0.")
+        if cls.RERANK_TOP_N <= 0:
+            raise ValueError("RERANK_TOP_N must be greater than 0.")
+        if cls.RERANK_BATCH_SIZE <= 0:
+            raise ValueError("RERANK_BATCH_SIZE must be greater than 0.")
+        if selected_provider == "cohere" and not cls.RERANK_API_KEY:
+            raise ValueError("RERANK_API_KEY or COHERE_API_KEY is required for Cohere rerank.")
+
+        logger.debug("Rerank enabled: %s", cls.RERANK_ENABLED)
+        logger.debug("Rerank provider: %s", selected_provider)
+        logger.debug("Rerank model: %s", cls.RERANK_MODEL)
+        logger.debug("Rerank fetch_k: %s", cls.RERANK_FETCH_K)
+        logger.debug("Rerank top_n: %s", cls.RERANK_TOP_N)
         return True

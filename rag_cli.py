@@ -8,6 +8,7 @@ from document_loader import load_and_split_documents
 from embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
 from logger import setup_logger
 from rag import RAGPipeline, RAGResponse
+from rerank import create_reranker
 from vector_store import create_vector_store
 
 logger = setup_logger(__name__, level=logging.INFO)
@@ -34,6 +35,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Vector store provider. Defaults to VECTOR_STORE_PROVIDER.",
     )
+    parser.add_argument(
+        "--rerank-provider",
+        choices=["none", "deterministic", "cohere"],
+        default=None,
+        help="Reranker provider. Defaults to RERANK_* configuration.",
+    )
+    parser.add_argument("--rerank-fetch-k", type=int, default=None, help="Dense candidate count before rerank.")
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
@@ -68,6 +76,8 @@ def build_rag_pipeline_from_path(
     embedding_provider_name: Optional[str] = None,
     embedding_dimension: Optional[int] = None,
     vector_store_name: Optional[str] = None,
+    rerank_provider_name: Optional[str] = None,
+    rerank_fetch_k: Optional[int] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
@@ -94,6 +104,18 @@ def build_rag_pipeline_from_path(
         dimension=embedding_provider.dimension,
     )
     vector_store.add_documents(embedded_chunks)
+    rerank_enabled = None
+    if rerank_provider_name == "none":
+        rerank_enabled = False
+    elif rerank_provider_name is not None:
+        rerank_enabled = True
+
+    reranker = create_reranker(
+        provider_name=rerank_provider_name,
+        enabled=rerank_enabled,
+        fetch_k=rerank_fetch_k,
+        top_n=top_k,
+    )
 
     if chat_client is None:
         from api_client import APIClient
@@ -103,11 +125,12 @@ def build_rag_pipeline_from_path(
         chat_client = APIClient(Config.API_KEY, Config.API_URL)
 
     logger.info(
-        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s",
+        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s",
         len(chunks),
         embedding_provider.model_name,
         embedding_provider.dimension,
         vector_store_name or Config.VECTOR_STORE_PROVIDER,
+        reranker.model_name if reranker else None,
     )
     return RAGPipeline(
         embedding_provider=embedding_provider,
@@ -115,6 +138,8 @@ def build_rag_pipeline_from_path(
         chat_client=chat_client,
         top_k=top_k,
         max_context_chars=max_context_chars,
+        reranker=reranker,
+        fetch_k=rerank_fetch_k,
     )
 
 
@@ -217,6 +242,8 @@ def main(argv=None) -> int:
             embedding_provider_name=args.embedding_provider,
             embedding_dimension=args.embedding_dimension,
             vector_store_name=args.vector_store,
+            rerank_provider_name=args.rerank_provider,
+            rerank_fetch_k=args.rerank_fetch_k,
             top_k=args.top_k,
             max_context_chars=args.max_context_chars,
         )

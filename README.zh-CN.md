@@ -11,8 +11,9 @@
 - 保守型文本清洗
 - 面向向量入库的文本切分和元数据保留
 - 生产级 Embedding 和向量库适配器
+- 确定性检索评估和可选重排
 
-重排、缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
+缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
@@ -40,11 +41,12 @@
 - 向量库工厂和 CLI provider 选择
 - 最小 RAG 管线：检索、上下文组装、LLM 生成、引用来源返回
 - 确定性检索评估：JSONL golden set、HashEmbeddingProvider 基线、JSON/Markdown 报告
+- Reranker 抽象层：确定性离线重排器和 Cohere neural reranker provider
+- `RAGPipeline.retrieve` 可选接入重排：dense 召回、rerank、取 top-k，失败时降级回 dense 原序
 
 尚未完成：
 
 - 索引构建和查询命令拆分
-- 重排序
 - 缓存层
 - 监控
 - API 服务层
@@ -85,6 +87,11 @@
 │   ├── run.py                 # python -m eval.run 入口
 │   ├── fixtures/              # 评估知识库样例
 │   └── reports/               # 生成的评估报告
+├── rerank/
+│   ├── base.py                # Reranker 接口和结果模型
+│   ├── deterministic.py       # 离线确定性词法重排器
+│   ├── cohere_provider.py     # 带重试的 Cohere Rerank Provider
+│   └── factory.py             # Reranker 工厂
 ├── rag/
 │   └── pipeline.py            # 最小 RAG 管线
 ├── text_cleaner/
@@ -94,6 +101,7 @@
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
+│   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
@@ -124,6 +132,11 @@ EMBEDDING_DIMENSION=512
 
 VECTOR_STORE_PROVIDER=memory
 VECTOR_STORE_COLLECTION=enterprise_kb
+
+RERANK_ENABLED=false
+RERANK_PROVIDER=deterministic
+RERANK_FETCH_K=30
+RERANK_TOP_N=5
 ```
 
 ## 使用
@@ -155,6 +168,8 @@ python rag_cli.py knowledge_base \
   --embedding-dimension 512 \
   --vector-store qdrant \
   --top-k 5 \
+  --rerank-provider deterministic \
+  --rerank-fetch-k 30 \
   --chunk-size 800 \
   --chunk-overlap 120 \
   --metadata-filter "{\"file_type\":\"markdown\"}"
@@ -265,6 +280,15 @@ print(response.answer)
 print(response.sources)
 ```
 
+使用确定性离线重排器运行管线：
+
+```python
+from rerank import DeterministicReranker
+
+reranker = DeterministicReranker(top_n=5, fetch_k=30)
+pipeline = RAGPipeline(provider, store, client, top_k=5, reranker=reranker, fetch_k=30)
+```
+
 运行测试：
 
 ```bash
@@ -277,7 +301,15 @@ python -m unittest discover -s tests -v
 python -m eval.run
 ```
 
+运行确定性重排评估：
+
+```bash
+python -m eval.run --rerank-provider deterministic --rerank-fetch-k 30 --rerank-top-n 10
+```
+
 评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
+
+当前 T05 重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
 
 ## 代码规范
 
@@ -292,6 +324,6 @@ python -m eval.run
 
 1. 增加更多文档入库边界样例。
 2. 拆分索引构建和查询命令。
-3. 增加生产可用的重排器。
-4. 用同一份 golden set 度量混合检索和 query rewrite 实验。
+3. 用同一份 golden set 度量混合检索和 query rewrite 实验。
+4. 增加分数阈值或拒答逻辑，改善 negative query。
 5. 增加缓存、可观测性和权限控制。

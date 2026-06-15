@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-当前项目处在“文档入库基础能力”阶段。这个阶段的目标不是马上接向量库，而是先让文档可以稳定进入系统，并形成统一的 `Document` 数据结构。
+当前项目已经从“文档入库基础能力”推进到“可评估的最小 RAG 检索漏斗”阶段。现在不仅能完成文档入库、embedding、向量检索和生成回答，还能用同一套 golden set 评估 dense 检索和 rerank 检索的差异。
 
 目前已经完成：
 
@@ -22,6 +22,9 @@
 - 最小 RAG 检索链路
 - RAG 应用命令行入口
 - 检索评估 golden set 和 Hash baseline
+- Reranker 抽象层
+- 确定性离线重排器
+- Cohere Rerank Provider 的 mock 单测和可选 gated 集成入口
 
 ## 为什么先做文档加载
 
@@ -125,6 +128,34 @@ T04 的重点不是评估回答质量，而是先把“检索有没有找对资�
 - 按 capability 切片的指标。
 - 每条低召回 case 的期望来源、实际 top-k、首个命中 rank 和 miss reason。
 
+## Reranker 抽象层
+
+T05 的核心不是“多接一个模型”，而是在 dense 召回之后增加一个可验证的重排阶段：
+
+1. 先用 embedding 和向量库召回较大的候选池，例如 `fetch_k=30`。
+2. reranker 读取 query 和候选 chunk 原文，重新计算相关性分数。
+3. 按重排分取最终 top-k 进入上下文组装。
+
+当前实现了两条路径：
+
+- `DeterministicReranker`：离线、零网络、零模型下载，基于词项重叠和轻量 IDF 打分。它用于 CI 门禁和指标回归。
+- `CohereReranker`：生产 neural rerank provider，网络调用通过 mock 单测覆盖，真实集成测试由环境变量 gated。
+
+重要约束：
+
+- `reranker=None` 时，`RAGPipeline.retrieve` 必须保持原 dense 路径行为不变。
+- rerank 抛错、超时或服务不可用时，必须降级回 dense 原序，不能中断问答。
+- T05 的 KPI 是 MRR@3 和 long_tail MRR，不是 recall@5；因为当前 golden set 的 recall@5 在 dense 基线中已经是 `1.0`。
+
+当前 T05 离线评估结果：
+
+- dense 基线 MRR@3：`0.677083`。
+- deterministic rerank MRR@3：`1.000000`。
+- dense long_tail MRR@3：`0.566667`。
+- deterministic rerank long_tail MRR@3：`1.000000`。
+- recall@5 保持 `1.000000`。
+- negative_false_recall_rate 没有恶化，仍为当前 dense/rerank 都会返回非空结果的已知问题。
+
 ## 最小 RAG 管线
 
 当前的最小 RAG 管线包括四步：
@@ -151,4 +182,4 @@ T04 的重点不是评估回答质量，而是先把“检索有没有找对资�
 
 ## 当前风险
 
-当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线和 RAG CLI，但测试样例还比较基础。下一步建议拆分索引构建和查询命令，并建立检索评估数据集；同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。
+当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线和 rerank 漏斗。下一步建议回补索引构建/查询职责分离，或者继续进入混合检索和 RRF 融合；同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。

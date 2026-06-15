@@ -1,8 +1,10 @@
 import unittest
+from dataclasses import asdict
 
 from document_loader import load_and_split_document
 from embeddings import HashEmbeddingProvider
 from rag import RAGPipeline
+from rerank import RerankConfig, RerankResult, Reranker
 from rag.pipeline import extract_chat_content
 from tests.test_document_ingestion import FIXTURES_DIR
 from vector_store import InMemoryVectorStore
@@ -24,6 +26,34 @@ class FakeChatClient:
                 }
             ]
         }
+
+
+class ReverseReranker(Reranker):
+    def __init__(self):
+        super().__init__(RerankConfig(model_name="reverse-test", top_n=2, fetch_k=3))
+
+    def rerank(self, query, candidates, top_n=None):
+        limit = min(top_n or self.top_n, len(candidates))
+        results = []
+        for index in reversed(range(len(candidates))):
+            candidate = candidates[index]
+            results.append(
+                RerankResult(
+                    index=index,
+                    score=100.0 - index,
+                    content=candidate.content,
+                    metadata={"test_reranked": True},
+                )
+            )
+        return results[:limit]
+
+
+class FailingReranker(Reranker):
+    def __init__(self):
+        super().__init__(RerankConfig(model_name="failing-test", top_n=2, fetch_k=3))
+
+    def rerank(self, query, candidates, top_n=None):
+        raise RuntimeError("planned rerank failure")
 
 
 def build_test_pipeline():
@@ -92,6 +122,42 @@ class RAGPipelineTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(response.sources), 1)
         self.assertTrue(all(source.metadata["file_type"] == "txt" for source in response.sources))
+
+    def test_retrieve_without_reranker_matches_dense_output(self):
+        dense_pipeline, _ = build_test_pipeline()
+        default_pipeline, _ = build_test_pipeline()
+        default_pipeline.reranker = None
+        default_pipeline.fetch_k = 99
+
+        dense_sources = dense_pipeline.retrieve("What is this project?", top_k=3)
+        default_sources = default_pipeline.retrieve("What is this project?", top_k=3)
+
+        self.assertEqual([asdict(source) for source in dense_sources], [asdict(source) for source in default_sources])
+
+    def test_retrieve_applies_reranker_and_preserves_dense_observability(self):
+        pipeline, _ = build_test_pipeline()
+        dense_sources = pipeline.retrieve("What is this project?", top_k=3)
+        pipeline.reranker = ReverseReranker()
+        pipeline.fetch_k = 3
+
+        reranked_sources = pipeline.retrieve("What is this project?", top_k=2)
+
+        self.assertEqual(len(reranked_sources), 2)
+        self.assertEqual(reranked_sources[0].content, dense_sources[2].content)
+        self.assertEqual(reranked_sources[0].metadata["dense_rank"], 3)
+        self.assertEqual(reranked_sources[0].metadata["dense_score"], dense_sources[2].score)
+        self.assertEqual(reranked_sources[0].metadata["rerank_model"], "reverse-test")
+        self.assertTrue(reranked_sources[0].metadata["test_reranked"])
+
+    def test_rerank_failure_falls_back_to_dense_order(self):
+        pipeline, _ = build_test_pipeline()
+        dense_sources = pipeline.retrieve("What is this project?", top_k=2)
+        pipeline.reranker = FailingReranker()
+        pipeline.fetch_k = 3
+
+        fallback_sources = pipeline.retrieve("What is this project?", top_k=2)
+
+        self.assertEqual([asdict(source) for source in fallback_sources], [asdict(source) for source in dense_sources])
 
     def test_prompt_context_is_bounded(self):
         pipeline, _ = build_test_pipeline()

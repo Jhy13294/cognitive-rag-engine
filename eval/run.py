@@ -1,7 +1,6 @@
 import argparse
 import hashlib
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -9,6 +8,7 @@ from .baseline import build_hash_retriever
 from .golden import load_golden_set
 from .metrics import evaluate_retriever
 from .reporting import render_markdown_report, write_reports
+from rerank import create_reranker
 
 
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
@@ -27,6 +27,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-overlap", type=int, default=80, help="Chunk overlap for baseline indexing.")
     parser.add_argument("--embedding-dimension", type=int, default=64, help="Hash embedding dimension.")
     parser.add_argument("--match-scope", choices=["source", "chunk"], default="source", help="Hit matching scope.")
+    parser.add_argument(
+        "--rerank-provider",
+        choices=["none", "deterministic", "cohere"],
+        default="none",
+        help="Optional reranker provider for retrieval evaluation.",
+    )
+    parser.add_argument("--rerank-fetch-k", type=int, default=30, help="Dense candidate count before rerank.")
+    parser.add_argument("--rerank-top-n", type=int, default=5, help="Default number of reranked candidates.")
     parser.add_argument("--fail-under-hit-rate", type=float, default=None, help="Fail if any hit_rate@k is below this value.")
     parser.add_argument("--no-write-report", action="store_true", help="Print only; do not write report files.")
     parser.add_argument("--quiet", action="store_true", help="Do not print the Markdown report.")
@@ -39,16 +47,23 @@ def main(argv: List[str] = None) -> int:
     args = parser.parse_args(argv)
 
     examples = load_golden_set(args.golden_set)
+    reranker = create_reranker(
+        provider_name=args.rerank_provider,
+        enabled=args.rerank_provider != "none",
+        fetch_k=args.rerank_fetch_k,
+        top_n=args.rerank_top_n,
+    )
     retrieve, baseline_metadata = build_hash_retriever(
         knowledge_path=args.knowledge_path,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
         embedding_dimension=args.embedding_dimension,
+        reranker=reranker,
+        fetch_k=args.rerank_fetch_k if reranker else None,
     )
 
     metadata = {
         **baseline_metadata,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "golden_path": args.golden_set,
         "golden_count": len(examples),
         "golden_version": file_sha256(args.golden_set),
@@ -111,4 +126,3 @@ def git_sha() -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
