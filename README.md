@@ -39,13 +39,14 @@ Implemented:
 - Qdrant production vector store adapter with batching, metadata filters, payload indexes, and retry handling
 - Vector-store factory and CLI provider selection
 - Minimal RAG pipeline with retrieval, context assembly, chat generation, and sources
+- Deterministic retrieval evaluation with a JSONL golden set, HashEmbeddingProvider baseline, and JSON/Markdown reports
 
 Not implemented yet:
 
 - Separate ingest and query commands
 - Reranking
 - Cache layer
-- Evaluation and monitoring
+- Monitoring
 - API service layer
 - Enterprise access control
 
@@ -76,6 +77,14 @@ Not implemented yet:
 │   ├── factory.py             # Vector store factory
 │   ├── memory_store.py        # In-memory vector store
 │   └── qdrant_store.py        # Qdrant vector store adapter
+├── eval/
+│   ├── golden_set.jsonl       # Retrieval golden set with relevant source lists
+│   ├── baseline.py            # Deterministic HashEmbeddingProvider baseline
+│   ├── metrics.py             # hit_rate, MRR, recall, negative metrics
+│   ├── reporting.py           # JSON and Markdown report rendering
+│   ├── run.py                 # python -m eval.run entry point
+│   ├── fixtures/              # Evaluation knowledge-base fixtures
+│   └── reports/               # Generated evaluation reports
 ├── rag/
 │   └── pipeline.py            # Minimal RAG pipeline
 ├── text_cleaner/
@@ -84,6 +93,7 @@ Not implemented yet:
 │   ├── fixtures/              # Sample TXT and Markdown fixtures
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
+│   ├── test_eval_metrics.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
@@ -261,6 +271,14 @@ Run the test suite:
 python -m unittest discover -s tests -v
 ```
 
+Run the deterministic retrieval baseline:
+
+```bash
+python -m eval.run
+```
+
+The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
+
 ## Development Conventions
 
 - Code identifiers use English.
@@ -274,6 +292,6 @@ python -m unittest discover -s tests -v
 
 1. Add more ingestion edge-case fixtures.
 2. Split indexing and querying commands.
-3. Add retrieval evaluation datasets and metrics.
-4. Add a production reranker.
+3. Add a production reranker.
+4. Add hybrid retrieval and query rewrite experiments measured against the golden set.
 5. Add caching, observability, and access-control features.

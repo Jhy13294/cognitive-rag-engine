@@ -39,13 +39,14 @@
 - 支持批量写入、metadata 过滤、payload index 和重试机制的 Qdrant 生产级向量库适配器
 - 向量库工厂和 CLI provider 选择
 - 最小 RAG 管线：检索、上下文组装、LLM 生成、引用来源返回
+- 确定性检索评估：JSONL golden set、HashEmbeddingProvider 基线、JSON/Markdown 报告
 
 尚未完成：
 
 - 索引构建和查询命令拆分
 - 重排序
 - 缓存层
-- 评估与监控
+- 监控
 - API 服务层
 - 企业权限控制
 
@@ -76,6 +77,14 @@
 │   ├── factory.py             # 向量库工厂
 │   ├── memory_store.py        # 内存向量库
 │   └── qdrant_store.py        # Qdrant 向量库适配器
+├── eval/
+│   ├── golden_set.jsonl       # 使用 relevant 列表标注的检索 golden set
+│   ├── baseline.py            # HashEmbeddingProvider 确定性基线
+│   ├── metrics.py             # hit_rate、MRR、recall、negative 指标
+│   ├── reporting.py           # JSON 和 Markdown 报告
+│   ├── run.py                 # python -m eval.run 入口
+│   ├── fixtures/              # 评估知识库样例
+│   └── reports/               # 生成的评估报告
 ├── rag/
 │   └── pipeline.py            # 最小 RAG 管线
 ├── text_cleaner/
@@ -84,6 +93,7 @@
 │   ├── fixtures/              # TXT 和 Markdown 样例文档
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
+│   ├── test_eval_metrics.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
@@ -261,6 +271,14 @@ print(response.sources)
 python -m unittest discover -s tests -v
 ```
 
+运行确定性检索基线：
+
+```bash
+python -m eval.run
+```
+
+评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
+
 ## 代码规范
 
 - 代码命名使用英文。
@@ -274,6 +292,6 @@ python -m unittest discover -s tests -v
 
 1. 增加更多文档入库边界样例。
 2. 拆分索引构建和查询命令。
-3. 增加检索评估数据集和指标。
-4. 增加生产可用的重排器。
+3. 增加生产可用的重排器。
+4. 用同一份 golden set 度量混合检索和 query rewrite 实验。
 5. 增加缓存、可观测性和权限控制。

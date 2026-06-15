@@ -21,6 +21,7 @@
 - Qdrant 生产级向量库适配器
 - 最小 RAG 检索链路
 - RAG 应用命令行入口
+- 检索评估 golden set 和 Hash baseline
 
 ## 为什么先做文档加载
 
@@ -104,6 +105,25 @@ Qdrant 适配器保持同一套 `VectorStore` 接口，因此 `RAGPipeline` 不�
 - 稳定业务 id 到 Qdrant UUID 的确定性映射。
 - 429、5xx、超时和网络抖动重试。
 - mock 单元测试和可选本地 Docker 集成测试。
+
+## 检索评估基线
+
+T04 的重点不是评估回答质量，而是先把“检索有没有找对资料”变成可复现数字。
+
+当前评估基线遵守三条规则：
+
+- golden set 使用 `relevant` 列表，而不是单个 expected source，这样才能计算 recall@k。
+- 评估器只接收 `retrieve(question, top_k)` 可调用对象，不依赖完整 pipeline，也不调用聊天模型。
+- 默认使用 `HashEmbeddingProvider`，确保离线、确定性、可在 CI 中复跑。
+
+当前报告输出：
+
+- hit_rate@3/5/10。
+- MRR@3/5/10。
+- recall@3/5/10。
+- negative 样本的空召回率和误召回率。
+- 按 capability 切片的指标。
+- 每条低召回 case 的期望来源、实际 top-k、首个命中 rank 和 miss reason。
 
 ## 最小 RAG 管线
 
