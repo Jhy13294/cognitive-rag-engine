@@ -166,6 +166,50 @@ class RetrievalEvaluationTests(unittest.TestCase):
         self.assertTrue(any(path.suffix == ".json" for path in report_files))
         self.assertTrue(any(path.suffix == ".md" for path in report_files))
 
+    def test_eval_run_writes_hybrid_comparison_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            exit_code = eval_main(
+                [
+                    "--golden-set",
+                    "eval/golden_set.jsonl",
+                    "--knowledge-path",
+                    "eval/fixtures/knowledge_base",
+                    "--report-dir",
+                    temp_dir,
+                    "--compare-hybrid",
+                    "--quiet",
+                ]
+            )
+
+            json_path = next(Path(temp_dir).glob("*.json"))
+            report = json.loads(json_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["report_type"], "hybrid_comparison")
+        self.assertEqual(sorted(report["reports"].keys()), ["bm25-only", "dense-only", "fused"])
+        self.assertIsNone(report["metadata"]["reranker"])
+        self.assertIn("exact_name", report["comparison"]["fused"])
+
+    def test_hybrid_comparison_report_is_reproducible(self):
+        def run_report_json():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                eval_main(
+                    [
+                        "--golden-set",
+                        "eval/golden_set.jsonl",
+                        "--knowledge-path",
+                        "eval/fixtures/knowledge_base",
+                        "--report-dir",
+                        temp_dir,
+                        "--compare-hybrid",
+                        "--quiet",
+                    ]
+                )
+                json_path = next(Path(temp_dir).glob("*.json"))
+                return json_path.read_text(encoding="utf-8")
+
+        self.assertEqual(run_report_json(), run_report_json())
+
     def test_eval_run_report_contains_relevant_list_schema(self):
         examples = load_golden_set("eval/golden_set.jsonl")
         report = evaluate_retriever(

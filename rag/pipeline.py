@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 
 from embeddings import EmbeddingProvider
+from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion
 from logger import setup_logger
 from rerank import Reranker
 from vector_store import SearchResult, VectorStore
@@ -58,6 +59,8 @@ class RAGPipeline:
         system_prompt: Optional[str] = None,
         reranker: Optional[Reranker] = None,
         fetch_k: Optional[int] = None,
+        bm25_retriever: Optional[BM25Retriever] = None,
+        rrf: Optional[ReciprocalRankFusion] = None,
     ):
         """Initialize the RAG pipeline."""
         if top_k <= 0:
@@ -75,6 +78,8 @@ class RAGPipeline:
         self.system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
         self.reranker = reranker
         self.fetch_k = fetch_k
+        self.bm25_retriever = bm25_retriever
+        self.rrf = rrf or ReciprocalRankFusion()
 
     def retrieve(
         self,
@@ -85,6 +90,27 @@ class RAGPipeline:
         """Retrieve source chunks for a question."""
         requested_top_k = top_k or self.top_k
         query_embedding = self.embedding_provider.embed_text(question)
+
+        if self.bm25_retriever is not None:
+            sources = self._hybrid_retrieve(
+                question=question,
+                query_embedding=query_embedding,
+                requested_top_k=requested_top_k,
+                metadata_filter=metadata_filter,
+            )
+            if self.reranker is None:
+                return sources[:requested_top_k]
+
+            try:
+                return self._rerank_sources(question, sources, requested_top_k)
+            except Exception as e:
+                logger.warning(
+                    "Rerank failed; falling back to hybrid order | error=%s | requested_top_k=%s",
+                    e,
+                    requested_top_k,
+                )
+                return sources[:requested_top_k]
+
         search_results = self.vector_store.similarity_search(
             query_embedding,
             top_k=self._search_top_k(requested_top_k),
@@ -152,9 +178,38 @@ class RAGPipeline:
 
     def _search_top_k(self, requested_top_k: int) -> int:
         """Return dense candidate count for retrieval."""
-        if self.reranker is None:
+        if self.reranker is None and self.bm25_retriever is None:
             return requested_top_k
-        return max(self.fetch_k or self.reranker.fetch_k, requested_top_k)
+        default_fetch_k = self.reranker.fetch_k if self.reranker is not None else requested_top_k
+        return max(self.fetch_k or default_fetch_k, requested_top_k)
+
+    def _hybrid_retrieve(
+        self,
+        question: str,
+        query_embedding: List[float],
+        requested_top_k: int,
+        metadata_filter: Optional[Dict] = None,
+    ) -> List[RetrievedSource]:
+        """Retrieve with dense and BM25 paths, then fuse by RRF."""
+        candidate_count = self._search_top_k(requested_top_k)
+        dense_results = self.vector_store.similarity_search(
+            query_embedding,
+            top_k=candidate_count,
+            metadata_filter=metadata_filter,
+        )
+        sparse_results = self.bm25_retriever.retrieve(
+            question,
+            top_k=candidate_count,
+            metadata_filter=metadata_filter,
+        )
+        fused_records = self.rrf.fuse(
+            {
+                "dense": dense_search_results_to_ranked_records(dense_results),
+                "sparse": sparse_results,
+            },
+            top_k=candidate_count,
+        )
+        return self._ranked_records_to_sources(fused_records)
 
     def _rerank_sources(
         self,
@@ -191,6 +246,20 @@ class RAGPipeline:
         if not reranked_sources:
             return sources[:requested_top_k]
         return reranked_sources
+
+    def _ranked_records_to_sources(self, ranked_records: List[RankedRecord]) -> List[RetrievedSource]:
+        """Convert fused ranked records to RAG sources."""
+        sources = []
+        for index, record in enumerate(ranked_records, start=1):
+            sources.append(
+                RetrievedSource(
+                    index=index,
+                    content=record.content,
+                    score=record.score,
+                    metadata=dict(record.metadata),
+                )
+            )
+        return sources
 
     def _build_context(self, sources: List[RetrievedSource]) -> str:
         """Build a bounded context block from retrieved sources."""
@@ -236,3 +305,23 @@ def extract_chat_content(response: Dict) -> str:
         return response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:
         raise ValueError("Invalid chat response format") from e
+
+
+def dense_search_results_to_ranked_records(search_results: List[SearchResult]) -> List[RankedRecord]:
+    """Convert dense vector search results to stable ranked records."""
+    ranked_records = []
+    for result in search_results:
+        metadata = dict(result.metadata)
+        metadata["id"] = result.record.id
+        metadata["retrieval_mode"] = "dense"
+        metadata["dense_score"] = result.score
+        ranked_records.append(
+            RankedRecord(
+                id=result.record.id,
+                score=result.score,
+                content=result.content,
+                metadata=metadata,
+                record=result.record,
+            )
+        )
+    return ranked_records

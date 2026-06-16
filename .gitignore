@@ -5,3 +5,7 @@ __pycache__/
 logs/
 tasks/
 memory/
+# Generated evaluation reports
+eval/reports/*.json
+eval/reports/*.md
+!eval/reports/.gitkeep

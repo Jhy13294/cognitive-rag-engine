@@ -2,13 +2,14 @@ import argparse
 import hashlib
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
+from config import Config
+from rerank import create_reranker
 from .baseline import build_hash_retriever
 from .golden import load_golden_set
 from .metrics import evaluate_retriever
 from .reporting import render_markdown_report, write_reports
-from rerank import create_reranker
 
 
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
@@ -27,6 +28,33 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-overlap", type=int, default=80, help="Chunk overlap for baseline indexing.")
     parser.add_argument("--embedding-dimension", type=int, default=64, help="Hash embedding dimension.")
     parser.add_argument("--match-scope", choices=["source", "chunk"], default="source", help="Hit matching scope.")
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=["dense", "bm25", "hybrid"],
+        default="dense",
+        help="Retrieval mode for a single report.",
+    )
+    parser.add_argument(
+        "--compare-hybrid",
+        action="store_true",
+        help="Run dense-only, bm25-only, and fused reports with reranker disabled.",
+    )
+    parser.add_argument("--hybrid-fetch-k", type=int, default=30, help="Candidate count per path before RRF fusion.")
+    parser.add_argument("--rrf-k", type=int, default=Config.RRF_K, help="RRF rank constant.")
+    parser.add_argument(
+        "--hybrid-dense-weight",
+        type=float,
+        default=Config.HYBRID_DENSE_WEIGHT,
+        help="Dense path weight for RRF.",
+    )
+    parser.add_argument(
+        "--hybrid-sparse-weight",
+        type=float,
+        default=Config.HYBRID_SPARSE_WEIGHT,
+        help="Sparse BM25 path weight for RRF.",
+    )
+    parser.add_argument("--bm25-k1", type=float, default=Config.BM25_K1, help="BM25 k1 parameter.")
+    parser.add_argument("--bm25-b", type=float, default=Config.BM25_B, help="BM25 b parameter.")
     parser.add_argument(
         "--rerank-provider",
         choices=["none", "deterministic", "cohere"],
@@ -47,19 +75,37 @@ def main(argv: List[str] = None) -> int:
     args = parser.parse_args(argv)
 
     examples = load_golden_set(args.golden_set)
+    if args.compare_hybrid:
+        report = build_hybrid_comparison_report(args, examples)
+        if not args.no_write_report:
+            json_path, markdown_path = write_reports(report, args.report_dir)
+            print(f"Report written: {json_path}")
+            print(f"Report written: {markdown_path}")
+
+        if not args.quiet:
+            print(render_markdown_report(report))
+        return 0
+
     reranker = create_reranker(
         provider_name=args.rerank_provider,
         enabled=args.rerank_provider != "none",
         fetch_k=args.rerank_fetch_k,
         top_n=args.rerank_top_n,
     )
+    fetch_k = single_report_fetch_k(args, reranker is not None)
     retrieve, baseline_metadata = build_hash_retriever(
         knowledge_path=args.knowledge_path,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
         embedding_dimension=args.embedding_dimension,
         reranker=reranker,
-        fetch_k=args.rerank_fetch_k if reranker else None,
+        fetch_k=fetch_k,
+        retrieval_mode=args.retrieval_mode,
+        rrf_k=args.rrf_k,
+        dense_weight=args.hybrid_dense_weight,
+        sparse_weight=args.hybrid_sparse_weight,
+        bm25_k1=args.bm25_k1,
+        bm25_b=args.bm25_b,
     )
 
     metadata = {
@@ -98,6 +144,100 @@ def main(argv: List[str] = None) -> int:
             return 1
 
     return 0
+
+
+def build_hybrid_comparison_report(args, examples) -> Dict:
+    """Build dense-only, bm25-only, and fused reports with reranker disabled."""
+    modes = [
+        ("dense-only", "dense"),
+        ("bm25-only", "bm25"),
+        ("fused", "hybrid"),
+    ]
+    reports = {}
+    common_metadata = base_metadata(args, examples)
+
+    for label, retrieval_mode in modes:
+        retrieve, baseline_metadata = build_hash_retriever(
+            knowledge_path=args.knowledge_path,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            embedding_dimension=args.embedding_dimension,
+            reranker=None,
+            fetch_k=args.hybrid_fetch_k if retrieval_mode == "hybrid" else None,
+            retrieval_mode=retrieval_mode,
+            rrf_k=args.rrf_k,
+            dense_weight=args.hybrid_dense_weight,
+            sparse_weight=args.hybrid_sparse_weight,
+            bm25_k1=args.bm25_k1,
+            bm25_b=args.bm25_b,
+        )
+        reports[label] = evaluate_retriever(
+            retrieve=retrieve,
+            examples=examples,
+            k_values=args.k,
+            match_scope=args.match_scope,
+            metadata={
+                **baseline_metadata,
+                **common_metadata,
+                "comparison_label": label,
+                "reranker": None,
+            },
+        )
+
+    return {
+        "report_type": "hybrid_comparison",
+        "metadata": {
+            **common_metadata,
+            "comparison_modes": [label for label, _ in modes],
+            "reranker": None,
+            "rrf_k": args.rrf_k,
+            "hybrid_dense_weight": args.hybrid_dense_weight,
+            "hybrid_sparse_weight": args.hybrid_sparse_weight,
+            "bm25_k1": args.bm25_k1,
+            "bm25_b": args.bm25_b,
+            "hybrid_fetch_k": args.hybrid_fetch_k,
+            "evaluator_contract": "retrieve(question, top_k)",
+        },
+        "k_values": sorted(set(args.k)),
+        "reports": reports,
+        "comparison": summarize_comparison(reports),
+    }
+
+
+def summarize_comparison(reports: Dict[str, Dict]) -> Dict:
+    """Extract the T06 comparison slice from full reports."""
+    comparison = {}
+    for label, report in reports.items():
+        comparison[label] = {
+            "metrics": report.get("metrics", {}),
+            "exact_name": report.get("by_capability", {}).get("exact_name", {}),
+            "long_tail": report.get("by_capability", {}).get("long_tail", {}),
+        }
+    return comparison
+
+
+def base_metadata(args, examples) -> Dict:
+    """Return metadata shared by single and comparison reports."""
+    return {
+        "golden_path": args.golden_set,
+        "golden_count": len(examples),
+        "golden_version": file_sha256(args.golden_set),
+        "git_sha": git_sha(),
+        "k_values": sorted(set(args.k)),
+        "match_scope": args.match_scope,
+        "evaluator_contract": "retrieve(question, top_k)",
+    }
+
+
+def single_report_fetch_k(args, has_reranker: bool) -> Optional[int]:
+    """Return candidate count for single-report retrieval."""
+    if args.retrieval_mode == "hybrid" and has_reranker:
+        return max(args.hybrid_fetch_k, args.rerank_fetch_k)
+    if args.retrieval_mode == "hybrid":
+        return args.hybrid_fetch_k
+    if has_reranker:
+        return args.rerank_fetch_k
+    return None
 
 
 def file_sha256(path: str) -> str:

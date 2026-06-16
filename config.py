@@ -97,6 +97,13 @@ class Config:
     RERANK_BASE_DELAY = _env_float("RERANK_BASE_DELAY", 0.5)
     RERANK_MAX_DELAY = _env_float("RERANK_MAX_DELAY", 8.0)
 
+    HYBRID_ENABLED = _env_bool("HYBRID_ENABLED", False)
+    HYBRID_DENSE_WEIGHT = _env_float("HYBRID_DENSE_WEIGHT", 0.2)
+    HYBRID_SPARSE_WEIGHT = _env_float("HYBRID_SPARSE_WEIGHT", 1.0)
+    RRF_K = _env_int("RRF_K", 60)
+    BM25_K1 = _env_float("BM25_K1", 1.5)
+    BM25_B = _env_float("BM25_B", 0.75)
+
     @classmethod
     def validate(cls):
         """Validate required configuration values."""
@@ -176,4 +183,28 @@ class Config:
         logger.debug("Rerank model: %s", cls.RERANK_MODEL)
         logger.debug("Rerank fetch_k: %s", cls.RERANK_FETCH_K)
         logger.debug("Rerank top_n: %s", cls.RERANK_TOP_N)
+        return True
+
+    @classmethod
+    def validate_hybrid(cls):
+        """Validate hybrid retrieval configuration."""
+        if cls.RRF_K <= 0:
+            raise ValueError("RRF_K must be greater than 0.")
+        if cls.HYBRID_DENSE_WEIGHT < 0:
+            raise ValueError("HYBRID_DENSE_WEIGHT must be non-negative.")
+        if cls.HYBRID_SPARSE_WEIGHT < 0:
+            raise ValueError("HYBRID_SPARSE_WEIGHT must be non-negative.")
+        if cls.HYBRID_DENSE_WEIGHT + cls.HYBRID_SPARSE_WEIGHT <= 0:
+            raise ValueError("At least one hybrid retrieval weight must be greater than 0.")
+        if cls.BM25_K1 <= 0:
+            raise ValueError("BM25_K1 must be greater than 0.")
+        if cls.BM25_B < 0 or cls.BM25_B > 1:
+            raise ValueError("BM25_B must be between 0 and 1.")
+
+        logger.debug("Hybrid enabled: %s", cls.HYBRID_ENABLED)
+        logger.debug("Hybrid dense weight: %s", cls.HYBRID_DENSE_WEIGHT)
+        logger.debug("Hybrid sparse weight: %s", cls.HYBRID_SPARSE_WEIGHT)
+        logger.debug("RRF k: %s", cls.RRF_K)
+        logger.debug("BM25 k1: %s", cls.BM25_K1)
+        logger.debug("BM25 b: %s", cls.BM25_B)
         return True

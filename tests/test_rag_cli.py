@@ -52,6 +52,19 @@ class RAGCLITests(unittest.TestCase):
                 "none",
                 "--rerank-fetch-k",
                 "8",
+                "--hybrid",
+                "--hybrid-fetch-k",
+                "12",
+                "--rrf-k",
+                "50",
+                "--hybrid-dense-weight",
+                "0.1",
+                "--hybrid-sparse-weight",
+                "1.0",
+                "--bm25-k1",
+                "1.4",
+                "--bm25-b",
+                "0.7",
                 "--no-clean",
                 "--non-recursive",
             ]
@@ -67,6 +80,13 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(args.vector_store, "memory")
         self.assertEqual(args.rerank_provider, "none")
         self.assertEqual(args.rerank_fetch_k, 8)
+        self.assertTrue(args.hybrid)
+        self.assertEqual(args.hybrid_fetch_k, 12)
+        self.assertEqual(args.rrf_k, 50)
+        self.assertEqual(args.hybrid_dense_weight, 0.1)
+        self.assertEqual(args.hybrid_sparse_weight, 1.0)
+        self.assertEqual(args.bm25_k1, 1.4)
+        self.assertEqual(args.bm25_b, 0.7)
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
@@ -125,6 +145,31 @@ class RAGCLITests(unittest.TestCase):
 
         self.assertIsNotNone(pipeline.reranker)
         self.assertEqual(pipeline.fetch_k, 8)
+
+    def test_explicit_hybrid_enables_bm25_retriever(self):
+        pipeline = build_rag_pipeline_from_path(
+            str(FIXTURES_DIR),
+            chat_client=FakeChatClient(),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider_name="hash",
+            embedding_dimension=64,
+            vector_store_name="memory",
+            rerank_provider_name="none",
+            hybrid_enabled=True,
+            hybrid_fetch_k=8,
+            rrf_k=50,
+            hybrid_dense_weight=0.2,
+            hybrid_sparse_weight=1.0,
+            top_k=2,
+            max_context_chars=1000,
+        )
+
+        self.assertIsNotNone(pipeline.bm25_retriever)
+        self.assertEqual(pipeline.fetch_k, 8)
+        self.assertEqual(pipeline.rrf.config.k, 50)
 
     def test_format_response_includes_answer_and_sources(self):
         chat_client = FakeChatClient()

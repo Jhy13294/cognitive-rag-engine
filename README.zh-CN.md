@@ -12,12 +12,14 @@
 - 面向向量入库的文本切分和元数据保留
 - 生产级 Embedding 和向量库适配器
 - 确定性检索评估和可选重排
+- 共享词法检索基础能力
+- Dense + BM25 混合检索和 RRF 融合
 
 缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：文档入库基础能力。
+当前阶段：可评估的检索漏斗，已包含 rerank 和 hybrid retrieval。
 
 已完成：
 
@@ -43,6 +45,10 @@
 - 确定性检索评估：JSONL golden set、HashEmbeddingProvider 基线、JSON/Markdown 报告
 - Reranker 抽象层：确定性离线重排器和 Cohere neural reranker provider
 - `RAGPipeline.retrieve` 可选接入重排：dense 召回、rerank、取 top-k，失败时降级回 dense 原序
+- 共享 `lexical/` 核心：tokenization、IDF、BM25 和确定性词法评分
+- BM25 稀疏检索器，输出与 dense 检索一致的 `VectorRecord.id`
+- RRF 融合器，支持配置 dense/sparse 权重并稳定处理同分排序
+- hybrid 对照评估：在关闭 reranker 的前提下并报 dense-only、bm25-only、fused 三路指标
 
 尚未完成：
 
@@ -87,6 +93,13 @@
 │   ├── run.py                 # python -m eval.run 入口
 │   ├── fixtures/              # 评估知识库样例
 │   └── reports/               # 生成的评估报告
+├── lexical/
+│   ├── tokenizer.py           # 共享 normalization 和 tokenization
+│   └── bm25.py                # IDF、BM25 和词法评分 primitives
+├── hybrid/
+│   ├── models.py              # 排序检索结果模型
+│   ├── bm25_retriever.py      # 基于 VectorRecord corpus 的 BM25 检索器
+│   └── rrf.py                 # Reciprocal Rank Fusion
 ├── rerank/
 │   ├── base.py                # Reranker 接口和结果模型
 │   ├── deterministic.py       # 离线确定性词法重排器
@@ -101,6 +114,7 @@
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
+│   ├── test_hybrid.py
 │   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
@@ -137,6 +151,13 @@ RERANK_ENABLED=false
 RERANK_PROVIDER=deterministic
 RERANK_FETCH_K=30
 RERANK_TOP_N=5
+
+HYBRID_ENABLED=false
+HYBRID_DENSE_WEIGHT=0.2
+HYBRID_SPARSE_WEIGHT=1.0
+RRF_K=60
+BM25_K1=1.5
+BM25_B=0.75
 ```
 
 ## 使用
@@ -168,6 +189,10 @@ python rag_cli.py knowledge_base \
   --embedding-dimension 512 \
   --vector-store qdrant \
   --top-k 5 \
+  --hybrid \
+  --hybrid-fetch-k 30 \
+  --hybrid-dense-weight 0.2 \
+  --hybrid-sparse-weight 1.0 \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -289,6 +314,26 @@ reranker = DeterministicReranker(top_n=5, fetch_k=30)
 pipeline = RAGPipeline(provider, store, client, top_k=5, reranker=reranker, fetch_k=30)
 ```
 
+使用 hybrid dense + BM25 检索运行管线：
+
+```python
+from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
+
+bm25 = BM25Retriever(vector_records)
+rrf = ReciprocalRankFusion(
+    RRFConfig(k=60, weights={"dense": 0.2, "sparse": 1.0})
+)
+pipeline = RAGPipeline(
+    provider,
+    store,
+    client,
+    top_k=5,
+    fetch_k=30,
+    bm25_retriever=bm25,
+    rrf=rrf,
+)
+```
+
 运行测试：
 
 ```bash
@@ -307,9 +352,17 @@ python -m eval.run
 python -m eval.run --rerank-provider deterministic --rerank-fetch-k 30 --rerank-top-n 10
 ```
 
+在关闭 reranker 的前提下运行 hybrid 三路对照：
+
+```bash
+python -m eval.run --compare-hybrid --hybrid-fetch-k 30
+```
+
 评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
 
 当前 T05 重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
+
+当前 T06 hybrid 对照在关闭 reranker、使用 `HashEmbeddingProvider` 的条件下：dense-only MRR@3 为 `0.677083`，bm25-only MRR@3 为 `1.000000`，fused MRR@3 为 `1.000000`；fused 的 exact_name 和 long_tail MRR@3 也达到 `1.000000`，并保持报告逐字节可复现。最新 T06 报告位于 `eval/reports/`。
 
 ## 代码规范
 
@@ -324,6 +377,6 @@ python -m eval.run --rerank-provider deterministic --rerank-fetch-k 30 --rerank-
 
 1. 增加更多文档入库边界样例。
 2. 拆分索引构建和查询命令。
-3. 用同一份 golden set 度量混合检索和 query rewrite 实验。
+3. 用同一份 golden set 度量 parent-child 分块和上下文装填改造。
 4. 增加分数阈值或拒答逻辑，改善 negative query。
 5. 增加缓存、可观测性和权限控制。

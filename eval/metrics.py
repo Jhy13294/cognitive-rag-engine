@@ -245,6 +245,7 @@ def retrieved_source_to_dict(source: Any) -> Dict:
     """Convert a RetrievedSource-like object into report-safe data."""
     metadata = dict(getattr(source, "metadata", {}) or {})
     return {
+        "id": str(metadata.get("id", "")),
         "source": normalize_source(str(metadata.get("source", ""))),
         "chunk_index": metadata.get("chunk_index"),
         "score": float(getattr(source, "score", 0.0)),

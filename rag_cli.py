@@ -6,10 +6,12 @@ from typing import Dict, List, Optional
 from config import Config
 from document_loader import load_and_split_documents
 from embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
+from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
 from logger import setup_logger
 from rag import RAGPipeline, RAGResponse
 from rerank import create_reranker
 from vector_store import create_vector_store
+from vector_store.base import embedded_document_to_record
 
 logger = setup_logger(__name__, level=logging.INFO)
 
@@ -42,6 +44,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Reranker provider. Defaults to RERANK_* configuration.",
     )
     parser.add_argument("--rerank-fetch-k", type=int, default=None, help="Dense candidate count before rerank.")
+    parser.add_argument("--hybrid", action="store_true", help="Enable dense + BM25 retrieval with RRF fusion.")
+    parser.add_argument("--hybrid-fetch-k", type=int, default=None, help="Candidate count per path before RRF fusion.")
+    parser.add_argument("--rrf-k", type=int, default=None, help="RRF rank constant.")
+    parser.add_argument("--hybrid-dense-weight", type=float, default=None, help="Dense path RRF weight.")
+    parser.add_argument("--hybrid-sparse-weight", type=float, default=None, help="BM25 path RRF weight.")
+    parser.add_argument("--bm25-k1", type=float, default=None, help="BM25 k1 parameter.")
+    parser.add_argument("--bm25-b", type=float, default=None, help="BM25 b parameter.")
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
@@ -78,6 +87,13 @@ def build_rag_pipeline_from_path(
     vector_store_name: Optional[str] = None,
     rerank_provider_name: Optional[str] = None,
     rerank_fetch_k: Optional[int] = None,
+    hybrid_enabled: Optional[bool] = None,
+    hybrid_fetch_k: Optional[int] = None,
+    rrf_k: Optional[int] = None,
+    hybrid_dense_weight: Optional[float] = None,
+    hybrid_sparse_weight: Optional[float] = None,
+    bm25_k1: Optional[float] = None,
+    bm25_b: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
@@ -98,12 +114,13 @@ def build_rag_pipeline_from_path(
         embedding_dimension=embedding_dimension,
     )
     embedded_chunks = embedding_provider.embed_documents(chunks)
+    vector_records = [embedded_document_to_record(document) for document in embedded_chunks]
 
     vector_store = create_vector_store(
         provider_name=vector_store_name,
         dimension=embedding_provider.dimension,
     )
-    vector_store.add_documents(embedded_chunks)
+    vector_store.add_records(vector_records)
     rerank_enabled = None
     if rerank_provider_name == "none":
         rerank_enabled = False
@@ -116,21 +133,46 @@ def build_rag_pipeline_from_path(
         fetch_k=rerank_fetch_k,
         top_n=top_k,
     )
+    use_hybrid = Config.HYBRID_ENABLED if hybrid_enabled is None else hybrid_enabled
+    bm25_retriever = None
+    rrf = None
+    pipeline_fetch_k = rerank_fetch_k
+
+    if use_hybrid:
+        Config.validate_hybrid()
+        selected_hybrid_fetch_k = hybrid_fetch_k or rerank_fetch_k or Config.RERANK_FETCH_K
+        if rerank_fetch_k:
+            selected_hybrid_fetch_k = max(selected_hybrid_fetch_k, rerank_fetch_k)
+        pipeline_fetch_k = selected_hybrid_fetch_k
+        bm25_retriever = BM25Retriever(
+            vector_records,
+            k1=bm25_k1 if bm25_k1 is not None else Config.BM25_K1,
+            b=bm25_b if bm25_b is not None else Config.BM25_B,
+        )
+        rrf = ReciprocalRankFusion(
+            RRFConfig(
+                k=rrf_k if rrf_k is not None else Config.RRF_K,
+                weights={
+                    "dense": hybrid_dense_weight if hybrid_dense_weight is not None else Config.HYBRID_DENSE_WEIGHT,
+                    "sparse": hybrid_sparse_weight if hybrid_sparse_weight is not None else Config.HYBRID_SPARSE_WEIGHT,
+                },
+            )
+        )
 
     if chat_client is None:
         from api_client import APIClient
-        from config import Config
 
         Config.validate()
         chat_client = APIClient(Config.API_KEY, Config.API_URL)
 
     logger.info(
-        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s",
+        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s",
         len(chunks),
         embedding_provider.model_name,
         embedding_provider.dimension,
         vector_store_name or Config.VECTOR_STORE_PROVIDER,
         reranker.model_name if reranker else None,
+        use_hybrid,
     )
     return RAGPipeline(
         embedding_provider=embedding_provider,
@@ -139,7 +181,9 @@ def build_rag_pipeline_from_path(
         top_k=top_k,
         max_context_chars=max_context_chars,
         reranker=reranker,
-        fetch_k=rerank_fetch_k,
+        fetch_k=pipeline_fetch_k,
+        bm25_retriever=bm25_retriever,
+        rrf=rrf,
     )
 
 
@@ -244,6 +288,13 @@ def main(argv=None) -> int:
             vector_store_name=args.vector_store,
             rerank_provider_name=args.rerank_provider,
             rerank_fetch_k=args.rerank_fetch_k,
+            hybrid_enabled=True if args.hybrid else None,
+            hybrid_fetch_k=args.hybrid_fetch_k,
+            rrf_k=args.rrf_k,
+            hybrid_dense_weight=args.hybrid_dense_weight,
+            hybrid_sparse_weight=args.hybrid_sparse_weight,
+            bm25_k1=args.bm25_k1,
+            bm25_b=args.bm25_b,
             top_k=args.top_k,
             max_context_chars=args.max_context_chars,
         )

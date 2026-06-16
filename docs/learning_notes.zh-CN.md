@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-当前项目已经从“文档入库基础能力”推进到“可评估的最小 RAG 检索漏斗”阶段。现在不仅能完成文档入库、embedding、向量检索和生成回答，还能用同一套 golden set 评估 dense 检索和 rerank 检索的差异。
+当前项目已经从“文档入库基础能力”推进到“可评估的高级 RAG 检索漏斗”阶段。现在不仅能完成文档入库、embedding、向量检索和生成回答，还能用同一套 golden set 评估 dense 检索、rerank 检索和 hybrid dense+BM25 融合检索的差异。
 
 目前已经完成：
 
@@ -25,6 +25,10 @@
 - Reranker 抽象层
 - 确定性离线重排器
 - Cohere Rerank Provider 的 mock 单测和可选 gated 集成入口
+- 共享 `lexical/` 词法核心
+- BM25 稀疏检索器
+- RRF 融合器
+- reranker 关闭条件下的 dense-only / bm25-only / fused 三路 hybrid 对照评估
 
 ## 为什么先做文档加载
 
@@ -156,6 +160,39 @@ T05 的核心不是“多接一个模型”，而是在 dense 召回之后增加
 - recall@5 保持 `1.000000`。
 - negative_false_recall_rate 没有恶化，仍为当前 dense/rerank 都会返回非空结果的已知问题。
 
+## Hybrid 检索与 RRF 融合
+
+T06 的核心不是继续排序已有候选，而是解决“相关文档没有进入候选池”的召回问题。因此它和 T05 的职责不同：
+
+- T05 `DeterministicReranker` 是排序器，只处理 dense 已经召回的候选。
+- T06 `BM25Retriever` 是召回器，对全量 corpus 做稀疏检索。
+- T06 `ReciprocalRankFusion` 是融合器，只根据各路 rank 融合，不依赖不同检索器的绝对分数。
+
+本次把 T05 里已有的 token overlap、IDF 等词法 primitive 提炼到顶层 `lexical/` 包中。这样 T05 和 T06 复用同一套 tokenizer、normalization、IDF 和 BM25/lexical scoring 基础能力，但不共享业务入口类，避免 reranker 和 retriever 互相耦合。
+
+T06 最重要的工程红线是 id 对齐：BM25 输出的 id 必须等于 dense 路里的 `VectorRecord.id`。RRF 是按 id 合并 rank 的，如果 dense 和 sparse 两路对同一个 chunk 产生不同 id，融合结果表面看起来正常，实际是在把两个不同候选当成两条记录，属于很隐蔽的召回质量 bug。
+
+当前实现中，`eval.baseline.build_hash_retriever()` 先加载并切分一次文档，然后用同一批 embedded documents 构造 `VectorRecord` 列表；dense 向量库和 BM25Retriever 都使用这份相同 `VectorRecord` corpus。因此 dense 与 sparse 的 id 空间天然一致。
+
+T06 的评估必须关闭 reranker。原因是当前 T05 确定性 reranker 已经把小型 golden set 的 MRR@3 顶到 `1.000000`，如果把 hybrid 放到 rerank 后面一起测，reranker 会掩盖 BM25/RRF 本身的贡献。正确方式是三路并报：
+
+- dense-only：原始向量检索。
+- bm25-only：纯稀疏检索。
+- fused：dense 与 BM25 经过 RRF 融合。
+
+当前 T06 离线评估结果：
+
+- dense-only MRR@3：`0.677083`。
+- bm25-only MRR@3：`1.000000`。
+- fused MRR@3：`1.000000`。
+- dense long_tail MRR@3：`0.566667`。
+- fused long_tail MRR@3：`1.000000`。
+- fused exact_name MRR@3：`1.000000`。
+
+需要诚实理解这个结果：当前 dense 路使用 `HashEmbeddingProvider`，它是确定性测试 embedding，不是真实语义 embedding。因此 BM25 在这个小语料中非常强，fusion 的主要价值是证明架构、id 对齐、RRF 和评估口径都可靠；真正的生产收益需要后续用真实 embedding provider 和更大 golden set 复测。
+
+RRF 当前默认配置为 `k=60`、dense weight `0.2`、sparse weight `1.0`。这样做是因为 hash dense 路语义噪声较大，如果等权融合，dense 噪声可能拖累 BM25；下调 dense 权重后，fusion 可以稳定不低于 bm25-only，并保留未来接入真实语义 embedding 时的双路融合空间。
+
 ## 最小 RAG 管线
 
 当前的最小 RAG 管线包括四步：
@@ -182,4 +219,4 @@ T05 的核心不是“多接一个模型”，而是在 dense 召回之后增加
 
 ## 当前风险
 
-当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线和 rerank 漏斗。下一步建议回补索引构建/查询职责分离，或者继续进入混合检索和 RRF 融合；同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。
+当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线、rerank 漏斗和 hybrid 检索融合。下一步建议在两个方向中选择一个：工程化方向先回补索引构建/查询职责分离；检索质量方向继续做 parent-child 分块和上下文装填修复。同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。

@@ -75,6 +75,8 @@ class RerankTests(unittest.TestCase):
         rerank_report = evaluate_retriever(rerank_retrieve, examples, k_values=[3, 5, 10], metadata=rerank_metadata)
 
         self.assertGreater(rerank_report["metrics"]["3"]["mrr"], dense_report["metrics"]["3"]["mrr"])
+        self.assertEqual(rerank_report["metrics"]["3"]["mrr"], 1.0)
+        self.assertEqual(rerank_report["metrics"]["3"]["recall"], 1.0)
         self.assertGreater(
             rerank_report["by_capability"]["long_tail"]["3"]["mrr"],
             dense_report["by_capability"]["long_tail"]["3"]["mrr"],

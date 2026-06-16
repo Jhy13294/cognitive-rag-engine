@@ -22,6 +22,9 @@ def write_reports(report: Dict, report_dir: str, timestamp: str = None) -> Tuple
 
 def render_markdown_report(report: Dict) -> str:
     """Render a concise Markdown retrieval-evaluation report."""
+    if report.get("report_type") == "hybrid_comparison":
+        return render_hybrid_comparison_report(report)
+
     metadata = report.get("metadata", {})
     lines = [
         "# Retrieval Evaluation Report",
@@ -110,5 +113,70 @@ def render_markdown_report(report: Dict) -> str:
                     )
                 )
             lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_hybrid_comparison_report(report: Dict) -> str:
+    """Render the T06 dense/BM25/RRF comparison report."""
+    metadata = report.get("metadata", {})
+    comparison = report.get("comparison", {})
+    k_values = [str(k) for k in report.get("k_values", [])]
+    lines = [
+        "# Hybrid Retrieval Evaluation Report",
+        "",
+        "## Metadata",
+        "",
+        f"- reranker: `{metadata.get('reranker', None)}`",
+        f"- rrf_k: `{metadata.get('rrf_k', 'unknown')}`",
+        f"- hybrid_dense_weight: `{metadata.get('hybrid_dense_weight', 'unknown')}`",
+        f"- hybrid_sparse_weight: `{metadata.get('hybrid_sparse_weight', 'unknown')}`",
+        f"- bm25_k1: `{metadata.get('bm25_k1', 'unknown')}`",
+        f"- bm25_b: `{metadata.get('bm25_b', 'unknown')}`",
+        f"- hybrid_fetch_k: `{metadata.get('hybrid_fetch_k', 'unknown')}`",
+        f"- golden_count: `{metadata.get('golden_count', 'unknown')}`",
+        f"- golden_version: `{metadata.get('golden_version', 'unknown')}`",
+        f"- git_sha: `{metadata.get('git_sha', 'unknown')}`",
+        f"- evaluator_contract: `{metadata.get('evaluator_contract', 'retrieve(question, top_k)')}`",
+        "",
+        "## Overall Comparison",
+        "",
+        "| mode | k | MRR | hit_rate | recall | negative_false_recall_rate |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+
+    for mode, values in comparison.items():
+        for k in k_values:
+            metric = values.get("metrics", {}).get(k, {})
+            lines.append(
+                "| {mode} | {k} | {mrr:.6f} | {hit_rate:.6f} | {recall:.6f} | {neg_false:.6f} |".format(
+                    mode=mode,
+                    k=k,
+                    mrr=metric.get("mrr", 0.0),
+                    hit_rate=metric.get("hit_rate", 0.0),
+                    recall=metric.get("recall", 0.0),
+                    neg_false=metric.get("negative_false_recall_rate", 0.0),
+                )
+            )
+
+    lines.extend([
+        "",
+        "## Capability MRR",
+        "",
+        "| mode | k | exact_name MRR | long_tail MRR |",
+        "|---|---:|---:|---:|",
+    ])
+    for mode, values in comparison.items():
+        for k in k_values:
+            exact_name = values.get("exact_name", {}).get(k, {})
+            long_tail = values.get("long_tail", {}).get(k, {})
+            lines.append(
+                "| {mode} | {k} | {exact_mrr:.6f} | {long_mrr:.6f} |".format(
+                    mode=mode,
+                    k=k,
+                    exact_mrr=exact_name.get("mrr", 0.0),
+                    long_mrr=long_tail.get("mrr", 0.0),
+                )
+            )
 
     return "\n".join(lines).rstrip() + "\n"

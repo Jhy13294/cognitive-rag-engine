@@ -12,12 +12,14 @@ The current codebase focuses on the foundation:
 - Metadata-preserving text chunking for later vector indexing
 - Production embedding and vector-store adapters
 - Deterministic retrieval evaluation and optional reranking
+- Shared lexical retrieval primitives
+- Hybrid dense + BM25 retrieval with RRF fusion
 
 Caching, monitoring, API service, and permission control are planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: document ingestion foundation.
+Current milestone: evaluated retrieval funnel with rerank and hybrid retrieval.
 
 Implemented:
 
@@ -43,6 +45,10 @@ Implemented:
 - Deterministic retrieval evaluation with a JSONL golden set, HashEmbeddingProvider baseline, and JSON/Markdown reports
 - Reranker abstraction with deterministic offline reranker and Cohere neural reranker provider
 - Optional rerank insertion in `RAGPipeline.retrieve`: dense fetch, rerank, top-k selection, and dense fallback on failure
+- Shared `lexical/` core for tokenization, IDF, BM25, and deterministic lexical scoring
+- BM25 sparse retriever that emits the same `VectorRecord.id` values as dense retrieval
+- RRF fusion with configurable dense/sparse weights and stable tie-breaking
+- Hybrid comparison evaluation for dense-only, bm25-only, and fused retrieval with reranker disabled
 
 Not implemented yet:
 
@@ -87,6 +93,13 @@ Not implemented yet:
 │   ├── run.py                 # python -m eval.run entry point
 │   ├── fixtures/              # Evaluation knowledge-base fixtures
 │   └── reports/               # Generated evaluation reports
+├── lexical/
+│   ├── tokenizer.py           # Shared normalization and tokenization
+│   └── bm25.py                # IDF, BM25, and lexical scoring primitives
+├── hybrid/
+│   ├── models.py              # Ranked retrieval result model
+│   ├── bm25_retriever.py      # Sparse BM25 retriever over VectorRecord corpus
+│   └── rrf.py                 # Reciprocal Rank Fusion
 ├── rerank/
 │   ├── base.py                # Reranker interface and result models
 │   ├── deterministic.py       # Offline deterministic lexical reranker
@@ -101,6 +114,7 @@ Not implemented yet:
 │   ├── test_document_ingestion.py
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
+│   ├── test_hybrid.py
 │   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
@@ -137,6 +151,13 @@ RERANK_ENABLED=false
 RERANK_PROVIDER=deterministic
 RERANK_FETCH_K=30
 RERANK_TOP_N=5
+
+HYBRID_ENABLED=false
+HYBRID_DENSE_WEIGHT=0.2
+HYBRID_SPARSE_WEIGHT=1.0
+RRF_K=60
+BM25_K1=1.5
+BM25_B=0.75
 ```
 
 ## Usage
@@ -168,6 +189,10 @@ python rag_cli.py knowledge_base \
   --embedding-dimension 512 \
   --vector-store qdrant \
   --top-k 5 \
+  --hybrid \
+  --hybrid-fetch-k 30 \
+  --hybrid-dense-weight 0.2 \
+  --hybrid-sparse-weight 1.0 \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -289,6 +314,26 @@ reranker = DeterministicReranker(top_n=5, fetch_k=30)
 pipeline = RAGPipeline(provider, store, client, top_k=5, reranker=reranker, fetch_k=30)
 ```
 
+Run the pipeline with hybrid dense + BM25 retrieval:
+
+```python
+from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
+
+bm25 = BM25Retriever(vector_records)
+rrf = ReciprocalRankFusion(
+    RRFConfig(k=60, weights={"dense": 0.2, "sparse": 1.0})
+)
+pipeline = RAGPipeline(
+    provider,
+    store,
+    client,
+    top_k=5,
+    fetch_k=30,
+    bm25_retriever=bm25,
+    rrf=rrf,
+)
+```
+
 Run the test suite:
 
 ```bash
@@ -307,9 +352,17 @@ Run the deterministic rerank evaluation:
 python -m eval.run --rerank-provider deterministic --rerank-fetch-k 30 --rerank-top-n 10
 ```
 
+Run the hybrid comparison with reranker disabled:
+
+```bash
+python -m eval.run --compare-hybrid --hybrid-fetch-k 30
+```
+
 The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
 
 Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The latest rerank report is under `eval/reports/`.
+
+Current T06 hybrid comparison, with reranker disabled and `HashEmbeddingProvider`, reports dense-only MRR@3 `0.677083`, bm25-only MRR@3 `1.000000`, and fused MRR@3 `1.000000`. The fused route also lifts exact_name and long_tail MRR@3 to `1.000000` while preserving deterministic byte-stable reports. The latest T06 reports are under `eval/reports/`.
 
 ## Development Conventions
 
@@ -324,6 +377,6 @@ Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicRerank
 
 1. Add more ingestion edge-case fixtures.
 2. Split indexing and querying commands.
-3. Add hybrid retrieval and query rewrite experiments measured against the golden set.
+3. Add parent-child chunking and context packing improvements measured against the golden set.
 4. Add score thresholding or abstain logic for negative queries.
 5. Add caching, observability, and access-control features.
