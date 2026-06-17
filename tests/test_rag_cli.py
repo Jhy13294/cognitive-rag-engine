@@ -83,6 +83,20 @@ class RAGCLITests(unittest.TestCase):
                 "512",
                 "--tokenizer-encoding",
                 "cl100k_base",
+                "--multi-query",
+                "--query-rewrite-provider",
+                "deterministic",
+                "--query-rewrite-fixture",
+                "eval/fixtures/query_rewrites.jsonl",
+                "--query-rewrite-num-queries",
+                "3",
+                "--query-rewrite-temperature",
+                "0.1",
+                "--no-query-rewrite-cache",
+                "--query-rewrite-weight-original",
+                "1.0",
+                "--query-rewrite-weight-variant",
+                "0.7",
                 "--no-clean",
                 "--non-recursive",
             ]
@@ -116,6 +130,14 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(args.context_near_dup_threshold, 0.85)
         self.assertEqual(args.context_max_tokens, 512)
         self.assertEqual(args.tokenizer_encoding, "cl100k_base")
+        self.assertTrue(args.multi_query)
+        self.assertEqual(args.query_rewrite_provider, "deterministic")
+        self.assertEqual(args.query_rewrite_fixture, "eval/fixtures/query_rewrites.jsonl")
+        self.assertEqual(args.query_rewrite_num_queries, 3)
+        self.assertEqual(args.query_rewrite_temperature, 0.1)
+        self.assertTrue(args.no_query_rewrite_cache)
+        self.assertEqual(args.query_rewrite_weight_original, 1.0)
+        self.assertEqual(args.query_rewrite_weight_variant, 0.7)
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
@@ -252,6 +274,34 @@ class RAGCLITests(unittest.TestCase):
         self.assertTrue(pipeline.context_dedup_enabled)
         self.assertIsNotNone(pipeline.context_packer)
         self.assertEqual(pipeline.context_max_tokens, 512)
+
+    def test_explicit_multi_query_enables_query_rewriter(self):
+        pipeline = build_rag_pipeline_from_path(
+            str(FIXTURES_DIR),
+            chat_client=FakeChatClient(),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider_name="hash",
+            embedding_dimension=64,
+            vector_store_name="memory",
+            rerank_provider_name="none",
+            parent_child_enabled=False,
+            query_rewrite_enabled=True,
+            query_rewrite_provider_name="deterministic",
+            query_rewrite_fixture_path="eval/fixtures/query_rewrites.jsonl",
+            query_rewrite_num_queries=3,
+            query_rewrite_weight_original=1.0,
+            query_rewrite_weight_variant=0.7,
+            top_k=2,
+            max_context_chars=1000,
+        )
+
+        self.assertTrue(pipeline.query_rewrite_enabled)
+        self.assertIsNotNone(pipeline.query_rewriter)
+        self.assertEqual(pipeline.query_rewrite_weight_original, 1.0)
+        self.assertGreaterEqual(pipeline.query_rewrite_weight_original, pipeline.query_rewrite_weight_variant)
 
     def test_format_response_includes_answer_and_sources(self):
         chat_client = FakeChatClient()

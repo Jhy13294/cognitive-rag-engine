@@ -9,6 +9,7 @@ from embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
 from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
 from logger import setup_logger
 from parent_store import InMemoryParentStore
+from query_rewrite import create_query_rewriter
 from rag import RAGPipeline, RAGResponse
 from rerank import create_reranker
 from tokenization import validate_tokenizer_encoding
@@ -64,6 +65,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--context-near-dup-threshold", type=float, default=None, help="Near-duplicate threshold.")
     parser.add_argument("--context-max-tokens", type=int, default=None, help="Maximum context tokens when packing is enabled.")
     parser.add_argument("--tokenizer-encoding", default=None, help="Tokenizer encoding for token budgets.")
+    parser.add_argument("--multi-query", action="store_true", help="Enable query rewrite and multi-query RRF.")
+    parser.add_argument(
+        "--query-rewrite-provider",
+        choices=["deterministic", "chat"],
+        default=None,
+        help="Query rewrite provider. Defaults to QUERY_REWRITE_PROVIDER.",
+    )
+    parser.add_argument("--query-rewrite-fixture", default=None, help="Deterministic query rewrite fixture path.")
+    parser.add_argument("--query-rewrite-num-queries", type=int, default=None, help="Total query variants including original.")
+    parser.add_argument("--query-rewrite-temperature", type=float, default=None, help="Chat query rewrite temperature.")
+    parser.add_argument("--no-query-rewrite-cache", action="store_true", help="Disable query rewrite cache.")
+    parser.add_argument("--query-rewrite-weight-original", type=float, default=None, help="Original query RRF weight.")
+    parser.add_argument("--query-rewrite-weight-variant", type=float, default=None, help="Rewritten query RRF weight.")
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
@@ -86,6 +100,30 @@ def parse_metadata_filter(raw_filter: Optional[str]) -> Optional[Dict]:
         raise ValueError("metadata_filter must be a JSON object")
 
     return metadata_filter
+
+
+def validate_query_rewrite_values(
+    provider: str,
+    num_queries: int,
+    temperature: float,
+    weight_original: float,
+    weight_variant: float,
+) -> None:
+    """Validate query rewrite values selected by CLI and config."""
+    if provider not in {"deterministic", "chat"}:
+        raise ValueError(f"Unsupported query rewrite provider: {provider}")
+    if num_queries < 1:
+        raise ValueError("QUERY_REWRITE_NUM_QUERIES must be greater than or equal to 1.")
+    if temperature < 0:
+        raise ValueError("QUERY_REWRITE_TEMPERATURE must be non-negative.")
+    if weight_original < 0:
+        raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be non-negative.")
+    if weight_variant < 0:
+        raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
+    if weight_original < weight_variant:
+        raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+    if weight_original + weight_variant <= 0:
+        raise ValueError("At least one query rewrite weight must be greater than 0.")
 
 
 def build_rag_pipeline_from_path(
@@ -118,6 +156,14 @@ def build_rag_pipeline_from_path(
     context_near_dup_threshold: Optional[float] = None,
     context_max_tokens: Optional[int] = None,
     tokenizer_encoding: Optional[str] = None,
+    query_rewrite_enabled: Optional[bool] = None,
+    query_rewrite_provider_name: Optional[str] = None,
+    query_rewrite_fixture_path: Optional[str] = None,
+    query_rewrite_num_queries: Optional[int] = None,
+    query_rewrite_temperature: Optional[float] = None,
+    query_rewrite_cache_enabled: Optional[bool] = None,
+    query_rewrite_weight_original: Optional[float] = None,
+    query_rewrite_weight_variant: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
@@ -138,6 +184,30 @@ def build_rag_pipeline_from_path(
     )
     selected_context_max_tokens = context_max_tokens if context_max_tokens is not None else Config.CONTEXT_MAX_TOKENS
     selected_tokenizer_encoding = tokenizer_encoding or Config.TOKENIZER_ENCODING
+    use_query_rewrite = Config.QUERY_REWRITE_ENABLED if query_rewrite_enabled is None else query_rewrite_enabled
+    selected_query_rewrite_provider = query_rewrite_provider_name or Config.QUERY_REWRITE_PROVIDER
+    selected_query_rewrite_fixture = query_rewrite_fixture_path or Config.QUERY_REWRITE_FIXTURE_PATH
+    selected_query_rewrite_num_queries = (
+        query_rewrite_num_queries if query_rewrite_num_queries is not None else Config.QUERY_REWRITE_NUM_QUERIES
+    )
+    selected_query_rewrite_temperature = (
+        query_rewrite_temperature if query_rewrite_temperature is not None else Config.QUERY_REWRITE_TEMPERATURE
+    )
+    selected_query_rewrite_cache_enabled = (
+        query_rewrite_cache_enabled
+        if query_rewrite_cache_enabled is not None
+        else Config.QUERY_REWRITE_CACHE_ENABLED
+    )
+    selected_query_rewrite_weight_original = (
+        query_rewrite_weight_original
+        if query_rewrite_weight_original is not None
+        else Config.QUERY_REWRITE_WEIGHT_ORIGINAL
+    )
+    selected_query_rewrite_weight_variant = (
+        query_rewrite_weight_variant
+        if query_rewrite_weight_variant is not None
+        else Config.QUERY_REWRITE_WEIGHT_VARIANT
+    )
     parent_store = None
 
     if use_context_packing or use_context_dedup or use_context_near_dup:
@@ -146,6 +216,15 @@ def build_rag_pipeline_from_path(
         if selected_context_max_tokens <= 0:
             raise ValueError("CONTEXT_MAX_TOKENS must be greater than 0.")
         validate_tokenizer_encoding(selected_tokenizer_encoding)
+
+    if use_query_rewrite:
+        validate_query_rewrite_values(
+            provider=selected_query_rewrite_provider,
+            num_queries=selected_query_rewrite_num_queries,
+            temperature=selected_query_rewrite_temperature,
+            weight_original=selected_query_rewrite_weight_original,
+            weight_variant=selected_query_rewrite_weight_variant,
+        )
 
     if use_parent_child:
         Config.validate_parent_child()
@@ -231,8 +310,20 @@ def build_rag_pipeline_from_path(
         Config.validate()
         chat_client = APIClient(Config.API_KEY, Config.API_URL)
 
+    query_rewriter = create_query_rewriter(
+        provider_name=selected_query_rewrite_provider,
+        enabled=use_query_rewrite,
+        num_queries=selected_query_rewrite_num_queries,
+        temperature=selected_query_rewrite_temperature,
+        cache_enabled=selected_query_rewrite_cache_enabled,
+        weight_original=selected_query_rewrite_weight_original,
+        weight_variant=selected_query_rewrite_weight_variant,
+        fixture_path=selected_query_rewrite_fixture,
+        chat_client=chat_client,
+    )
+
     logger.info(
-        "RAG pipeline ready | chunks=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s | context_packing=%s | context_dedup=%s",
+        "RAG pipeline ready | chunks=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s | context_packing=%s | context_dedup=%s | query_rewrite=%s",
         len(chunks),
         parent_store.count() if parent_store is not None else 0,
         embedding_provider.model_name,
@@ -243,6 +334,7 @@ def build_rag_pipeline_from_path(
         use_parent_child,
         use_context_packing,
         use_context_dedup,
+        use_query_rewrite,
     )
     return RAGPipeline(
         embedding_provider=embedding_provider,
@@ -261,6 +353,11 @@ def build_rag_pipeline_from_path(
         context_near_dup_threshold=selected_context_threshold,
         context_max_tokens=selected_context_max_tokens if use_context_packing else None,
         tokenizer_encoding=selected_tokenizer_encoding,
+        query_rewriter=query_rewriter,
+        query_rewrite_enabled=use_query_rewrite,
+        query_rewrite_num_queries=selected_query_rewrite_num_queries,
+        query_rewrite_weight_original=selected_query_rewrite_weight_original,
+        query_rewrite_weight_variant=selected_query_rewrite_weight_variant,
     )
 
 
@@ -383,6 +480,14 @@ def main(argv=None) -> int:
             context_near_dup_threshold=args.context_near_dup_threshold,
             context_max_tokens=args.context_max_tokens,
             tokenizer_encoding=args.tokenizer_encoding,
+            query_rewrite_enabled=True if args.multi_query else None,
+            query_rewrite_provider_name=args.query_rewrite_provider,
+            query_rewrite_fixture_path=args.query_rewrite_fixture,
+            query_rewrite_num_queries=args.query_rewrite_num_queries,
+            query_rewrite_temperature=args.query_rewrite_temperature,
+            query_rewrite_cache_enabled=False if args.no_query_rewrite_cache else None,
+            query_rewrite_weight_original=args.query_rewrite_weight_original,
+            query_rewrite_weight_variant=args.query_rewrite_weight_variant,
             top_k=args.top_k,
             max_context_chars=args.max_context_chars,
         )

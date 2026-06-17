@@ -94,6 +94,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rerank-fetch-k", type=int, default=30, help="Dense candidate count before rerank.")
     parser.add_argument("--rerank-top-n", type=int, default=5, help="Default number of reranked candidates.")
+    parser.add_argument("--multi-query", action="store_true", help="Enable deterministic query rewrite and multi-query RRF.")
+    parser.add_argument(
+        "--query-rewrite-provider",
+        choices=["deterministic", "chat"],
+        default=Config.QUERY_REWRITE_PROVIDER,
+        help="Query rewrite provider for multi-query evaluation.",
+    )
+    parser.add_argument(
+        "--query-rewrite-fixture",
+        default=Config.QUERY_REWRITE_FIXTURE_PATH,
+        help="JSONL fixture path for deterministic query rewrites.",
+    )
+    parser.add_argument(
+        "--query-rewrite-num-queries",
+        type=int,
+        default=Config.QUERY_REWRITE_NUM_QUERIES,
+        help="Total query variants including the original query.",
+    )
+    parser.add_argument(
+        "--query-rewrite-temperature",
+        type=float,
+        default=Config.QUERY_REWRITE_TEMPERATURE,
+        help="Chat query rewrite temperature for production-like runs.",
+    )
+    parser.add_argument(
+        "--no-query-rewrite-cache",
+        action="store_true",
+        help="Disable query rewrite cache for this evaluation run.",
+    )
+    parser.add_argument(
+        "--query-rewrite-weight-original",
+        type=float,
+        default=Config.QUERY_REWRITE_WEIGHT_ORIGINAL,
+        help="Cross-query RRF weight for the original query path.",
+    )
+    parser.add_argument(
+        "--query-rewrite-weight-variant",
+        type=float,
+        default=Config.QUERY_REWRITE_WEIGHT_VARIANT,
+        help="Cross-query RRF weight for rewritten query paths.",
+    )
     parser.add_argument("--fail-under-hit-rate", type=float, default=None, help="Fail if any hit_rate@k is below this value.")
     parser.add_argument("--no-write-report", action="store_true", help="Print only; do not write report files.")
     parser.add_argument("--quiet", action="store_true", help="Do not print the Markdown report.")
@@ -108,6 +149,8 @@ def main(argv: List[str] = None) -> int:
     if expanded_parent_scoring_requested(args):
         print(PARENT_EXPANSION_SCORING_ERROR, file=sys.stderr)
         return 2
+    if args.multi_query:
+        validate_query_rewrite_args(args)
 
     examples = load_golden_set(args.golden_set)
     if args.compare_hybrid:
@@ -147,6 +190,14 @@ def main(argv: List[str] = None) -> int:
         parent_chunk_overlap=args.parent_chunk_overlap,
         child_chunk_size=args.child_chunk_size,
         child_chunk_overlap=args.child_chunk_overlap,
+        query_rewrite_enabled=args.multi_query,
+        query_rewrite_provider=args.query_rewrite_provider,
+        query_rewrite_fixture_path=args.query_rewrite_fixture,
+        query_rewrite_num_queries=args.query_rewrite_num_queries,
+        query_rewrite_temperature=args.query_rewrite_temperature,
+        query_rewrite_cache_enabled=not args.no_query_rewrite_cache,
+        query_rewrite_weight_original=args.query_rewrite_weight_original,
+        query_rewrite_weight_variant=args.query_rewrite_weight_variant,
     )
 
     metadata = {
@@ -159,6 +210,8 @@ def main(argv: List[str] = None) -> int:
         "match_scope": args.match_scope,
         "evaluator_contract": "retrieve(question, top_k)",
     }
+    if args.multi_query:
+        metadata.update(query_rewrite_metadata(args))
     report = evaluate_retriever(
         retrieve=retrieve,
         examples=examples,
@@ -192,6 +245,38 @@ def expanded_parent_scoring_requested(args) -> bool:
     return bool(args.parent_child and args.expand_parents and not args.no_parent_expand)
 
 
+def validate_query_rewrite_args(args) -> None:
+    """Validate query rewrite CLI arguments."""
+    if args.query_rewrite_provider not in {"deterministic", "chat"}:
+        raise ValueError(f"Unsupported query rewrite provider: {args.query_rewrite_provider}")
+    if args.query_rewrite_num_queries < 1:
+        raise ValueError("QUERY_REWRITE_NUM_QUERIES must be greater than or equal to 1.")
+    if args.query_rewrite_temperature < 0:
+        raise ValueError("QUERY_REWRITE_TEMPERATURE must be non-negative.")
+    if args.query_rewrite_weight_original < 0:
+        raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be non-negative.")
+    if args.query_rewrite_weight_variant < 0:
+        raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
+    if args.query_rewrite_weight_original < args.query_rewrite_weight_variant:
+        raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+    if args.query_rewrite_weight_original + args.query_rewrite_weight_variant <= 0:
+        raise ValueError("At least one query rewrite weight must be greater than 0.")
+
+
+def query_rewrite_metadata(args) -> Dict:
+    """Return query rewrite metadata for reports."""
+    return {
+        "query_rewrite_enabled": True,
+        "query_rewrite_provider": args.query_rewrite_provider,
+        "query_rewrite_fixture_path": args.query_rewrite_fixture,
+        "query_rewrite_num_queries": args.query_rewrite_num_queries,
+        "query_rewrite_temperature": args.query_rewrite_temperature,
+        "query_rewrite_cache_enabled": not args.no_query_rewrite_cache,
+        "query_rewrite_weight_original": args.query_rewrite_weight_original,
+        "query_rewrite_weight_variant": args.query_rewrite_weight_variant,
+    }
+
+
 def build_hybrid_comparison_report(args, examples) -> Dict:
     """Build dense-only, bm25-only, and fused reports with reranker disabled."""
     modes = [
@@ -222,6 +307,14 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
             parent_chunk_overlap=args.parent_chunk_overlap,
             child_chunk_size=args.child_chunk_size,
             child_chunk_overlap=args.child_chunk_overlap,
+            query_rewrite_enabled=args.multi_query,
+            query_rewrite_provider=args.query_rewrite_provider,
+            query_rewrite_fixture_path=args.query_rewrite_fixture,
+            query_rewrite_num_queries=args.query_rewrite_num_queries,
+            query_rewrite_temperature=args.query_rewrite_temperature,
+            query_rewrite_cache_enabled=not args.no_query_rewrite_cache,
+            query_rewrite_weight_original=args.query_rewrite_weight_original,
+            query_rewrite_weight_variant=args.query_rewrite_weight_variant,
         )
         reports[label] = evaluate_retriever(
             retrieve=retrieve,
@@ -248,6 +341,8 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
         "hybrid_fetch_k": args.hybrid_fetch_k,
         "evaluator_contract": "retrieve(question, top_k)",
     }
+    if args.multi_query:
+        metadata.update(query_rewrite_metadata(args))
     if args.parent_child:
         metadata.update(
             {
@@ -283,7 +378,7 @@ def summarize_comparison(reports: Dict[str, Dict]) -> Dict:
 
 def base_metadata(args, examples) -> Dict:
     """Return metadata shared by single and comparison reports."""
-    return {
+    metadata = {
         "golden_path": args.golden_set,
         "golden_count": len(examples),
         "golden_version": file_sha256(args.golden_set),
@@ -292,6 +387,9 @@ def base_metadata(args, examples) -> Dict:
         "match_scope": args.match_scope,
         "evaluator_contract": "retrieve(question, top_k)",
     }
+    if args.multi_query:
+        metadata.update(query_rewrite_metadata(args))
+    return metadata
 
 
 def single_report_fetch_k(args, has_reranker: bool) -> Optional[int]:

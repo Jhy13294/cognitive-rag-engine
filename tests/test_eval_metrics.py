@@ -280,6 +280,69 @@ class RetrievalEvaluationTests(unittest.TestCase):
 
         self.assertEqual(run_report_json(), run_report_json())
 
+    def test_multi_query_report_is_reproducible(self):
+        def run_report_json():
+            with tempfile.TemporaryDirectory() as temp_dir:
+                eval_main(
+                    [
+                        "--golden-set",
+                        "eval/golden_set.jsonl",
+                        "--knowledge-path",
+                        "eval/fixtures/knowledge_base",
+                        "--report-dir",
+                        temp_dir,
+                        "--multi-query",
+                        "--quiet",
+                    ]
+                )
+                json_path = next(Path(temp_dir).glob("*.json"))
+                return json_path.read_text(encoding="utf-8")
+
+        self.assertEqual(run_report_json(), run_report_json())
+
+    def test_multi_query_capability_guardrails(self):
+        examples = load_golden_set("eval/golden_set.jsonl")
+        single_retrieve, single_metadata = build_hash_retriever(
+            "eval/fixtures/knowledge_base",
+            chunk_size=500,
+            chunk_overlap=80,
+            embedding_dimension=64,
+        )
+        multi_retrieve, multi_metadata = build_hash_retriever(
+            "eval/fixtures/knowledge_base",
+            chunk_size=500,
+            chunk_overlap=80,
+            embedding_dimension=64,
+            query_rewrite_enabled=True,
+            query_rewrite_provider="deterministic",
+            query_rewrite_fixture_path="eval/fixtures/query_rewrites.jsonl",
+            query_rewrite_num_queries=3,
+            query_rewrite_weight_original=1.0,
+            query_rewrite_weight_variant=0.7,
+        )
+
+        single_report = evaluate_retriever(single_retrieve, examples, k_values=[3], metadata=single_metadata)
+        multi_report = evaluate_retriever(multi_retrieve, examples, k_values=[3], metadata=multi_metadata)
+
+        single_capability = single_report["by_capability"]
+        multi_capability = multi_report["by_capability"]
+        self.assertGreaterEqual(
+            multi_capability["long_tail"]["3"]["recall"],
+            single_capability["long_tail"]["3"]["recall"],
+        )
+        self.assertGreaterEqual(
+            multi_capability["paraphrase"]["3"]["recall"],
+            single_capability["paraphrase"]["3"]["recall"],
+        )
+        self.assertGreaterEqual(
+            multi_capability["exact_name"]["3"]["recall"],
+            single_capability["exact_name"]["3"]["recall"],
+        )
+        self.assertLessEqual(
+            multi_capability["negative"]["3"]["negative_false_recall_rate"],
+            single_capability["negative"]["3"]["negative_false_recall_rate"],
+        )
+
     def test_eval_run_report_contains_relevant_list_schema(self):
         examples = load_golden_set("eval/golden_set.jsonl")
         report = evaluate_retriever(

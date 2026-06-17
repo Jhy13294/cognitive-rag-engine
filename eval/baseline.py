@@ -1,13 +1,17 @@
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
 from embeddings import HashEmbeddingProvider
 from hybrid import BM25Retriever, RRFConfig, RankedRecord, ReciprocalRankFusion
+from logger import setup_logger
 from parent_store import InMemoryParentStore
+from query_rewrite import create_query_rewriter, normalize_query_variants
 from rag import RAGPipeline, RetrievedSource
 from rerank import Reranker
 from vector_store import InMemoryVectorStore
 from vector_store.base import embedded_document_to_record
+
+logger = setup_logger(__name__)
 
 
 def build_hash_retriever(
@@ -29,6 +33,14 @@ def build_hash_retriever(
     parent_chunk_overlap: int = 200,
     child_chunk_size: int = 400,
     child_chunk_overlap: int = 80,
+    query_rewrite_enabled: bool = False,
+    query_rewrite_provider: str = "deterministic",
+    query_rewrite_fixture_path: str = "eval/fixtures/query_rewrites.jsonl",
+    query_rewrite_num_queries: int = 3,
+    query_rewrite_temperature: float = 0.1,
+    query_rewrite_cache_enabled: bool = True,
+    query_rewrite_weight_original: float = 1.0,
+    query_rewrite_weight_variant: float = 0.7,
 ) -> Tuple[Callable[[str, int], List[RetrievedSource]], Dict]:
     """Build a deterministic offline retriever for evaluation baselines.
 
@@ -86,6 +98,17 @@ def build_hash_retriever(
             )
         )
 
+    query_rewriter = create_query_rewriter(
+        provider_name=query_rewrite_provider,
+        enabled=query_rewrite_enabled,
+        num_queries=query_rewrite_num_queries,
+        temperature=query_rewrite_temperature,
+        cache_enabled=query_rewrite_cache_enabled,
+        weight_original=query_rewrite_weight_original,
+        weight_variant=query_rewrite_weight_variant,
+        fixture_path=query_rewrite_fixture_path,
+    )
+
     pipeline = RAGPipeline(
         embedding_provider=embedding_provider,
         vector_store=vector_store,
@@ -96,10 +119,28 @@ def build_hash_retriever(
         rrf=rrf,
         parent_store=parent_store,
         expand_parent_context=expand_parent_context,
+        query_rewriter=query_rewriter,
+        query_rewrite_enabled=query_rewrite_enabled,
+        query_rewrite_num_queries=query_rewrite_num_queries,
+        query_rewrite_weight_original=query_rewrite_weight_original,
+        query_rewrite_weight_variant=query_rewrite_weight_variant,
     )
 
     def retrieve(question: str, top_k: int) -> List[RetrievedSource]:
         if normalized_mode == "bm25":
+            if query_rewriter is not None:
+                multi_query_sources = retrieve_bm25_multi_query(
+                    question=question,
+                    top_k=top_k,
+                    bm25_retriever=bm25_retriever,
+                    query_rewriter=query_rewriter,
+                    num_queries=query_rewrite_num_queries,
+                    rrf_k=rrf_k,
+                    weight_original=query_rewrite_weight_original,
+                    weight_variant=query_rewrite_weight_variant,
+                )
+                if multi_query_sources is not None:
+                    return multi_query_sources
             return ranked_records_to_sources(bm25_retriever.retrieve(question, top_k=top_k))
         return pipeline.retrieve(question, top_k=top_k)
 
@@ -123,6 +164,19 @@ def build_hash_retriever(
         "chunk_count": len(chunks),
         "record_count": len(vector_records),
     }
+    if query_rewrite_enabled:
+        metadata.update(
+            {
+                "query_rewrite_enabled": True,
+                "query_rewrite_provider": query_rewrite_provider,
+                "query_rewrite_fixture_path": query_rewrite_fixture_path,
+                "query_rewrite_num_queries": query_rewrite_num_queries,
+                "query_rewrite_temperature": query_rewrite_temperature,
+                "query_rewrite_cache_enabled": query_rewrite_cache_enabled,
+                "query_rewrite_weight_original": query_rewrite_weight_original,
+                "query_rewrite_weight_variant": query_rewrite_weight_variant,
+            }
+        )
     if parent_child_enabled:
         metadata.update(
             {
@@ -136,6 +190,43 @@ def build_hash_retriever(
             }
         )
     return retrieve, metadata
+
+
+def retrieve_bm25_multi_query(
+    question: str,
+    top_k: int,
+    bm25_retriever: BM25Retriever,
+    query_rewriter,
+    num_queries: int,
+    rrf_k: int,
+    weight_original: float,
+    weight_variant: float,
+) -> Optional[List[RetrievedSource]]:
+    """Run multi-query retrieval for a BM25-only evaluation path."""
+    try:
+        variants = normalize_query_variants(question, query_rewriter.rewrite(question), num_queries)
+    except Exception as e:
+        logger.warning("BM25 query rewrite failed; falling back to single query | error=%s", e)
+        return None
+
+    if len(variants) <= 1:
+        return None
+
+    ranked_lists = {}
+    for index, variant in enumerate(variants):
+        ranked_lists[f"q{index}"] = bm25_retriever.retrieve(variant, top_k=top_k)
+
+    weights = {"q0": weight_original}
+    for index in range(1, len(variants)):
+        weights[f"q{index}"] = weight_variant
+
+    fused_records = ReciprocalRankFusion(RRFConfig(k=rrf_k, weights=weights)).fuse(ranked_lists, top_k=top_k)
+    sources = ranked_records_to_sources(fused_records)
+    for source in sources:
+        source.metadata["query_rewrite_enabled"] = True
+        source.metadata["query_rewrite_variants"] = list(variants)
+        source.metadata["query_rewrite_weights"] = dict(weights)
+    return sources
 
 
 def ranked_records_to_sources(records: List[RankedRecord]) -> List[RetrievedSource]:

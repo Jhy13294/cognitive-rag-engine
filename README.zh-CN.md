@@ -16,6 +16,7 @@
 - Dense + BM25 混合检索和 RRF 融合
 - Parent-Child 分块：子块检索、父块展开供给生成
 - 可选上下文装填：整块纳入、确定性去重、引用连号和 token 预算
+- Query Rewrite / Multi-Query：确定性改写 fixture 与跨 query RRF 融合
 
 缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
 
@@ -57,6 +58,8 @@
 - `RAGPipeline.retrieve` 支持 top-k 之后展开父块，并按父块折叠兄弟子块
 - `ContextPacker` 只接入 build_prompt/answer 路径，支持整块装填、精确去重、可选近重复去重、引用连号和 token 预算
 - OpenAI embedding batch 切分改为使用 TokenCounter，不再依赖旧的 `len/4` 估算
+- QueryRewriter 抽象层：支持确定性 fixture 改写器和生产 Chat 改写器
+- `RAGPipeline.retrieve` 支持 Multi-Query：原始 query + 改写变体，多路检索后用 RRF 融合，再进入既有 rerank、父块展开和上下文装填
 
 尚未完成：
 
@@ -100,6 +103,7 @@
 │   └── counter.py             # TokenCounter、tiktoken 计数器和离线兜底
 ├── eval/
 │   ├── golden_set.jsonl       # 使用 relevant 列表标注的检索 golden set
+│   ├── fixtures/query_rewrites.jsonl # 确定性 query rewrite fixture
 │   ├── baseline.py            # HashEmbeddingProvider 确定性基线
 │   ├── metrics.py             # hit_rate、MRR、recall、negative 指标
 │   ├── reporting.py           # JSON 和 Markdown 报告
@@ -118,6 +122,11 @@
 │   ├── deterministic.py       # 离线确定性词法重排器
 │   ├── cohere_provider.py     # 带重试的 Cohere Rerank Provider
 │   └── factory.py             # Reranker 工厂
+├── query_rewrite/
+│   ├── base.py                # Query rewrite 接口和配置
+│   ├── deterministic.py       # 离线 fixture 改写器
+│   ├── chat.py                # 生产 Chat 改写器
+│   └── factory.py             # Query rewriter 工厂
 ├── rag/
 │   ├── context_packing.py     # top-k 后的上下文装填
 │   └── pipeline.py            # 最小 RAG 管线
@@ -188,6 +197,15 @@ CONTEXT_NEAR_DUP_ENABLED=false
 CONTEXT_NEAR_DUP_THRESHOLD=0.9
 CONTEXT_MAX_TOKENS=2048
 TOKENIZER_ENCODING=cl100k_base
+
+QUERY_REWRITE_ENABLED=false
+QUERY_REWRITE_PROVIDER=deterministic
+QUERY_REWRITE_FIXTURE_PATH=eval/fixtures/query_rewrites.jsonl
+QUERY_REWRITE_NUM_QUERIES=3
+QUERY_REWRITE_TEMPERATURE=0.1
+QUERY_REWRITE_CACHE_ENABLED=true
+QUERY_REWRITE_WEIGHT_ORIGINAL=1.0
+QUERY_REWRITE_WEIGHT_VARIANT=0.7
 ```
 
 ## 使用
@@ -229,6 +247,8 @@ python rag_cli.py knowledge_base \
   --context-packing \
   --context-dedup \
   --context-max-tokens 2048 \
+  --multi-query \
+  --query-rewrite-provider deterministic \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -449,6 +469,12 @@ python -m eval.run --compare-hybrid --hybrid-fetch-k 30
 python -m eval.run --parent-child
 ```
 
+运行确定性 Multi-Query 检索评估：
+
+```bash
+python -m eval.run --multi-query
+```
+
 评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
 
 当前 T05 重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
@@ -458,6 +484,8 @@ python -m eval.run --parent-child
 当前 T07 Parent-Child 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。生成侧连贯性和 Context Precision 的真账留到 T14 Ragas。
 
 当前 T08 上下文装填只属于生成输入组装，不进入 `retrieve()`，不能被拿来声明 MRR 或 recall 提升。所有 context flag 关闭时，旧的字符制 `_build_context` 路径保持兼容；显式开启后，ContextPacker 会整块纳入或跳过，引用重新连号，精确重复默认由开关控制，可选近重复去重由独立 flag 守卫，并使用 TokenCounter 计算 token 预算。tiktoken 是可选依赖，缺失时自动使用确定性启发式兜底。对中文文本，真实 token 计数可能让 batch 变多、变小但合法；收益是避免超限请求，而不是“批数下降”。生成质量和连贯性结论仍延后到 T14 Ragas。
+
+当前 T09 Multi-Query 是检索侧改动，因此 hit_rate、MRR、recall 是合法测量面。确定性 fixture 保证原始 query 始终作为 `q0`，只给 paraphrase 和 long_tail 样本增加冻结改写变体，多路检索后复用既有 RRF 融合，再进入既有 rerank、父块展开和上下文装填。离线 HashEmbeddingProvider 基线下，`python -m eval.run --multi-query` 将 paraphrase recall@3 从 `0.800000` 提升到 `1.000000`，long_tail recall@3 保持 `0.900000`，long_tail MRR@3 从 `0.566667` 提升到 `0.900000`。4 条 negative query 没有 fixture 改写，因此 multi-query 对它们整段旁路，结果与单路基线逐字节一致；multi-query 在 negative 上触发的风险没有被离线门禁覆盖，后续交给 roadmap 中的阈值 / abstain 工作处理。这些确定性 fixture 涨幅只是“给定已知优质改写时，RRF 融合管线能带来目标 paraphrase/long_tail 收益”的机制受控演示。线上 LLM 改写可能高于也可能低于这组数字，query drift 甚至可能跌破单路；这不是生产保底。
 
 ## 代码规范
 
@@ -473,5 +501,4 @@ python -m eval.run --parent-child
 1. 增加更多文档入库边界样例。
 2. 拆分索引构建和查询命令。
 3. 增加分数阈值或拒答逻辑，改善 negative query。
-4. 进入 Query Rewrite / Multi-Query。
-5. 增加缓存、可观测性和权限控制。
+4. 增加缓存、可观测性和权限控制。

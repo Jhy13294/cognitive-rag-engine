@@ -2,9 +2,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol, Tuple
 
 from embeddings import EmbeddingProvider
-from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion
+from hybrid import BM25Retriever, RRFConfig, RankedRecord, ReciprocalRankFusion
 from logger import setup_logger
 from parent_store import ParentStore
+from query_rewrite import QueryRewriter, normalize_query_variants
 from rerank import Reranker
 from tokenization import TokenCounter, create_token_counter
 from vector_store import SearchResult, VectorStore
@@ -74,6 +75,11 @@ class RAGPipeline:
         context_max_tokens: Optional[int] = None,
         tokenizer_encoding: str = "cl100k_base",
         token_counter: Optional[TokenCounter] = None,
+        query_rewriter: Optional[QueryRewriter] = None,
+        query_rewrite_enabled: bool = False,
+        query_rewrite_num_queries: int = 3,
+        query_rewrite_weight_original: float = 1.0,
+        query_rewrite_weight_variant: float = 0.7,
     ):
         """Initialize the RAG pipeline."""
         if top_k <= 0:
@@ -82,6 +88,14 @@ class RAGPipeline:
             raise ValueError("max_context_chars must be greater than 0")
         if fetch_k is not None and fetch_k <= 0:
             raise ValueError("fetch_k must be greater than 0")
+        if query_rewrite_num_queries < 1:
+            raise ValueError("query_rewrite_num_queries must be greater than or equal to 1")
+        if query_rewrite_enabled and query_rewriter is None:
+            raise ValueError("query_rewriter is required when query_rewrite_enabled is true")
+        if query_rewrite_weight_original < 0 or query_rewrite_weight_variant < 0:
+            raise ValueError("query rewrite weights must be non-negative")
+        if query_rewrite_weight_original < query_rewrite_weight_variant:
+            raise ValueError("query_rewrite_weight_original must be greater than or equal to query_rewrite_weight_variant")
 
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
@@ -103,6 +117,11 @@ class RAGPipeline:
         self.tokenizer_encoding = tokenizer_encoding
         self.token_counter = token_counter
         self.context_packer = None
+        self.query_rewriter = query_rewriter
+        self.query_rewrite_enabled = query_rewrite_enabled
+        self.query_rewrite_num_queries = query_rewrite_num_queries
+        self.query_rewrite_weight_original = query_rewrite_weight_original
+        self.query_rewrite_weight_variant = query_rewrite_weight_variant
 
         if self.context_packing_enabled:
             self.token_counter = token_counter or create_token_counter(tokenizer_encoding)
@@ -124,47 +143,162 @@ class RAGPipeline:
     ) -> List[RetrievedSource]:
         """Retrieve source chunks for a question."""
         requested_top_k = top_k or self.top_k
+        if self.query_rewrite_enabled:
+            multi_query_sources = self._try_multi_query_retrieve(
+                question=question,
+                requested_top_k=requested_top_k,
+                metadata_filter=metadata_filter,
+            )
+            if multi_query_sources is not None:
+                return multi_query_sources
+
+        return self._retrieve_single_query(
+            question=question,
+            requested_top_k=requested_top_k,
+            metadata_filter=metadata_filter,
+        )
+
+    def _retrieve_single_query(
+        self,
+        question: str,
+        requested_top_k: int,
+        metadata_filter: Optional[Dict] = None,
+    ) -> List[RetrievedSource]:
+        """Run the pre-T09 single-query retrieval path."""
+        sources = self._retrieve_single_query_candidates(
+            question=question,
+            requested_top_k=requested_top_k,
+            metadata_filter=metadata_filter,
+        )
+        fallback_label = "hybrid" if self.bm25_retriever is not None else "dense"
+        return self._rerank_or_finalize(
+            question=question,
+            sources=sources,
+            requested_top_k=requested_top_k,
+            fallback_label=fallback_label,
+        )
+
+    def _retrieve_single_query_candidates(
+        self,
+        question: str,
+        requested_top_k: int,
+        metadata_filter: Optional[Dict] = None,
+    ) -> List[RetrievedSource]:
+        """Return dense or hybrid candidates before rerank and parent expansion."""
         query_embedding = self.embedding_provider.embed_text(question)
 
         if self.bm25_retriever is not None:
-            sources = self._hybrid_retrieve(
+            return self._hybrid_retrieve(
                 question=question,
                 query_embedding=query_embedding,
                 requested_top_k=requested_top_k,
                 metadata_filter=metadata_filter,
             )
-            if self.reranker is None:
-                return self._finalize_sources(sources[:requested_top_k])
-
-            try:
-                return self._finalize_sources(self._rerank_sources(question, sources, requested_top_k))
-            except Exception as e:
-                logger.warning(
-                    "Rerank failed; falling back to hybrid order | error=%s | requested_top_k=%s",
-                    e,
-                    requested_top_k,
-                )
-                return self._finalize_sources(sources[:requested_top_k])
 
         search_results = self.vector_store.similarity_search(
             query_embedding,
             top_k=self._search_top_k(requested_top_k),
             metadata_filter=metadata_filter,
         )
-        sources = self._to_sources(search_results)
+        return self._to_sources(search_results)
 
+    def _rerank_or_finalize(
+        self,
+        question: str,
+        sources: List[RetrievedSource],
+        requested_top_k: int,
+        fallback_label: str,
+    ) -> List[RetrievedSource]:
+        """Apply rerank when configured, then parent expansion."""
         if self.reranker is None:
-            return self._finalize_sources(sources)
+            return self._finalize_sources(sources[:requested_top_k])
 
         try:
             return self._finalize_sources(self._rerank_sources(question, sources, requested_top_k))
         except Exception as e:
             logger.warning(
-                "Rerank failed; falling back to dense order | error=%s | requested_top_k=%s",
+                "Rerank failed; falling back to %s order | error=%s | requested_top_k=%s",
+                fallback_label,
                 e,
                 requested_top_k,
             )
             return self._finalize_sources(sources[:requested_top_k])
+
+    def _try_multi_query_retrieve(
+        self,
+        question: str,
+        requested_top_k: int,
+        metadata_filter: Optional[Dict] = None,
+    ) -> Optional[List[RetrievedSource]]:
+        """Run T09 multi-query retrieval, returning None when it should be bypassed."""
+        if self.query_rewriter is None:
+            return None
+
+        try:
+            raw_variants = self.query_rewriter.rewrite(question)
+        except Exception as e:
+            logger.warning("Query rewrite failed; falling back to single query | error=%s", e)
+            return None
+
+        variants = normalize_query_variants(question, raw_variants, self.query_rewrite_num_queries)
+        if not variants:
+            logger.warning("Query rewrite returned no variants; falling back to single query | question=%s", question)
+            return None
+        if len(variants) <= 1:
+            return None
+
+        logger.info("Multi-query retrieval enabled | original=%s | variants=%s", question, variants)
+        candidate_count = self._multi_query_candidate_count(requested_top_k, len(variants))
+        ranked_lists = {}
+
+        for path_name, variant in self._query_variant_paths(variants):
+            candidates = self._retrieve_single_query_candidates(
+                question=variant,
+                requested_top_k=candidate_count,
+                metadata_filter=metadata_filter,
+            )
+            ranked_lists[path_name] = retrieved_sources_to_ranked_records(candidates)
+
+        weights = self._query_variant_weights(len(variants))
+        fusion = ReciprocalRankFusion(
+            RRFConfig(
+                k=self.rrf.config.k,
+                weights=weights,
+            )
+        )
+        fusion_top_k = candidate_count if self.reranker is not None else requested_top_k
+        fused_records = fusion.fuse(ranked_lists, top_k=fusion_top_k)
+        fused_sources = self._ranked_records_to_sources(fused_records)
+
+        for source in fused_sources:
+            source.metadata["query_rewrite_enabled"] = True
+            source.metadata["query_rewrite_variants"] = list(variants)
+            source.metadata["query_rewrite_weights"] = dict(weights)
+
+        return self._rerank_or_finalize(
+            question=question,
+            sources=fused_sources,
+            requested_top_k=requested_top_k,
+            fallback_label="multi-query fused",
+        )
+
+    def _multi_query_candidate_count(self, requested_top_k: int, variant_count: int) -> int:
+        """Return per-variant candidate count for multi-query retrieval."""
+        base_count = self._search_top_k(requested_top_k)
+        if self.reranker is None:
+            return max(base_count, requested_top_k)
+        return max(base_count, requested_top_k * variant_count)
+
+    def _query_variant_paths(self, variants: List[str]) -> List[Tuple[str, str]]:
+        """Return explicit path names for query variants."""
+        return [(f"q{index}", variant) for index, variant in enumerate(variants)]
+
+    def _query_variant_weights(self, variant_count: int) -> Dict[str, float]:
+        """Return explicit RRF weights for every query variant path."""
+        weights = {"q0": self.query_rewrite_weight_original}
+        for index in range(1, variant_count):
+            weights[f"q{index}"] = self.query_rewrite_weight_variant
+        return weights
 
     def build_prompt(self, question: str, sources: List[RetrievedSource]) -> str:
         """Build the user prompt sent to the chat client."""
@@ -446,6 +580,25 @@ def dense_search_results_to_ranked_records(search_results: List[SearchResult]) -
                 content=result.content,
                 metadata=metadata,
                 record=result.record,
+            )
+        )
+    return ranked_records
+
+
+def retrieved_sources_to_ranked_records(sources: List[RetrievedSource]) -> List[RankedRecord]:
+    """Convert retrieved sources to stable ranked records for cross-query RRF."""
+    ranked_records = []
+    for source in sources:
+        metadata = dict(source.metadata)
+        record_id = str(metadata.get("id") or metadata.get("child_id") or "")
+        if not record_id:
+            continue
+        ranked_records.append(
+            RankedRecord(
+                id=record_id,
+                score=source.score,
+                content=source.content,
+                metadata=metadata,
             )
         )
     return ranked_records

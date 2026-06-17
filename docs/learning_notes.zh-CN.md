@@ -33,6 +33,7 @@
 - 内存 ParentStore
 - T08 上下文装填器 ContextPacker
 - TokenCounter 抽象和 OpenAI embedding token batch 修复
+- T09 Query Rewrite / Multi-Query 检索
 
 ## 为什么先做文档加载
 
@@ -262,6 +263,41 @@ T08 的核心不是检索，而是把最终喂给 LLM 的 context 字符串当�
 本卡不能宣称“生成质量提升”。当前只能证明结构正确：不句中截断、不重复占预算、引用连号、token 计数不再用旧 `len/4` 低估。答案连贯性和 Context Precision 的真实收益留给 T14 Ragas。
 
 一个容易说错的点：中文真实 token 通常比 `len/4` 更多，因此同样 `max_batch_tokens` 下 batch 可能变多、变小。T08 的收益是避免超限请求，不是“批数下降”。
+
+## T09 Query Rewrite / Multi-Query
+
+T09 和 T07/T08 的判断方向相反：它是检索侧改动，因此检索指标允许变化，而且目标就是让措辞不佳、口语化、长尾或指代类 query 有第二次机会。
+
+当前实现遵守这个漏斗顺序：
+
+1. 原始问题进入 QueryRewriter。
+2. 产出 `q0=原始 query` 和若干改写变体。
+3. 每个 query 变体分别跑现有 dense 或 hybrid 检索。
+4. 跨 query 结果复用 T06 的 RRF 融合。
+5. 融合后的候选再进入既有 rerank、父块展开和上下文装填。
+
+这个设计的安全地板是“原始 query 永远在场”。如果改写器失败、返回空，或者最终只有原始 query，multi-query 阶段会旁路，退回单路检索。
+
+当前实现了两种 provider：
+
+- `DeterministicQueryRewriter`：读取 `eval/fixtures/query_rewrites.jsonl`，离线、确定性，用于 CI 和指标门禁。
+- `ChatQueryRewriter`：生产态可注入 chat client，解析失败或服务异常时降级为原始 query。
+
+T09 的评估不能只看 overall。必须按 capability 看：
+
+- long_tail 和 paraphrase 应该不低于单路，最好提升。
+- exact_name 不能被改写带偏。
+- negative 不能退化，这是防幻觉的一票否决项。
+
+当前离线 HashEmbeddingProvider + deterministic fixture 的结果：
+
+- overall MRR@3：`0.677083` → `0.937500`。
+- paraphrase recall@3：`0.800000` → `1.000000`。
+- long_tail recall@3：保持 `0.900000`，long_tail MRR@3：`0.566667` → `0.900000`。
+- exact_name recall@3 保持 `1.000000`。
+- 4 条 negative query 没有 fixture 改写，multi-query 整段旁路，top-k 与单路逐字节一致；这不是 multi-query-on-negative 安全性证明。
+
+要诚实理解这个结果：确定性 fixture 的涨幅只是“给定已知优质改写时，RRF 融合管线能带来目标 paraphrase/long_tail 收益”的机制受控演示。线上 Chat 改写的真实收益取决于模型、prompt、温度和缓存策略，可能高于也可能低于这组数字；劣质改写导致 query drift 时甚至可能低于单路。它不是生产保底。negative 上真正触发 multi-query 的风险离线 fixture 没覆盖，仍要靠后续阈值 / abstain 门禁。
 
 ## 最小 RAG 管线
 

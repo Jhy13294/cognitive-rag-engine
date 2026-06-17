@@ -16,6 +16,7 @@ The current codebase focuses on the foundation:
 - Hybrid dense + BM25 retrieval with RRF fusion
 - Parent-child chunking for child retrieval and parent context expansion
 - Optional context packing with whole-block inclusion, deterministic deduplication, and token-aware budgets
+- Query rewrite / multi-query retrieval with deterministic fixtures and cross-query RRF
 
 Caching, monitoring, API service, and permission control are planned but not implemented yet.
 
@@ -57,6 +58,8 @@ Implemented:
 - Optional post-top-k parent expansion in `RAGPipeline.retrieve`, with sibling child collapse by parent id
 - ContextPacker for build_prompt/answer paths only: whole-block packing, exact deduplication, optional near-duplicate deduplication, contiguous citations, and token budgets
 - OpenAI embedding batch construction based on TokenCounter instead of the legacy `len/4` estimate
+- QueryRewriter abstraction with deterministic fixture-backed rewrites and a chat-backed production provider
+- Multi-query retrieval in `RAGPipeline.retrieve`: original query plus variants, per-variant retrieval, cross-query RRF, then the existing rerank/parent expansion/context packing stages
 
 Not implemented yet:
 
@@ -100,6 +103,7 @@ Not implemented yet:
 │   └── counter.py             # TokenCounter, tiktoken counter, and offline fallback
 ├── eval/
 │   ├── golden_set.jsonl       # Retrieval golden set with relevant source lists
+│   ├── fixtures/query_rewrites.jsonl # Deterministic query rewrite fixture
 │   ├── baseline.py            # Deterministic HashEmbeddingProvider baseline
 │   ├── metrics.py             # hit_rate, MRR, recall, negative metrics
 │   ├── reporting.py           # JSON and Markdown report rendering
@@ -118,6 +122,11 @@ Not implemented yet:
 │   ├── deterministic.py       # Offline deterministic lexical reranker
 │   ├── cohere_provider.py     # Cohere Rerank provider with retries
 │   └── factory.py             # Reranker factory
+├── query_rewrite/
+│   ├── base.py                # Query rewrite interface and config
+│   ├── deterministic.py       # Offline fixture-backed query rewriter
+│   ├── chat.py                # Chat-backed production query rewriter
+│   └── factory.py             # Query rewriter factory
 ├── rag/
 │   ├── context_packing.py     # Post-retrieval context packing
 │   └── pipeline.py            # Minimal RAG pipeline
@@ -188,6 +197,15 @@ CONTEXT_NEAR_DUP_ENABLED=false
 CONTEXT_NEAR_DUP_THRESHOLD=0.9
 CONTEXT_MAX_TOKENS=2048
 TOKENIZER_ENCODING=cl100k_base
+
+QUERY_REWRITE_ENABLED=false
+QUERY_REWRITE_PROVIDER=deterministic
+QUERY_REWRITE_FIXTURE_PATH=eval/fixtures/query_rewrites.jsonl
+QUERY_REWRITE_NUM_QUERIES=3
+QUERY_REWRITE_TEMPERATURE=0.1
+QUERY_REWRITE_CACHE_ENABLED=true
+QUERY_REWRITE_WEIGHT_ORIGINAL=1.0
+QUERY_REWRITE_WEIGHT_VARIANT=0.7
 ```
 
 ## Usage
@@ -229,6 +247,8 @@ python rag_cli.py knowledge_base \
   --context-packing \
   --context-dedup \
   --context-max-tokens 2048 \
+  --multi-query \
+  --query-rewrite-provider deterministic \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -449,6 +469,12 @@ Run the parent-child child-corpus retrieval evaluation:
 python -m eval.run --parent-child
 ```
 
+Run deterministic multi-query retrieval evaluation:
+
+```bash
+python -m eval.run --multi-query
+```
+
 The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
 
 Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The latest rerank report is under `eval/reports/`.
@@ -458,6 +484,8 @@ Current T06 hybrid comparison, with reranker disabled and `HashEmbeddingProvider
 Current T07 parent-child mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
 
 Current T08 context packing is a generation-input assembly step. It does not enter `retrieve()` and must not be reported as MRR/recall improvement. With all context flags off, the legacy character-based `_build_context` path is preserved. When enabled, packing includes whole blocks or skips them, renumbers citations contiguously, folds exact duplicates, optionally folds near duplicates behind a flag, and uses `TokenCounter` for token budgets. tiktoken is optional; when it is unavailable, the system falls back to a deterministic heuristic counter. For Chinese text, true token counting may create more but legal smaller batches; the benefit is correctness and zero over-limit requests, not claiming fewer batches. Generation quality and coherence remain deferred to T14 Ragas.
+
+Current T09 multi-query retrieval is a retrieval-side change, so hit_rate/MRR/recall are valid measurement surfaces. The deterministic fixture keeps the original query as `q0`, adds frozen variants for paraphrase and long-tail cases, fuses per-query results with the existing RRF implementation, and then reuses the existing rerank, parent expansion, and context packing stages. In the offline HashEmbeddingProvider baseline, `python -m eval.run --multi-query` improves paraphrase recall@3 from `0.800000` to `1.000000`, keeps long_tail recall@3 at `0.900000`, and improves long_tail MRR@3 from `0.566667` to `0.900000`. The four negative queries have no fixture rewrite, so multi-query is fully bypassed for them and their results are byte-identical to the single-path baseline; multi-query-on-negative risk is not covered offline and is deferred to the abstain/threshold work in the roadmap. These deterministic fixture gains are a controlled demonstration that RRF fusion plumbing delivers the targeted paraphrase/long_tail gains when fed known-good rewrites. Production LLM rewrites may land above or below this, and query drift can fall below single-path. This is not a production floor.
 
 ## Development Conventions
 
@@ -473,5 +501,4 @@ Current T08 context packing is a generation-input assembly step. It does not ent
 1. Add more ingestion edge-case fixtures.
 2. Split indexing and querying commands.
 3. Add score thresholding or abstain logic for negative queries.
-4. Add query rewrite / multi-query retrieval.
-5. Add caching, observability, and access-control features.
+4. Add caching, observability, and access-control features.

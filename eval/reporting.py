@@ -48,6 +48,7 @@ def render_markdown_report(report: Dict) -> str:
         "|---|---:|---:|---:|---:|---:|",
     ]
     insert_parent_child_metadata(lines, metadata, after="- rerank_top_n")
+    insert_query_rewrite_metadata(lines, metadata, after="- rerank_top_n")
 
     for k, values in report.get("metrics", {}).items():
         lines.append(
@@ -146,6 +147,7 @@ def render_hybrid_comparison_report(report: Dict) -> str:
         "|---|---:|---:|---:|---:|---:|",
     ]
     insert_parent_child_metadata(lines, metadata, after="- hybrid_fetch_k")
+    insert_query_rewrite_metadata(lines, metadata, after="- hybrid_fetch_k")
 
     for mode, values in comparison.items():
         for k in k_values:
@@ -199,3 +201,20 @@ def insert_parent_child_metadata(lines, metadata: Dict, after: str) -> None:
         f"- child_chunk_overlap: `{metadata.get('child_chunk_overlap')}`",
     ]
     lines[insert_at:insert_at] = parent_lines
+
+
+def insert_query_rewrite_metadata(lines, metadata: Dict, after: str) -> None:
+    """Insert query rewrite metadata only for reports that enabled it."""
+    if "query_rewrite_enabled" not in metadata:
+        return
+
+    insert_at = next((index + 1 for index, line in enumerate(lines) if line.startswith(after)), len(lines))
+    rewrite_lines = [
+        f"- query_rewrite_enabled: `{metadata.get('query_rewrite_enabled')}`",
+        f"- query_rewrite_provider: `{metadata.get('query_rewrite_provider')}`",
+        f"- query_rewrite_fixture_path: `{metadata.get('query_rewrite_fixture_path')}`",
+        f"- query_rewrite_num_queries: `{metadata.get('query_rewrite_num_queries')}`",
+        f"- query_rewrite_weight_original: `{metadata.get('query_rewrite_weight_original')}`",
+        f"- query_rewrite_weight_variant: `{metadata.get('query_rewrite_weight_variant')}`",
+    ]
+    lines[insert_at:insert_at] = rewrite_lines

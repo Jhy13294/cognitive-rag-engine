@@ -118,6 +118,15 @@ class Config:
     CONTEXT_MAX_TOKENS = _env_int("CONTEXT_MAX_TOKENS", 2048)
     TOKENIZER_ENCODING = os.getenv("TOKENIZER_ENCODING", "cl100k_base")
 
+    QUERY_REWRITE_ENABLED = _env_bool("QUERY_REWRITE_ENABLED", False)
+    QUERY_REWRITE_PROVIDER = os.getenv("QUERY_REWRITE_PROVIDER", "deterministic")
+    QUERY_REWRITE_FIXTURE_PATH = os.getenv("QUERY_REWRITE_FIXTURE_PATH", "eval/fixtures/query_rewrites.jsonl")
+    QUERY_REWRITE_NUM_QUERIES = _env_int("QUERY_REWRITE_NUM_QUERIES", 3)
+    QUERY_REWRITE_TEMPERATURE = _env_float("QUERY_REWRITE_TEMPERATURE", 0.1)
+    QUERY_REWRITE_CACHE_ENABLED = _env_bool("QUERY_REWRITE_CACHE_ENABLED", True)
+    QUERY_REWRITE_WEIGHT_ORIGINAL = _env_float("QUERY_REWRITE_WEIGHT_ORIGINAL", 1.0)
+    QUERY_REWRITE_WEIGHT_VARIANT = _env_float("QUERY_REWRITE_WEIGHT_VARIANT", 0.7)
+
     @classmethod
     def validate(cls):
         """Validate required configuration values."""
@@ -263,4 +272,32 @@ class Config:
         logger.debug("Context near-duplicate threshold: %s", cls.CONTEXT_NEAR_DUP_THRESHOLD)
         logger.debug("Context max tokens: %s", cls.CONTEXT_MAX_TOKENS)
         logger.debug("Tokenizer encoding: %s", cls.TOKENIZER_ENCODING)
+        return True
+
+    @classmethod
+    def validate_query_rewrite(cls, provider: str = None):
+        """Validate query rewrite configuration."""
+        selected_provider = (provider or cls.QUERY_REWRITE_PROVIDER).lower()
+        if selected_provider not in {"deterministic", "chat"}:
+            raise ValueError(f"Unsupported query rewrite provider: {selected_provider}")
+        if cls.QUERY_REWRITE_NUM_QUERIES < 1:
+            raise ValueError("QUERY_REWRITE_NUM_QUERIES must be greater than or equal to 1.")
+        if cls.QUERY_REWRITE_TEMPERATURE < 0:
+            raise ValueError("QUERY_REWRITE_TEMPERATURE must be non-negative.")
+        if cls.QUERY_REWRITE_WEIGHT_ORIGINAL < 0:
+            raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be non-negative.")
+        if cls.QUERY_REWRITE_WEIGHT_VARIANT < 0:
+            raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
+        if cls.QUERY_REWRITE_WEIGHT_ORIGINAL < cls.QUERY_REWRITE_WEIGHT_VARIANT:
+            raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+        if cls.QUERY_REWRITE_WEIGHT_ORIGINAL + cls.QUERY_REWRITE_WEIGHT_VARIANT <= 0:
+            raise ValueError("At least one query rewrite weight must be greater than 0.")
+
+        logger.debug("Query rewrite enabled: %s", cls.QUERY_REWRITE_ENABLED)
+        logger.debug("Query rewrite provider: %s", selected_provider)
+        logger.debug("Query rewrite num queries: %s", cls.QUERY_REWRITE_NUM_QUERIES)
+        logger.debug("Query rewrite temperature: %s", cls.QUERY_REWRITE_TEMPERATURE)
+        logger.debug("Query rewrite cache enabled: %s", cls.QUERY_REWRITE_CACHE_ENABLED)
+        logger.debug("Query rewrite original weight: %s", cls.QUERY_REWRITE_WEIGHT_ORIGINAL)
+        logger.debug("Query rewrite variant weight: %s", cls.QUERY_REWRITE_WEIGHT_VARIANT)
         return True
