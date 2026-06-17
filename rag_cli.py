@@ -1,11 +1,13 @@
 import argparse
 import json
 import logging
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from config import Config
+from document_loader import Document
 from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
-from embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
+from embeddings import EmbeddingProvider, HashEmbeddingProvider, OpenAIEmbeddingProvider
 from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
 from logger import setup_logger
 from parent_store import InMemoryParentStore
@@ -14,15 +16,49 @@ from rag import RAGPipeline, RAGResponse
 from rerank import create_reranker
 from tokenization import validate_tokenizer_encoding
 from vector_store import create_vector_store
-from vector_store.base import embedded_document_to_record
+from vector_store.base import VectorRecord, VectorStore, embedded_document_to_record
 
 logger = setup_logger(__name__, level=logging.INFO)
+
+CLI_COMMANDS = {"oneshot", "ingest", "query"}
+
+
+@dataclass
+class IngestResult:
+    """Result of an ingest command."""
+
+    ids: List[str]
+    records: List[VectorRecord]
+    vector_store: VectorStore
+    embedding_provider: EmbeddingProvider
+    embedding_model: str
+    embedding_dimension: int
+    parent_count: int = 0
+
+
+class RAGArgumentParser(argparse.ArgumentParser):
+    """Argument parser that preserves legacy path-first CLI compatibility."""
+
+    def parse_args(self, args=None, namespace=None):
+        """Parse and normalize subcommands plus legacy oneshot arguments."""
+        parsed_args = super().parse_args(args=args, namespace=namespace)
+        normalize_cli_command(parsed_args, parser=self)
+        return parsed_args
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the RAG CLI argument parser."""
-    parser = argparse.ArgumentParser(description="Run a minimal local RAG workflow.")
-    parser.add_argument("path", help="Document file or directory to ingest.")
+    parser = RAGArgumentParser(description="Run a minimal local RAG workflow.")
+    parser.add_argument(
+        "command_or_path",
+        nargs="?",
+        help="Subcommand: ingest, query, oneshot. A non-command value keeps legacy oneshot path behavior.",
+    )
+    parser.add_argument(
+        "path_or_question",
+        nargs="?",
+        help="Path for ingest/oneshot or question for query.",
+    )
     parser.add_argument("-q", "--question", help="Question to answer. If omitted, interactive mode starts.")
     parser.add_argument("--top-k", type=int, default=5, help="Number of retrieved chunks.")
     parser.add_argument("--chunk-size", type=int, default=800, help="Chunk size for document splitting.")
@@ -86,6 +122,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def normalize_cli_command(args, parser: Optional[argparse.ArgumentParser] = None) -> None:
+    """Normalize subcommand and legacy path-first CLI forms in-place."""
+    first = args.command_or_path
+    second = args.path_or_question
+
+    if first in CLI_COMMANDS:
+        args.command = first
+        if args.command == "query":
+            if second and args.question:
+                _parser_error(parser, "query question was provided both positionally and with --question")
+            args.path = None
+            args.question = args.question or second
+        else:
+            args.path = second
+    else:
+        args.command = "oneshot"
+        args.path = first
+
+    if args.command in {"oneshot", "ingest"} and not args.path:
+        _parser_error(parser, f"{args.command} requires a document path")
+    if args.command == "ingest" and args.question:
+        _parser_error(parser, "ingest does not accept --question")
+
+
+def _parser_error(parser: Optional[argparse.ArgumentParser], message: str) -> None:
+    """Raise a parser error when available, otherwise ValueError for tests."""
+    if parser is not None:
+        parser.error(message)
+    raise ValueError(message)
+
+
 def parse_metadata_filter(raw_filter: Optional[str]) -> Optional[Dict]:
     """Parse a JSON metadata filter."""
     if not raw_filter:
@@ -126,15 +193,183 @@ def validate_query_rewrite_values(
         raise ValueError("At least one query rewrite weight must be greater than 0.")
 
 
-def build_rag_pipeline_from_path(
+def ingest_documents(
     path: str,
-    chat_client=None,
     clean: bool = True,
     recursive: bool = True,
     chunk_size: int = 800,
     chunk_overlap: int = 120,
     embedding_provider_name: Optional[str] = None,
     embedding_dimension: Optional[int] = None,
+    vector_store_name: Optional[str] = None,
+    parent_child_enabled: Optional[bool] = None,
+    parent_chunk_size: Optional[int] = None,
+    parent_chunk_overlap: Optional[int] = None,
+    child_chunk_size: Optional[int] = None,
+    child_chunk_overlap: Optional[int] = None,
+    embedding_provider: Optional[EmbeddingProvider] = None,
+    vector_store: Optional[VectorStore] = None,
+    vector_store_overrides: Optional[Dict] = None,
+) -> IngestResult:
+    """Load, split, embed, and upsert documents into a vector store."""
+    use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+
+    if use_parent_child:
+        Config.validate_parent_child()
+        hierarchical = load_and_split_documents_hierarchical(
+            path,
+            recursive=recursive,
+            clean=clean,
+            parent_chunk_size=parent_chunk_size if parent_chunk_size is not None else Config.PARENT_CHUNK_SIZE,
+            parent_chunk_overlap=(
+                parent_chunk_overlap if parent_chunk_overlap is not None else Config.PARENT_CHUNK_OVERLAP
+            ),
+            child_chunk_size=child_chunk_size if child_chunk_size is not None else Config.CHILD_CHUNK_SIZE,
+            child_chunk_overlap=child_chunk_overlap if child_chunk_overlap is not None else Config.CHILD_CHUNK_OVERLAP,
+        )
+        chunks = hierarchical.children
+        add_parent_payload_to_children(chunks, hierarchical.parents)
+        parent_count = len(hierarchical.parents)
+    else:
+        chunks = load_and_split_documents(
+            path,
+            recursive=recursive,
+            clean=clean,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+        parent_count = 0
+
+    if not chunks:
+        raise ValueError("No supported documents were loaded from the provided path")
+
+    assign_ingest_sequence(chunks)
+    selected_embedding_provider = embedding_provider or create_embedding_provider(
+        provider_name=embedding_provider_name,
+        embedding_dimension=embedding_dimension,
+    )
+    embedded_chunks = selected_embedding_provider.embed_documents(chunks)
+    vector_records = [embedded_document_to_record(document) for document in embedded_chunks]
+    selected_vector_store = vector_store or create_vector_store(
+        provider_name=vector_store_name,
+        dimension=selected_embedding_provider.dimension,
+        **(vector_store_overrides or {}),
+    )
+    ids = selected_vector_store.add_records(vector_records)
+
+    logger.info(
+        "Documents ingested | path=%s | records=%s | parents=%s | embedding_model=%s | embedding_dimension=%s | vector_store=%s",
+        path,
+        len(ids),
+        parent_count,
+        selected_embedding_provider.model_name,
+        selected_embedding_provider.dimension,
+        vector_store_name or Config.VECTOR_STORE_PROVIDER,
+    )
+    return IngestResult(
+        ids=ids,
+        records=vector_records,
+        vector_store=selected_vector_store,
+        embedding_provider=selected_embedding_provider,
+        embedding_model=selected_embedding_provider.model_name,
+        embedding_dimension=selected_embedding_provider.dimension,
+        parent_count=parent_count,
+    )
+
+
+def build_rag_pipeline_from_index(
+    chat_client=None,
+    embedding_provider_name: Optional[str] = None,
+    embedding_dimension: Optional[int] = None,
+    vector_store_name: Optional[str] = None,
+    vector_store: Optional[VectorStore] = None,
+    vector_store_overrides: Optional[Dict] = None,
+    rerank_provider_name: Optional[str] = None,
+    rerank_fetch_k: Optional[int] = None,
+    hybrid_enabled: Optional[bool] = None,
+    hybrid_fetch_k: Optional[int] = None,
+    rrf_k: Optional[int] = None,
+    hybrid_dense_weight: Optional[float] = None,
+    hybrid_sparse_weight: Optional[float] = None,
+    bm25_k1: Optional[float] = None,
+    bm25_b: Optional[float] = None,
+    parent_child_enabled: Optional[bool] = None,
+    context_packing_enabled: Optional[bool] = None,
+    context_dedup_enabled: Optional[bool] = None,
+    context_near_dup_enabled: Optional[bool] = None,
+    context_near_dup_threshold: Optional[float] = None,
+    context_max_tokens: Optional[int] = None,
+    tokenizer_encoding: Optional[str] = None,
+    query_rewrite_enabled: Optional[bool] = None,
+    query_rewrite_provider_name: Optional[str] = None,
+    query_rewrite_fixture_path: Optional[str] = None,
+    query_rewrite_num_queries: Optional[int] = None,
+    query_rewrite_temperature: Optional[float] = None,
+    query_rewrite_cache_enabled: Optional[bool] = None,
+    query_rewrite_weight_original: Optional[float] = None,
+    query_rewrite_weight_variant: Optional[float] = None,
+    top_k: int = 5,
+    max_context_chars: int = 4000,
+    embedding_provider: Optional[EmbeddingProvider] = None,
+) -> RAGPipeline:
+    """Build a RAG pipeline from an existing vector-store index without corpus embedding."""
+    selected_embedding_provider = embedding_provider or create_embedding_provider(
+        provider_name=embedding_provider_name,
+        embedding_dimension=embedding_dimension,
+    )
+    overrides = dict(vector_store_overrides or {})
+    overrides["recreate"] = False
+    selected_vector_store = vector_store or create_vector_store(
+        provider_name=vector_store_name,
+        dimension=selected_embedding_provider.dimension,
+        **overrides,
+    )
+    vector_records = sort_vector_records(selected_vector_store.list_records())
+    validate_index_embedding_profile(
+        vector_records,
+        selected_embedding_provider,
+        collection_name=Config.VECTOR_STORE_COLLECTION,
+    )
+    return build_rag_pipeline_from_records(
+        vector_records=vector_records,
+        embedding_provider=selected_embedding_provider,
+        vector_store=selected_vector_store,
+        chat_client=chat_client,
+        vector_store_name=vector_store_name,
+        rerank_provider_name=rerank_provider_name,
+        rerank_fetch_k=rerank_fetch_k,
+        hybrid_enabled=hybrid_enabled,
+        hybrid_fetch_k=hybrid_fetch_k,
+        rrf_k=rrf_k,
+        hybrid_dense_weight=hybrid_dense_weight,
+        hybrid_sparse_weight=hybrid_sparse_weight,
+        bm25_k1=bm25_k1,
+        bm25_b=bm25_b,
+        parent_child_enabled=parent_child_enabled,
+        context_packing_enabled=context_packing_enabled,
+        context_dedup_enabled=context_dedup_enabled,
+        context_near_dup_enabled=context_near_dup_enabled,
+        context_near_dup_threshold=context_near_dup_threshold,
+        context_max_tokens=context_max_tokens,
+        tokenizer_encoding=tokenizer_encoding,
+        query_rewrite_enabled=query_rewrite_enabled,
+        query_rewrite_provider_name=query_rewrite_provider_name,
+        query_rewrite_fixture_path=query_rewrite_fixture_path,
+        query_rewrite_num_queries=query_rewrite_num_queries,
+        query_rewrite_temperature=query_rewrite_temperature,
+        query_rewrite_cache_enabled=query_rewrite_cache_enabled,
+        query_rewrite_weight_original=query_rewrite_weight_original,
+        query_rewrite_weight_variant=query_rewrite_weight_variant,
+        top_k=top_k,
+        max_context_chars=max_context_chars,
+    )
+
+
+def build_rag_pipeline_from_records(
+    vector_records: List[VectorRecord],
+    embedding_provider: EmbeddingProvider,
+    vector_store: VectorStore,
+    chat_client=None,
     vector_store_name: Optional[str] = None,
     rerank_provider_name: Optional[str] = None,
     rerank_fetch_k: Optional[int] = None,
@@ -146,10 +381,7 @@ def build_rag_pipeline_from_path(
     bm25_k1: Optional[float] = None,
     bm25_b: Optional[float] = None,
     parent_child_enabled: Optional[bool] = None,
-    parent_chunk_size: Optional[int] = None,
-    parent_chunk_overlap: Optional[int] = None,
-    child_chunk_size: Optional[int] = None,
-    child_chunk_overlap: Optional[int] = None,
+    parent_store: Optional[InMemoryParentStore] = None,
     context_packing_enabled: Optional[bool] = None,
     context_dedup_enabled: Optional[bool] = None,
     context_near_dup_enabled: Optional[bool] = None,
@@ -167,7 +399,7 @@ def build_rag_pipeline_from_path(
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
-    """Ingest documents and build a ready-to-query RAG pipeline."""
+    """Assemble a RAG pipeline from already indexed vector records."""
     use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
     use_context_dedup = Config.CONTEXT_DEDUP_ENABLED if context_dedup_enabled is None else context_dedup_enabled
     use_context_near_dup = (
@@ -208,7 +440,6 @@ def build_rag_pipeline_from_path(
         if query_rewrite_weight_variant is not None
         else Config.QUERY_REWRITE_WEIGHT_VARIANT
     )
-    parent_store = None
 
     if use_context_packing or use_context_dedup or use_context_near_dup:
         if selected_context_threshold < 0 or selected_context_threshold > 1:
@@ -226,46 +457,10 @@ def build_rag_pipeline_from_path(
             weight_variant=selected_query_rewrite_weight_variant,
         )
 
-    if use_parent_child:
+    if use_parent_child and parent_store is None:
         Config.validate_parent_child()
-        hierarchical = load_and_split_documents_hierarchical(
-            path,
-            recursive=recursive,
-            clean=clean,
-            parent_chunk_size=parent_chunk_size if parent_chunk_size is not None else Config.PARENT_CHUNK_SIZE,
-            parent_chunk_overlap=(
-                parent_chunk_overlap if parent_chunk_overlap is not None else Config.PARENT_CHUNK_OVERLAP
-            ),
-            child_chunk_size=child_chunk_size if child_chunk_size is not None else Config.CHILD_CHUNK_SIZE,
-            child_chunk_overlap=child_chunk_overlap if child_chunk_overlap is not None else Config.CHILD_CHUNK_OVERLAP,
-        )
-        chunks = hierarchical.children
-        parent_store = InMemoryParentStore()
-        parent_store.add_parents(hierarchical.parents)
-    else:
-        chunks = load_and_split_documents(
-            path,
-            recursive=recursive,
-            clean=clean,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
+        parent_store = rebuild_parent_store_from_records(vector_records)
 
-    if not chunks:
-        raise ValueError("No supported documents were loaded from the provided path")
-
-    embedding_provider = create_embedding_provider(
-        provider_name=embedding_provider_name,
-        embedding_dimension=embedding_dimension,
-    )
-    embedded_chunks = embedding_provider.embed_documents(chunks)
-    vector_records = [embedded_document_to_record(document) for document in embedded_chunks]
-
-    vector_store = create_vector_store(
-        provider_name=vector_store_name,
-        dimension=embedding_provider.dimension,
-    )
-    vector_store.add_records(vector_records)
     rerank_enabled = None
     if rerank_provider_name == "none":
         rerank_enabled = False
@@ -323,8 +518,8 @@ def build_rag_pipeline_from_path(
     )
 
     logger.info(
-        "RAG pipeline ready | chunks=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s | context_packing=%s | context_dedup=%s | query_rewrite=%s",
-        len(chunks),
+        "RAG pipeline ready | records=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s | context_packing=%s | context_dedup=%s | query_rewrite=%s",
+        len(vector_records),
         parent_store.count() if parent_store is not None else 0,
         embedding_provider.model_name,
         embedding_provider.dimension,
@@ -360,6 +555,218 @@ def build_rag_pipeline_from_path(
         query_rewrite_weight_variant=selected_query_rewrite_weight_variant,
     )
 
+
+def add_parent_payload_to_children(children: List[Document], parents: List[Document]) -> None:
+    """Persist parent text on child metadata for query-time parent-store reconstruction."""
+    parents_by_id = {str(parent.metadata.get("parent_id")): parent for parent in parents}
+    for child in children:
+        parent_id = str(child.metadata.get("parent_id"))
+        parent = parents_by_id.get(parent_id)
+        if parent is None:
+            raise ValueError(f"Parent metadata is missing for child parent_id={parent_id}")
+        child.metadata["parent_content"] = parent.content
+        child.metadata["parent_source"] = parent.metadata.get("source")
+
+
+def assign_ingest_sequence(chunks: List[Document]) -> None:
+    """Add deterministic ingest order metadata without affecting stable record ids."""
+    for index, chunk in enumerate(chunks):
+        chunk.metadata["ingest_sequence"] = index
+
+
+def rebuild_parent_store_from_records(vector_records: List[VectorRecord]) -> InMemoryParentStore:
+    """Rebuild the in-memory parent store from persisted child record metadata."""
+    parent_documents = []
+    seen_parent_ids = set()
+
+    for record in vector_records:
+        metadata = dict(record.metadata)
+        parent_id = metadata.get("parent_id")
+        if not parent_id:
+            continue
+        parent_id = str(parent_id)
+        if parent_id in seen_parent_ids:
+            continue
+
+        parent_content = metadata.get("parent_content")
+        if not parent_content:
+            raise ValueError(
+                f"Parent-child query requested but parent content is missing for parent_id={parent_id}"
+            )
+
+        parent_metadata = dict(metadata)
+        parent_metadata["parent_id"] = parent_id
+        parent_metadata["source"] = metadata.get("parent_source") or metadata.get("source")
+        parent_metadata["start_char"] = metadata.get("parent_start_char")
+        parent_metadata["end_char"] = metadata.get("parent_end_char")
+        parent_documents.append(Document(content=str(parent_content), metadata=parent_metadata))
+        seen_parent_ids.add(parent_id)
+
+    if not parent_documents:
+        raise ValueError("Parent-child query requested but the vector index has no parent metadata.")
+
+    parent_store = InMemoryParentStore()
+    parent_store.add_parents(parent_documents)
+    return parent_store
+
+
+def validate_index_embedding_profile(
+    vector_records: List[VectorRecord],
+    embedding_provider: EmbeddingProvider,
+    collection_name: str,
+) -> None:
+    """Validate that query embeddings match the indexed embedding space."""
+    if not vector_records:
+        raise ValueError(f"Vector store collection is empty or unavailable: {collection_name}")
+
+    models = {str(record.metadata.get("embedding_model")) for record in vector_records if record.metadata.get("embedding_model")}
+    dimensions = {
+        int(record.metadata.get("embedding_dimension"))
+        for record in vector_records
+        if record.metadata.get("embedding_dimension") is not None
+    }
+
+    if not models:
+        raise ValueError("Vector index records are missing embedding_model metadata.")
+    if not dimensions:
+        raise ValueError("Vector index records are missing embedding_dimension metadata.")
+    if len(models) > 1:
+        raise ValueError(f"Vector index contains mixed embedding models: {sorted(models)}")
+    if len(dimensions) > 1:
+        raise ValueError(f"Vector index contains mixed embedding dimensions: {sorted(dimensions)}")
+
+    indexed_model = next(iter(models))
+    indexed_dimension = next(iter(dimensions))
+    if indexed_model != embedding_provider.model_name:
+        raise ValueError(
+            f"Embedding model mismatch for collection {collection_name}: "
+            f"index={indexed_model}, query={embedding_provider.model_name}"
+        )
+    if indexed_dimension != embedding_provider.dimension:
+        raise ValueError(
+            f"Embedding dimension mismatch for collection {collection_name}: "
+            f"index={indexed_dimension}, query={embedding_provider.dimension}"
+        )
+
+
+def sort_vector_records(vector_records: List[VectorRecord]) -> List[VectorRecord]:
+    """Sort records by persisted ingest order with a stable metadata fallback."""
+    return sorted(vector_records, key=vector_record_sort_key)
+
+
+def vector_record_sort_key(record: VectorRecord) -> tuple:
+    """Return a deterministic sort key for records read from a persistent store."""
+    metadata = record.metadata
+    return (
+        numeric_sort_value(metadata.get("ingest_sequence")),
+        str(metadata.get("source", "")),
+        numeric_sort_value(metadata.get("chunk_index")),
+        numeric_sort_value(metadata.get("start_char")),
+        numeric_sort_value(metadata.get("end_char")),
+        record.id,
+    )
+
+
+def numeric_sort_value(value) -> int:
+    """Return an integer sort value, placing missing values after present values."""
+    if value is None:
+        return 2**63 - 1
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 2**63 - 1
+
+
+def build_rag_pipeline_from_path(
+    path: str,
+    chat_client=None,
+    clean: bool = True,
+    recursive: bool = True,
+    chunk_size: int = 800,
+    chunk_overlap: int = 120,
+    embedding_provider_name: Optional[str] = None,
+    embedding_dimension: Optional[int] = None,
+    vector_store_name: Optional[str] = None,
+    rerank_provider_name: Optional[str] = None,
+    rerank_fetch_k: Optional[int] = None,
+    hybrid_enabled: Optional[bool] = None,
+    hybrid_fetch_k: Optional[int] = None,
+    rrf_k: Optional[int] = None,
+    hybrid_dense_weight: Optional[float] = None,
+    hybrid_sparse_weight: Optional[float] = None,
+    bm25_k1: Optional[float] = None,
+    bm25_b: Optional[float] = None,
+    parent_child_enabled: Optional[bool] = None,
+    parent_chunk_size: Optional[int] = None,
+    parent_chunk_overlap: Optional[int] = None,
+    child_chunk_size: Optional[int] = None,
+    child_chunk_overlap: Optional[int] = None,
+    context_packing_enabled: Optional[bool] = None,
+    context_dedup_enabled: Optional[bool] = None,
+    context_near_dup_enabled: Optional[bool] = None,
+    context_near_dup_threshold: Optional[float] = None,
+    context_max_tokens: Optional[int] = None,
+    tokenizer_encoding: Optional[str] = None,
+    query_rewrite_enabled: Optional[bool] = None,
+    query_rewrite_provider_name: Optional[str] = None,
+    query_rewrite_fixture_path: Optional[str] = None,
+    query_rewrite_num_queries: Optional[int] = None,
+    query_rewrite_temperature: Optional[float] = None,
+    query_rewrite_cache_enabled: Optional[bool] = None,
+    query_rewrite_weight_original: Optional[float] = None,
+    query_rewrite_weight_variant: Optional[float] = None,
+    top_k: int = 5,
+    max_context_chars: int = 4000,
+) -> RAGPipeline:
+    """Ingest documents and build a ready-to-query RAG pipeline."""
+    ingest_result = ingest_documents(
+        path=path,
+        clean=clean,
+        recursive=recursive,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        embedding_provider_name=embedding_provider_name,
+        embedding_dimension=embedding_dimension,
+        vector_store_name=vector_store_name,
+        parent_child_enabled=parent_child_enabled,
+        parent_chunk_size=parent_chunk_size,
+        parent_chunk_overlap=parent_chunk_overlap,
+        child_chunk_size=child_chunk_size,
+        child_chunk_overlap=child_chunk_overlap,
+    )
+    return build_rag_pipeline_from_records(
+        vector_records=ingest_result.records,
+        embedding_provider=ingest_result.embedding_provider,
+        vector_store=ingest_result.vector_store,
+        chat_client=chat_client,
+        vector_store_name=vector_store_name,
+        rerank_provider_name=rerank_provider_name,
+        rerank_fetch_k=rerank_fetch_k,
+        hybrid_enabled=hybrid_enabled,
+        hybrid_fetch_k=hybrid_fetch_k,
+        rrf_k=rrf_k,
+        hybrid_dense_weight=hybrid_dense_weight,
+        hybrid_sparse_weight=hybrid_sparse_weight,
+        bm25_k1=bm25_k1,
+        bm25_b=bm25_b,
+        parent_child_enabled=parent_child_enabled,
+        context_packing_enabled=context_packing_enabled,
+        context_dedup_enabled=context_dedup_enabled,
+        context_near_dup_enabled=context_near_dup_enabled,
+        context_near_dup_threshold=context_near_dup_threshold,
+        context_max_tokens=context_max_tokens,
+        tokenizer_encoding=tokenizer_encoding,
+        query_rewrite_enabled=query_rewrite_enabled,
+        query_rewrite_provider_name=query_rewrite_provider_name,
+        query_rewrite_fixture_path=query_rewrite_fixture_path,
+        query_rewrite_num_queries=query_rewrite_num_queries,
+        query_rewrite_temperature=query_rewrite_temperature,
+        query_rewrite_cache_enabled=query_rewrite_cache_enabled,
+        query_rewrite_weight_original=query_rewrite_weight_original,
+        query_rewrite_weight_variant=query_rewrite_weight_variant,
+        top_k=top_k,
+        max_context_chars=max_context_chars,
+    )
 
 def create_embedding_provider(
     provider_name: Optional[str] = None,
@@ -450,47 +857,105 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "ingest":
+            ingest_result = ingest_documents(
+                args.path,
+                clean=not args.no_clean,
+                recursive=not args.non_recursive,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
+                embedding_provider_name=args.embedding_provider,
+                embedding_dimension=args.embedding_dimension,
+                vector_store_name=args.vector_store,
+                parent_child_enabled=True if args.parent_child else None,
+                parent_chunk_size=args.parent_chunk_size,
+                parent_chunk_overlap=args.parent_chunk_overlap,
+                child_chunk_size=args.child_chunk_size,
+                child_chunk_overlap=args.child_chunk_overlap,
+            )
+            print(
+                "Ingested "
+                f"{len(ingest_result.ids)} records | "
+                f"embedding_model={ingest_result.embedding_model} | "
+                f"embedding_dimension={ingest_result.embedding_dimension} | "
+                f"parents={ingest_result.parent_count}"
+            )
+            return 0
+
         metadata_filter = parse_metadata_filter(args.metadata_filter)
-        pipeline = build_rag_pipeline_from_path(
-            args.path,
-            clean=not args.no_clean,
-            recursive=not args.non_recursive,
-            chunk_size=args.chunk_size,
-            chunk_overlap=args.chunk_overlap,
-            embedding_provider_name=args.embedding_provider,
-            embedding_dimension=args.embedding_dimension,
-            vector_store_name=args.vector_store,
-            rerank_provider_name=args.rerank_provider,
-            rerank_fetch_k=args.rerank_fetch_k,
-            hybrid_enabled=True if args.hybrid else None,
-            hybrid_fetch_k=args.hybrid_fetch_k,
-            rrf_k=args.rrf_k,
-            hybrid_dense_weight=args.hybrid_dense_weight,
-            hybrid_sparse_weight=args.hybrid_sparse_weight,
-            bm25_k1=args.bm25_k1,
-            bm25_b=args.bm25_b,
-            parent_child_enabled=True if args.parent_child else None,
-            parent_chunk_size=args.parent_chunk_size,
-            parent_chunk_overlap=args.parent_chunk_overlap,
-            child_chunk_size=args.child_chunk_size,
-            child_chunk_overlap=args.child_chunk_overlap,
-            context_packing_enabled=True if args.context_packing else None,
-            context_dedup_enabled=True if args.context_dedup else None,
-            context_near_dup_enabled=True if args.context_near_dup else None,
-            context_near_dup_threshold=args.context_near_dup_threshold,
-            context_max_tokens=args.context_max_tokens,
-            tokenizer_encoding=args.tokenizer_encoding,
-            query_rewrite_enabled=True if args.multi_query else None,
-            query_rewrite_provider_name=args.query_rewrite_provider,
-            query_rewrite_fixture_path=args.query_rewrite_fixture,
-            query_rewrite_num_queries=args.query_rewrite_num_queries,
-            query_rewrite_temperature=args.query_rewrite_temperature,
-            query_rewrite_cache_enabled=False if args.no_query_rewrite_cache else None,
-            query_rewrite_weight_original=args.query_rewrite_weight_original,
-            query_rewrite_weight_variant=args.query_rewrite_weight_variant,
-            top_k=args.top_k,
-            max_context_chars=args.max_context_chars,
-        )
+        if args.command == "query":
+            pipeline = build_rag_pipeline_from_index(
+                embedding_provider_name=args.embedding_provider,
+                embedding_dimension=args.embedding_dimension,
+                vector_store_name=args.vector_store,
+                rerank_provider_name=args.rerank_provider,
+                rerank_fetch_k=args.rerank_fetch_k,
+                hybrid_enabled=True if args.hybrid else None,
+                hybrid_fetch_k=args.hybrid_fetch_k,
+                rrf_k=args.rrf_k,
+                hybrid_dense_weight=args.hybrid_dense_weight,
+                hybrid_sparse_weight=args.hybrid_sparse_weight,
+                bm25_k1=args.bm25_k1,
+                bm25_b=args.bm25_b,
+                parent_child_enabled=True if args.parent_child else None,
+                context_packing_enabled=True if args.context_packing else None,
+                context_dedup_enabled=True if args.context_dedup else None,
+                context_near_dup_enabled=True if args.context_near_dup else None,
+                context_near_dup_threshold=args.context_near_dup_threshold,
+                context_max_tokens=args.context_max_tokens,
+                tokenizer_encoding=args.tokenizer_encoding,
+                query_rewrite_enabled=True if args.multi_query else None,
+                query_rewrite_provider_name=args.query_rewrite_provider,
+                query_rewrite_fixture_path=args.query_rewrite_fixture,
+                query_rewrite_num_queries=args.query_rewrite_num_queries,
+                query_rewrite_temperature=args.query_rewrite_temperature,
+                query_rewrite_cache_enabled=False if args.no_query_rewrite_cache else None,
+                query_rewrite_weight_original=args.query_rewrite_weight_original,
+                query_rewrite_weight_variant=args.query_rewrite_weight_variant,
+                top_k=args.top_k,
+                max_context_chars=args.max_context_chars,
+            )
+        else:
+            pipeline = build_rag_pipeline_from_path(
+                args.path,
+                clean=not args.no_clean,
+                recursive=not args.non_recursive,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
+                embedding_provider_name=args.embedding_provider,
+                embedding_dimension=args.embedding_dimension,
+                vector_store_name=args.vector_store,
+                rerank_provider_name=args.rerank_provider,
+                rerank_fetch_k=args.rerank_fetch_k,
+                hybrid_enabled=True if args.hybrid else None,
+                hybrid_fetch_k=args.hybrid_fetch_k,
+                rrf_k=args.rrf_k,
+                hybrid_dense_weight=args.hybrid_dense_weight,
+                hybrid_sparse_weight=args.hybrid_sparse_weight,
+                bm25_k1=args.bm25_k1,
+                bm25_b=args.bm25_b,
+                parent_child_enabled=True if args.parent_child else None,
+                parent_chunk_size=args.parent_chunk_size,
+                parent_chunk_overlap=args.parent_chunk_overlap,
+                child_chunk_size=args.child_chunk_size,
+                child_chunk_overlap=args.child_chunk_overlap,
+                context_packing_enabled=True if args.context_packing else None,
+                context_dedup_enabled=True if args.context_dedup else None,
+                context_near_dup_enabled=True if args.context_near_dup else None,
+                context_near_dup_threshold=args.context_near_dup_threshold,
+                context_max_tokens=args.context_max_tokens,
+                tokenizer_encoding=args.tokenizer_encoding,
+                query_rewrite_enabled=True if args.multi_query else None,
+                query_rewrite_provider_name=args.query_rewrite_provider,
+                query_rewrite_fixture_path=args.query_rewrite_fixture,
+                query_rewrite_num_queries=args.query_rewrite_num_queries,
+                query_rewrite_temperature=args.query_rewrite_temperature,
+                query_rewrite_cache_enabled=False if args.no_query_rewrite_cache else None,
+                query_rewrite_weight_original=args.query_rewrite_weight_original,
+                query_rewrite_weight_variant=args.query_rewrite_weight_variant,
+                top_k=args.top_k,
+                max_context_chars=args.max_context_chars,
+            )
 
         if args.question:
             response = run_single_question(

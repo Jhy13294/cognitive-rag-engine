@@ -2,13 +2,17 @@ import unittest
 
 from rag_cli import (
     build_arg_parser,
+    build_rag_pipeline_from_index,
     build_rag_pipeline_from_path,
     create_embedding_provider,
     format_response,
+    ingest_documents,
     parse_metadata_filter,
     run_single_question,
 )
+from embeddings import HashEmbeddingProvider
 from tests.test_document_ingestion import FIXTURES_DIR
+from vector_store import InMemoryVectorStore
 
 
 class FakeChatClient:
@@ -26,6 +30,26 @@ class FakeChatClient:
                 }
             ]
         }
+
+
+class CountingHashEmbeddingProvider(HashEmbeddingProvider):
+    """Hash embedding provider that records document and query embedding calls."""
+
+    def __init__(self, dimension=64):
+        """Initialize the counting provider."""
+        super().__init__(dimension=dimension)
+        self.embed_documents_calls = 0
+        self.embed_text_calls = 0
+
+    def embed_documents(self, documents):
+        """Count corpus embedding calls."""
+        self.embed_documents_calls += 1
+        return super().embed_documents(documents)
+
+    def embed_text(self, text):
+        """Count query embedding calls."""
+        self.embed_text_calls += 1
+        return super().embed_text(text)
 
 
 class RAGCLITests(unittest.TestCase):
@@ -103,6 +127,7 @@ class RAGCLITests(unittest.TestCase):
         )
 
         self.assertEqual(args.path, "tests/fixtures")
+        self.assertEqual(args.command, "oneshot")
         self.assertEqual(args.question, "What is this?")
         self.assertEqual(args.top_k, 3)
         self.assertEqual(args.chunk_size, 100)
@@ -141,6 +166,22 @@ class RAGCLITests(unittest.TestCase):
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
+    def test_build_arg_parser_parses_ingest_and_query_subcommands(self):
+        parser = build_arg_parser()
+
+        ingest_args = parser.parse_args(["ingest", "tests/fixtures", "--embedding-provider", "hash"])
+        query_args = parser.parse_args(["query", "What is indexed?", "--embedding-provider", "hash"])
+        oneshot_args = parser.parse_args(["oneshot", "tests/fixtures", "-q", "What is this?"])
+
+        self.assertEqual(ingest_args.command, "ingest")
+        self.assertEqual(ingest_args.path, "tests/fixtures")
+        self.assertIsNone(ingest_args.question)
+        self.assertEqual(query_args.command, "query")
+        self.assertIsNone(query_args.path)
+        self.assertEqual(query_args.question, "What is indexed?")
+        self.assertEqual(oneshot_args.command, "oneshot")
+        self.assertEqual(oneshot_args.path, "tests/fixtures")
+
     def test_parse_metadata_filter_accepts_json_object(self):
         metadata_filter = parse_metadata_filter('{"file_type": "txt"}')
 
@@ -177,6 +218,126 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(response.answer, "CLI answer with citation [1].")
         self.assertEqual(len(chat_client.calls), 1)
         self.assertGreaterEqual(len(response.sources), 1)
+
+    def test_ingest_query_split_does_not_embed_corpus_during_query(self):
+        provider = CountingHashEmbeddingProvider(dimension=64)
+        store = InMemoryVectorStore(dimension=64)
+        ingest_documents(
+            str(FIXTURES_DIR),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider=provider,
+            vector_store=store,
+            parent_child_enabled=False,
+        )
+
+        pipeline = build_rag_pipeline_from_index(
+            chat_client=FakeChatClient(),
+            embedding_provider=provider,
+            vector_store=store,
+            rerank_provider_name="none",
+            parent_child_enabled=False,
+            top_k=2,
+            max_context_chars=1000,
+        )
+        response = run_single_question(pipeline, "What is this project?", top_k=2)
+
+        self.assertEqual(response.answer, "CLI answer with citation [1].")
+        self.assertEqual(provider.embed_documents_calls, 1)
+        self.assertEqual(provider.embed_text_calls, 1)
+
+    def test_double_ingest_is_idempotent_and_keeps_top_k(self):
+        provider = HashEmbeddingProvider(dimension=64)
+        store = InMemoryVectorStore(dimension=64)
+
+        first = ingest_documents(
+            str(FIXTURES_DIR),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider=provider,
+            vector_store=store,
+            parent_child_enabled=False,
+        )
+        query_embedding = provider.embed_text("RAG ingestion prototype")
+        first_top_ids = [result.record.id for result in store.similarity_search(query_embedding, top_k=3)]
+
+        second = ingest_documents(
+            str(FIXTURES_DIR),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider=provider,
+            vector_store=store,
+            parent_child_enabled=False,
+        )
+        second_top_ids = [result.record.id for result in store.similarity_search(query_embedding, top_k=3)]
+
+        self.assertEqual(store.count(), len(first.records))
+        self.assertEqual(len(second.records), len(first.records))
+        self.assertEqual(first_top_ids, second_top_ids)
+
+    def test_query_rejects_embedding_dimension_mismatch(self):
+        store = InMemoryVectorStore(dimension=64)
+        ingest_documents(
+            str(FIXTURES_DIR),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider=HashEmbeddingProvider(dimension=64),
+            vector_store=store,
+            parent_child_enabled=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "Embedding dimension mismatch"):
+            build_rag_pipeline_from_index(
+                chat_client=FakeChatClient(),
+                embedding_provider=HashEmbeddingProvider(dimension=32),
+                vector_store=store,
+                rerank_provider_name="none",
+                parent_child_enabled=False,
+            )
+
+    def test_query_rebuilds_hybrid_and_parent_store_without_corpus_embedding(self):
+        provider = CountingHashEmbeddingProvider(dimension=64)
+        store = InMemoryVectorStore(dimension=64)
+        ingest_documents(
+            str(FIXTURES_DIR),
+            clean=True,
+            recursive=True,
+            embedding_provider=provider,
+            vector_store=store,
+            parent_child_enabled=True,
+            parent_chunk_size=160,
+            parent_chunk_overlap=20,
+            child_chunk_size=80,
+            child_chunk_overlap=10,
+        )
+
+        pipeline = build_rag_pipeline_from_index(
+            chat_client=FakeChatClient(),
+            embedding_provider=provider,
+            vector_store=store,
+            rerank_provider_name="none",
+            hybrid_enabled=True,
+            hybrid_fetch_k=8,
+            parent_child_enabled=True,
+            top_k=2,
+            max_context_chars=1000,
+        )
+        sources = pipeline.retrieve("What is this project?", top_k=2)
+
+        self.assertIsNotNone(pipeline.bm25_retriever)
+        self.assertIsNotNone(pipeline.parent_store)
+        self.assertGreater(pipeline.parent_store.count(), 0)
+        self.assertGreaterEqual(len(sources), 1)
+        self.assertEqual(provider.embed_documents_calls, 1)
+        self.assertEqual(provider.embed_text_calls, 1)
 
     def test_explicit_rerank_provider_enables_reranker(self):
         pipeline = build_rag_pipeline_from_path(

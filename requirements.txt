@@ -12,7 +12,7 @@ python-docx>=1.0.0       # Word processing, import name: docx
 regex>=2023.0.0          # Advanced regular expressions
 
 # Vector storage
-qdrant-client>=1.9.0     # Qdrant SDK, import name: qdrant_client
+qdrant-client>=1.18,<1.19   # Qdrant SDK (import name: qdrant_client); pin to 1.18.x to match server; 1.17+ requires Python>=3.10
 
 # Optional dependency: YAML parsing for Markdown Front Matter
 PyYAML>=6.0

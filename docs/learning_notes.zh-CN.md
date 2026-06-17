@@ -325,4 +325,4 @@ T09 的评估不能只看 overall。必须按 capability 看：
 
 ## 当前风险
 
-当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线、rerank 漏斗、hybrid 检索融合和 parent-child 父块展开。下一步建议在两个方向中选择一个：工程化方向先回补索引构建/查询职责分离；检索质量方向继续做 T08 上下文装填修复。同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。
+当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线、rerank 漏斗、hybrid 检索融合、parent-child 父块展开、T08 上下文装填和 T03 ingest/query 职责分离；本地 Qdrant 跨进程 ingest→query 持久化门禁在配好本地 Qdrant 并设置 `QDRANT_URL` 时已实跑通过（默认 checkout 因未设该变量而 gated-skip，不会自动验证）。下一步建议优先做分数阈值或 abstain，解决 negative query 仍会被强行召回的问题；同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。

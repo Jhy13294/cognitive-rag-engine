@@ -24,10 +24,12 @@ class FakeQdrantClient:
         self.upserts = []
         self.search_calls = []
         self.retrieve_calls = []
+        self.scroll_calls = []
         self.delete_calls = []
         self.count_value = 0
         self.search_hits = []
         self.retrieve_points = []
+        self.scroll_pages = []
         self.fail_upsert_attempts = 0
         self.fail_upsert_with = RetryableQdrantError("rate limited")
 
@@ -100,6 +102,20 @@ class FakeQdrantClient:
             }
         )
         return self.retrieve_points
+
+    def scroll(self, collection_name, limit, offset, with_payload, with_vectors):
+        self.scroll_calls.append(
+            {
+                "collection_name": collection_name,
+                "limit": limit,
+                "offset": offset,
+                "with_payload": with_payload,
+                "with_vectors": with_vectors,
+            }
+        )
+        if self.scroll_pages:
+            return self.scroll_pages.pop(0)
+        return [], None
 
     def delete(self, collection_name, points_selector, wait):
         self.delete_calls.append(
@@ -224,6 +240,37 @@ class QdrantVectorStoreMockTests(unittest.TestCase):
         self.assertEqual(len(client.delete_calls), 1)
         self.assertEqual(client.deleted_collections, ["kb"])
 
+    def test_list_records_scrolls_and_restores_records(self):
+        client = FakeQdrantClient()
+        client.scroll_pages = [
+            (
+                [
+                    SimpleNamespace(
+                        id="point-1",
+                        vector=[1.0, 0.0],
+                        payload={"content": "alpha", "record_id": "record-1", "source": "a.txt"},
+                    )
+                ],
+                "next-page",
+            ),
+            (
+                [
+                    SimpleNamespace(
+                        id="point-2",
+                        vector=[0.0, 1.0],
+                        payload={"content": "beta", "record_id": "record-2", "source": "b.txt"},
+                    )
+                ],
+                None,
+            ),
+        ]
+        store = self.build_store(client)
+
+        records = store.list_records()
+
+        self.assertEqual([record.id for record in records], ["record-1", "record-2"])
+        self.assertEqual([call["offset"] for call in client.scroll_calls], [None, "next-page"])
+
     def test_delete_returns_false_when_record_is_missing(self):
         client = FakeQdrantClient()
         client.retrieve_points = []
@@ -275,4 +322,3 @@ class QdrantVectorStoreMockTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

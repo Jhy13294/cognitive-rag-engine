@@ -60,6 +60,15 @@ class InMemoryVectorStore(VectorStore):
         """Return a record by id."""
         return self._records.get(record_id)
 
+    def list_records(self, limit: Optional[int] = None) -> List[VectorRecord]:
+        """Return stored records in insertion order."""
+        records = list(self._records.values())
+        if limit is None:
+            return records
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        return records[:limit]
+
     def delete(self, record_id: str) -> bool:
         """Delete a record by id."""
         if record_id not in self._records:

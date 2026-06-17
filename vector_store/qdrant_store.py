@@ -292,6 +292,43 @@ class QdrantVectorStore(VectorStore):
         """Run get_record from async code without blocking the event loop."""
         return await asyncio.to_thread(self.get_record, record_id)
 
+    def list_records(self, limit: Optional[int] = None) -> List[VectorRecord]:
+        """Scroll all stored records for deterministic local index reconstruction."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
+        if not hasattr(self._client, "scroll"):
+            raise QdrantVectorStoreError("Qdrant client does not support scroll; cannot list records.")
+
+        records: List[VectorRecord] = []
+        offset = None
+        while True:
+            remaining = None if limit is None else limit - len(records)
+            if remaining is not None and remaining <= 0:
+                break
+
+            batch_limit = self.batch_size if remaining is None else min(self.batch_size, remaining)
+            scroll_result = self._call_with_retries(
+                "qdrant_scroll",
+                self._client.scroll,
+                collection_name=self.collection_name,
+                limit=batch_limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            points, next_offset = self._normalize_scroll_result(scroll_result)
+            records.extend(self._point_to_record(point) for point in points)
+
+            if not next_offset:
+                break
+            offset = next_offset
+
+        return records
+
+    async def async_list_records(self, limit: Optional[int] = None) -> List[VectorRecord]:
+        """Run list_records from async code without blocking the event loop."""
+        return await asyncio.to_thread(self.list_records, limit)
+
     def delete(self, record_id: str) -> bool:
         """Delete a record by its stable business id."""
         if self.get_record(record_id) is None:
@@ -466,6 +503,17 @@ class QdrantVectorStore(VectorStore):
             embedding=self._extract_vector(point),
         )
 
+    def _normalize_scroll_result(self, scroll_result: Any) -> tuple:
+        """Return points and next offset from multiple Qdrant SDK shapes."""
+        if isinstance(scroll_result, tuple):
+            points = scroll_result[0] if len(scroll_result) > 0 else []
+            next_offset = scroll_result[1] if len(scroll_result) > 1 else None
+            return list(points or []), next_offset
+
+        points = getattr(scroll_result, "points", scroll_result)
+        next_offset = getattr(scroll_result, "next_page_offset", None)
+        return list(points or []), next_offset
+
     def _payload_to_record(self, point_id: Any, payload: Optional[Dict], embedding: Optional[Vector] = None) -> VectorRecord:
         """Restore a VectorRecord from Qdrant payload fields."""
         metadata = dict(payload or {})
@@ -619,4 +667,3 @@ class QdrantVectorStore(VectorStore):
         """Yield fixed-size batches."""
         for start in range(0, len(items), batch_size):
             yield list(items[start : start + batch_size])
-

@@ -228,6 +228,22 @@ Run the RAG CLI in interactive mode:
 python rag_cli.py tests/fixtures
 ```
 
+Build an index once and query an existing vector-store collection:
+
+```bash
+python rag_cli.py ingest knowledge_base \
+  --embedding-provider openai \
+  --embedding-dimension 512 \
+  --vector-store qdrant
+
+python rag_cli.py query "What does the knowledge base say about deployment?" \
+  --embedding-provider openai \
+  --embedding-dimension 512 \
+  --vector-store qdrant
+```
+
+The `memory` vector store is process-local and is useful for separation tests only; use Qdrant for cross-process persistence.
+
 Useful RAG CLI options:
 
 ```bash
@@ -499,6 +515,6 @@ Current T09 multi-query retrieval is a retrieval-side change, so hit_rate/MRR/re
 ## Roadmap
 
 1. Add more ingestion edge-case fixtures.
-2. Split indexing and querying commands.
-3. Add score thresholding or abstain logic for negative queries.
-4. Add caching, observability, and access-control features.
+2. Add score thresholding or abstain logic for negative queries.
+3. Add caching, observability, and access-control features.
+4. Add production deployment checks around Qdrant version compatibility and health probes.

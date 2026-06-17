@@ -228,6 +228,22 @@ python rag_cli.py tests/fixtures --question "What is this project?"
 python rag_cli.py tests/fixtures
 ```
 
+先构建索引，再查询已有向量库 collection：
+
+```bash
+python rag_cli.py ingest knowledge_base \
+  --embedding-provider openai \
+  --embedding-dimension 512 \
+  --vector-store qdrant
+
+python rag_cli.py query "What does the knowledge base say about deployment?" \
+  --embedding-provider openai \
+  --embedding-dimension 512 \
+  --vector-store qdrant
+```
+
+`memory` 向量库是进程内状态，只适合职责分离测试；跨进程持久化请使用 Qdrant。
+
 常用 RAG CLI 参数：
 
 ```bash
@@ -499,6 +515,6 @@ python -m eval.run --multi-query
 ## 后续路线
 
 1. 增加更多文档入库边界样例。
-2. 拆分索引构建和查询命令。
-3. 增加分数阈值或拒答逻辑，改善 negative query。
-4. 增加缓存、可观测性和权限控制。
+2. 增加分数阈值或拒答逻辑，改善 negative query。
+3. 增加缓存、可观测性和权限控制。
+4. 增加 Qdrant 版本兼容与健康检查等生产部署门禁。

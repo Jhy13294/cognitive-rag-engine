@@ -24,6 +24,20 @@ class InMemoryVectorStoreTests(unittest.TestCase):
         self.assertEqual(store.count(), 1)
         self.assertEqual(store.get_record("record-1").content, "alpha")
 
+    def test_list_records_returns_records_in_insertion_order(self):
+        store = InMemoryVectorStore(dimension=2)
+        store.add_records(
+            [
+                VectorRecord(id="record-1", content="alpha", embedding=[1.0, 0.0]),
+                VectorRecord(id="record-2", content="beta", embedding=[0.0, 1.0]),
+            ]
+        )
+
+        records = store.list_records()
+
+        self.assertEqual([record.id for record in records], ["record-1", "record-2"])
+        self.assertEqual([record.id for record in store.list_records(limit=1)], ["record-1"])
+
     def test_add_records_rejects_dimension_mismatch(self):
         store = InMemoryVectorStore(dimension=2)
 

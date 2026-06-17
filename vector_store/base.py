@@ -65,6 +65,11 @@ class VectorStore(ABC):
         pass
 
     @abstractmethod
+    def list_records(self, limit: Optional[int] = None) -> List[VectorRecord]:
+        """Return stored records for deterministic local index reconstruction."""
+        pass
+
+    @abstractmethod
     def delete(self, record_id: str) -> bool:
         """Delete a record by id."""
         pass
