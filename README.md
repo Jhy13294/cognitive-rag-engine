@@ -14,12 +14,13 @@ The current codebase focuses on the foundation:
 - Deterministic retrieval evaluation and optional reranking
 - Shared lexical retrieval primitives
 - Hybrid dense + BM25 retrieval with RRF fusion
+- Parent-child chunking for child retrieval and parent context expansion
 
 Caching, monitoring, API service, and permission control are planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel with rerank and hybrid retrieval.
+Current milestone: evaluated retrieval funnel with rerank, hybrid retrieval, and parent-child context expansion.
 
 Implemented:
 
@@ -49,6 +50,9 @@ Implemented:
 - BM25 sparse retriever that emits the same `VectorRecord.id` values as dense retrieval
 - RRF fusion with configurable dense/sparse weights and stable tie-breaking
 - Hybrid comparison evaluation for dense-only, bm25-only, and fused retrieval with reranker disabled
+- Parent-child splitter that indexes child chunks and stores parent chunks separately
+- In-memory ParentStore for deterministic parent lookup by `parent_id`
+- Optional post-top-k parent expansion in `RAGPipeline.retrieve`, with sibling child collapse by parent id
 
 Not implemented yet:
 
@@ -85,6 +89,9 @@ Not implemented yet:
 │   ├── factory.py             # Vector store factory
 │   ├── memory_store.py        # In-memory vector store
 │   └── qdrant_store.py        # Qdrant vector store adapter
+├── parent_store/
+│   ├── base.py                # Parent chunk key-value store interface
+│   └── memory_store.py        # In-memory parent store
 ├── eval/
 │   ├── golden_set.jsonl       # Retrieval golden set with relevant source lists
 │   ├── baseline.py            # Deterministic HashEmbeddingProvider baseline
@@ -115,6 +122,7 @@ Not implemented yet:
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
 │   ├── test_hybrid.py
+│   ├── test_parent_child.py
 │   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
@@ -158,6 +166,12 @@ HYBRID_SPARSE_WEIGHT=1.0
 RRF_K=60
 BM25_K1=1.5
 BM25_B=0.75
+
+PARENT_CHILD_ENABLED=false
+PARENT_CHUNK_SIZE=1600
+PARENT_CHUNK_OVERLAP=200
+CHILD_CHUNK_SIZE=400
+CHILD_CHUNK_OVERLAP=80
 ```
 
 ## Usage
@@ -193,6 +207,9 @@ python rag_cli.py knowledge_base \
   --hybrid-fetch-k 30 \
   --hybrid-dense-weight 0.2 \
   --hybrid-sparse-weight 1.0 \
+  --parent-child \
+  --parent-chunk-size 1600 \
+  --child-chunk-size 400 \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -334,6 +351,40 @@ pipeline = RAGPipeline(
 )
 ```
 
+Run with parent-child context expansion:
+
+```python
+from document_loader import load_and_split_documents_hierarchical
+from embeddings import OpenAIEmbeddingProvider
+from parent_store import InMemoryParentStore
+from rag import RAGPipeline
+from vector_store import InMemoryVectorStore
+
+split = load_and_split_documents_hierarchical(
+    "knowledge_base",
+    parent_chunk_size=1600,
+    parent_chunk_overlap=200,
+    child_chunk_size=400,
+    child_chunk_overlap=80,
+)
+
+parent_store = InMemoryParentStore()
+parent_store.add_parents(split.parents)
+
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_children = provider.embed_documents(split.children)
+
+store = InMemoryVectorStore(dimension=provider.dimension)
+store.add_documents(embedded_children)
+
+pipeline = RAGPipeline(
+    provider,
+    store,
+    client,
+    parent_store=parent_store,
+)
+```
+
 Run the test suite:
 
 ```bash
@@ -358,11 +409,19 @@ Run the hybrid comparison with reranker disabled:
 python -m eval.run --compare-hybrid --hybrid-fetch-k 30
 ```
 
+Run the parent-child child-corpus retrieval evaluation:
+
+```bash
+python -m eval.run --parent-child
+```
+
 The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
 
 Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The latest rerank report is under `eval/reports/`.
 
 Current T06 hybrid comparison, with reranker disabled and `HashEmbeddingProvider`, reports dense-only MRR@3 `0.677083`, bm25-only MRR@3 `1.000000`, and fused MRR@3 `1.000000`. The fused route also lifts exact_name and long_tail MRR@3 to `1.000000` while preserving deterministic byte-stable reports. The latest T06 reports are under `eval/reports/`.
+
+Current T07 parent-child mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
 
 ## Development Conventions
 
@@ -377,6 +436,6 @@ Current T06 hybrid comparison, with reranker disabled and `HashEmbeddingProvider
 
 1. Add more ingestion edge-case fixtures.
 2. Split indexing and querying commands.
-3. Add parent-child chunking and context packing improvements measured against the golden set.
+3. Add context packing improvements measured against the golden set.
 4. Add score thresholding or abstain logic for negative queries.
 5. Add caching, observability, and access-control features.

@@ -4,10 +4,11 @@ import logging
 from typing import Dict, List, Optional
 
 from config import Config
-from document_loader import load_and_split_documents
+from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
 from embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
 from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
 from logger import setup_logger
+from parent_store import InMemoryParentStore
 from rag import RAGPipeline, RAGResponse
 from rerank import create_reranker
 from vector_store import create_vector_store
@@ -51,6 +52,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hybrid-sparse-weight", type=float, default=None, help="BM25 path RRF weight.")
     parser.add_argument("--bm25-k1", type=float, default=None, help="BM25 k1 parameter.")
     parser.add_argument("--bm25-b", type=float, default=None, help="BM25 b parameter.")
+    parser.add_argument("--parent-child", action="store_true", help="Enable parent-child chunking and expansion.")
+    parser.add_argument("--parent-chunk-size", type=int, default=None, help="Parent chunk size for generation context.")
+    parser.add_argument("--parent-chunk-overlap", type=int, default=None, help="Parent chunk overlap.")
+    parser.add_argument("--child-chunk-size", type=int, default=None, help="Child chunk size for retrieval indexing.")
+    parser.add_argument("--child-chunk-overlap", type=int, default=None, help="Child chunk overlap.")
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
@@ -94,17 +100,42 @@ def build_rag_pipeline_from_path(
     hybrid_sparse_weight: Optional[float] = None,
     bm25_k1: Optional[float] = None,
     bm25_b: Optional[float] = None,
+    parent_child_enabled: Optional[bool] = None,
+    parent_chunk_size: Optional[int] = None,
+    parent_chunk_overlap: Optional[int] = None,
+    child_chunk_size: Optional[int] = None,
+    child_chunk_overlap: Optional[int] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
     """Ingest documents and build a ready-to-query RAG pipeline."""
-    chunks = load_and_split_documents(
-        path,
-        recursive=recursive,
-        clean=clean,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
+    use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+    parent_store = None
+
+    if use_parent_child:
+        Config.validate_parent_child()
+        hierarchical = load_and_split_documents_hierarchical(
+            path,
+            recursive=recursive,
+            clean=clean,
+            parent_chunk_size=parent_chunk_size if parent_chunk_size is not None else Config.PARENT_CHUNK_SIZE,
+            parent_chunk_overlap=(
+                parent_chunk_overlap if parent_chunk_overlap is not None else Config.PARENT_CHUNK_OVERLAP
+            ),
+            child_chunk_size=child_chunk_size if child_chunk_size is not None else Config.CHILD_CHUNK_SIZE,
+            child_chunk_overlap=child_chunk_overlap if child_chunk_overlap is not None else Config.CHILD_CHUNK_OVERLAP,
+        )
+        chunks = hierarchical.children
+        parent_store = InMemoryParentStore()
+        parent_store.add_parents(hierarchical.parents)
+    else:
+        chunks = load_and_split_documents(
+            path,
+            recursive=recursive,
+            clean=clean,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
 
     if not chunks:
         raise ValueError("No supported documents were loaded from the provided path")
@@ -166,13 +197,15 @@ def build_rag_pipeline_from_path(
         chat_client = APIClient(Config.API_KEY, Config.API_URL)
 
     logger.info(
-        "RAG pipeline ready | chunks=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s",
+        "RAG pipeline ready | chunks=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s",
         len(chunks),
+        parent_store.count() if parent_store is not None else 0,
         embedding_provider.model_name,
         embedding_provider.dimension,
         vector_store_name or Config.VECTOR_STORE_PROVIDER,
         reranker.model_name if reranker else None,
         use_hybrid,
+        use_parent_child,
     )
     return RAGPipeline(
         embedding_provider=embedding_provider,
@@ -184,6 +217,7 @@ def build_rag_pipeline_from_path(
         fetch_k=pipeline_fetch_k,
         bm25_retriever=bm25_retriever,
         rrf=rrf,
+        parent_store=parent_store,
     )
 
 
@@ -295,6 +329,11 @@ def main(argv=None) -> int:
             hybrid_sparse_weight=args.hybrid_sparse_weight,
             bm25_k1=args.bm25_k1,
             bm25_b=args.bm25_b,
+            parent_child_enabled=True if args.parent_child else None,
+            parent_chunk_size=args.parent_chunk_size,
+            parent_chunk_overlap=args.parent_chunk_overlap,
+            child_chunk_size=args.child_chunk_size,
+            child_chunk_overlap=args.child_chunk_overlap,
             top_k=args.top_k,
             max_context_chars=args.max_context_chars,
         )

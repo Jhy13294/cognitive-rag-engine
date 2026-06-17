@@ -14,12 +14,13 @@
 - 确定性检索评估和可选重排
 - 共享词法检索基础能力
 - Dense + BM25 混合检索和 RRF 融合
+- Parent-Child 分块：子块检索、父块展开供给生成
 
 缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗，已包含 rerank 和 hybrid retrieval。
+当前阶段：可评估的检索漏斗，已包含 rerank、hybrid retrieval 和 parent-child context expansion。
 
 已完成：
 
@@ -49,6 +50,9 @@
 - BM25 稀疏检索器，输出与 dense 检索一致的 `VectorRecord.id`
 - RRF 融合器，支持配置 dense/sparse 权重并稳定处理同分排序
 - hybrid 对照评估：在关闭 reranker 的前提下并报 dense-only、bm25-only、fused 三路指标
+- Parent-Child 分块器：只索引子块，父块通过 `parent_id` 键值取回
+- 内存 `ParentStore`，用于本地确定性父块展开
+- `RAGPipeline.retrieve` 支持 top-k 之后展开父块，并按父块折叠兄弟子块
 
 尚未完成：
 
@@ -85,6 +89,9 @@
 │   ├── factory.py             # 向量库工厂
 │   ├── memory_store.py        # 内存向量库
 │   └── qdrant_store.py        # Qdrant 向量库适配器
+├── parent_store/
+│   ├── base.py                # 父块键值存储接口
+│   └── memory_store.py        # 内存父块存储
 ├── eval/
 │   ├── golden_set.jsonl       # 使用 relevant 列表标注的检索 golden set
 │   ├── baseline.py            # HashEmbeddingProvider 确定性基线
@@ -115,6 +122,7 @@
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
 │   ├── test_hybrid.py
+│   ├── test_parent_child.py
 │   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
@@ -158,6 +166,12 @@ HYBRID_SPARSE_WEIGHT=1.0
 RRF_K=60
 BM25_K1=1.5
 BM25_B=0.75
+
+PARENT_CHILD_ENABLED=false
+PARENT_CHUNK_SIZE=1600
+PARENT_CHUNK_OVERLAP=200
+CHILD_CHUNK_SIZE=400
+CHILD_CHUNK_OVERLAP=80
 ```
 
 ## 使用
@@ -193,6 +207,9 @@ python rag_cli.py knowledge_base \
   --hybrid-fetch-k 30 \
   --hybrid-dense-weight 0.2 \
   --hybrid-sparse-weight 1.0 \
+  --parent-child \
+  --parent-chunk-size 1600 \
+  --child-chunk-size 400 \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -334,6 +351,40 @@ pipeline = RAGPipeline(
 )
 ```
 
+使用 Parent-Child 父块展开运行管线：
+
+```python
+from document_loader import load_and_split_documents_hierarchical
+from embeddings import OpenAIEmbeddingProvider
+from parent_store import InMemoryParentStore
+from rag import RAGPipeline
+from vector_store import InMemoryVectorStore
+
+split = load_and_split_documents_hierarchical(
+    "knowledge_base",
+    parent_chunk_size=1600,
+    parent_chunk_overlap=200,
+    child_chunk_size=400,
+    child_chunk_overlap=80,
+)
+
+parent_store = InMemoryParentStore()
+parent_store.add_parents(split.parents)
+
+provider = OpenAIEmbeddingProvider(dimensions=512)
+embedded_children = provider.embed_documents(split.children)
+
+store = InMemoryVectorStore(dimension=provider.dimension)
+store.add_documents(embedded_children)
+
+pipeline = RAGPipeline(
+    provider,
+    store,
+    client,
+    parent_store=parent_store,
+)
+```
+
 运行测试：
 
 ```bash
@@ -358,11 +409,19 @@ python -m eval.run --rerank-provider deterministic --rerank-fetch-k 30 --rerank-
 python -m eval.run --compare-hybrid --hybrid-fetch-k 30
 ```
 
+运行 Parent-Child 子块语料检索评估：
+
+```bash
+python -m eval.run --parent-child
+```
+
 评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
 
 当前 T05 重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
 
 当前 T06 hybrid 对照在关闭 reranker、使用 `HashEmbeddingProvider` 的条件下：dense-only MRR@3 为 `0.677083`，bm25-only MRR@3 为 `1.000000`，fused MRR@3 为 `1.000000`；fused 的 exact_name 和 long_tail MRR@3 也达到 `1.000000`，并保持报告逐字节可复现。最新 T06 报告位于 `eval/reports/`。
+
+当前 T07 Parent-Child 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。生成侧连贯性和 Context Precision 的真账留到 T14 Ragas。
 
 ## 代码规范
 
@@ -377,6 +436,6 @@ python -m eval.run --compare-hybrid --hybrid-fetch-k 30
 
 1. 增加更多文档入库边界样例。
 2. 拆分索引构建和查询命令。
-3. 用同一份 golden set 度量 parent-child 分块和上下文装填改造。
+3. 用同一份 golden set 度量上下文装填改造。
 4. 增加分数阈值或拒答逻辑，改善 negative query。
 5. 增加缓存、可观测性和权限控制。

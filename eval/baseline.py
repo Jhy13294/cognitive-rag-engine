@@ -1,8 +1,9 @@
 from typing import Callable, Dict, List, Tuple
 
-from document_loader import load_and_split_documents
+from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
 from embeddings import HashEmbeddingProvider
 from hybrid import BM25Retriever, RRFConfig, RankedRecord, ReciprocalRankFusion
+from parent_store import InMemoryParentStore
 from rag import RAGPipeline, RetrievedSource
 from rerank import Reranker
 from vector_store import InMemoryVectorStore
@@ -22,19 +23,43 @@ def build_hash_retriever(
     sparse_weight: float = 1.0,
     bm25_k1: float = 1.5,
     bm25_b: float = 0.75,
+    parent_child_enabled: bool = False,
+    expand_parent_context: bool = False,
+    parent_chunk_size: int = 1600,
+    parent_chunk_overlap: int = 200,
+    child_chunk_size: int = 400,
+    child_chunk_overlap: int = 80,
 ) -> Tuple[Callable[[str, int], List[RetrievedSource]], Dict]:
     """Build a deterministic offline retriever for evaluation baselines.
 
     Documents are embedded and inserted once before evaluation starts. The
     returned callable only performs query embedding and vector retrieval.
     """
-    chunks = load_and_split_documents(
-        knowledge_path,
-        recursive=True,
-        clean=True,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
+    parent_store = None
+    parent_count = 0
+    if parent_child_enabled:
+        hierarchical = load_and_split_documents_hierarchical(
+            knowledge_path,
+            recursive=True,
+            clean=True,
+            parent_chunk_size=parent_chunk_size,
+            parent_chunk_overlap=parent_chunk_overlap,
+            child_chunk_size=child_chunk_size,
+            child_chunk_overlap=child_chunk_overlap,
+        )
+        chunks = hierarchical.children
+        parent_count = len(hierarchical.parents)
+        if expand_parent_context:
+            parent_store = InMemoryParentStore()
+            parent_store.add_parents(hierarchical.parents)
+    else:
+        chunks = load_and_split_documents(
+            knowledge_path,
+            recursive=True,
+            clean=True,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
     if not chunks:
         raise ValueError(f"No supported documents loaded from knowledge path: {knowledge_path}")
 
@@ -69,6 +94,8 @@ def build_hash_retriever(
         fetch_k=fetch_k,
         bm25_retriever=bm25_retriever if normalized_mode == "hybrid" else None,
         rrf=rrf,
+        parent_store=parent_store,
+        expand_parent_context=expand_parent_context,
     )
 
     def retrieve(question: str, top_k: int) -> List[RetrievedSource]:
@@ -96,6 +123,18 @@ def build_hash_retriever(
         "chunk_count": len(chunks),
         "record_count": len(vector_records),
     }
+    if parent_child_enabled:
+        metadata.update(
+            {
+                "parent_child_enabled": True,
+                "expand_parent_context": expand_parent_context,
+                "parent_chunk_size": parent_chunk_size,
+                "parent_chunk_overlap": parent_chunk_overlap,
+                "child_chunk_size": child_chunk_size,
+                "child_chunk_overlap": child_chunk_overlap,
+                "parent_count": parent_count,
+            }
+        )
     return retrieve, metadata
 
 

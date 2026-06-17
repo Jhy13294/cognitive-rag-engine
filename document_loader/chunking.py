@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 from .base import Document
 from logger import setup_logger
@@ -147,6 +147,145 @@ class TextSplitter:
         return candidate[-self.chunk_size:]
 
 
+@dataclass
+class ParentChildSplitResult:
+    """Hierarchical split output for parent-child RAG ingestion."""
+
+    parents: List[Document]
+    children: List[Document]
+
+
+@dataclass
+class ParentChildSplitter:
+    """Two-level splitter that indexes child chunks and stores parent chunks."""
+
+    parent_chunk_size: int = 1600
+    parent_chunk_overlap: int = 200
+    child_chunk_size: int = 400
+    child_chunk_overlap: int = 80
+    separators: List[str] = field(
+        default_factory=lambda: ["\n\n", "\n", "。", "；", "，", ".", ";", ",", " ", ""]
+    )
+
+    def __post_init__(self):
+        """Validate parent-child splitter configuration."""
+        if self.parent_chunk_size <= 0:
+            raise ValueError("parent_chunk_size must be greater than 0")
+        if self.child_chunk_size <= 0:
+            raise ValueError("child_chunk_size must be greater than 0")
+        if self.parent_chunk_overlap < 0:
+            raise ValueError("parent_chunk_overlap cannot be negative")
+        if self.child_chunk_overlap < 0:
+            raise ValueError("child_chunk_overlap cannot be negative")
+        if self.parent_chunk_overlap >= self.parent_chunk_size:
+            raise ValueError("parent_chunk_overlap must be smaller than parent_chunk_size")
+        if self.child_chunk_overlap >= self.child_chunk_size:
+            raise ValueError("child_chunk_overlap must be smaller than child_chunk_size")
+        if self.child_chunk_size >= self.parent_chunk_size:
+            raise ValueError("child_chunk_size must be smaller than parent_chunk_size")
+
+    def split_document(self, document: Document) -> ParentChildSplitResult:
+        """Split one document into parent chunks and child chunks."""
+        parent_splitter = TextSplitter(
+            chunk_size=self.parent_chunk_size,
+            chunk_overlap=self.parent_chunk_overlap,
+            separators=list(self.separators),
+        )
+        child_splitter = TextSplitter(
+            chunk_size=self.child_chunk_size,
+            chunk_overlap=self.child_chunk_overlap,
+            separators=list(self.separators),
+        )
+        parent_texts = parent_splitter.split_text(document.content)
+        parents = []
+        children = []
+        parent_search_start = 0
+        child_index = 0
+
+        for parent_index, parent_text in enumerate(parent_texts):
+            parent_start, parent_end = locate_text_span(
+                document.content,
+                parent_text,
+                parent_search_start,
+            )
+            parent_text = document.content[parent_start:parent_end]
+            parent_search_start = max(parent_start + 1, parent_end - self.parent_chunk_overlap)
+
+            parent_metadata = dict(document.metadata)
+            parent_metadata.update(
+                {
+                    "parent_index": parent_index,
+                    "total_parents": len(parent_texts),
+                    "start_char": parent_start,
+                    "end_char": parent_end,
+                    "parent_chunk_size": len(parent_text),
+                }
+            )
+            parent_metadata["parent_id"] = build_parent_id(parent_text, parent_metadata)
+            parent = Document(content=parent_text, metadata=parent_metadata)
+            parents.append(parent)
+
+            child_texts = child_splitter.split_text(parent_text)
+            child_search_start = 0
+            for child_text in child_texts:
+                relative_start, relative_end = locate_text_span(parent_text, child_text, child_search_start)
+                child_text = parent_text[relative_start:relative_end]
+                child_search_start = max(relative_start + 1, relative_end - self.child_chunk_overlap)
+                child_start = parent_start + relative_start
+                child_end = parent_start + relative_end
+
+                child_metadata = dict(document.metadata)
+                child_metadata.update(
+                    {
+                        "chunk_index": child_index,
+                        "start_char": child_start,
+                        "end_char": child_end,
+                        "chunk_size": len(child_text),
+                        "parent_id": parent.metadata["parent_id"],
+                        "parent_index": parent_index,
+                        "parent_start_char": parent_start,
+                        "parent_end_char": parent_end,
+                    }
+                )
+                children.append(Document(content=child_text, metadata=child_metadata))
+                child_index += 1
+
+        for child in children:
+            child.metadata["total_chunks"] = len(children)
+
+        return ParentChildSplitResult(parents=parents, children=children)
+
+    def split_documents(self, documents: Iterable[Document]) -> ParentChildSplitResult:
+        """Split multiple documents into parent chunks and child chunks."""
+        all_parents = []
+        all_children = []
+
+        for document in documents:
+            result = self.split_document(document)
+            all_parents.extend(result.parents)
+            all_children.extend(result.children)
+
+        return ParentChildSplitResult(parents=all_parents, children=all_children)
+
+
+def locate_text_span(text: str, needle: str, search_start: int = 0) -> Tuple[int, int]:
+    """Locate a chunk span in a source text with deterministic fallback."""
+    start_char = text.find(needle, search_start)
+    if start_char == -1:
+        start_char = text.find(needle)
+    if start_char == -1:
+        start_char = min(max(search_start, 0), len(text))
+    end_char = min(start_char + len(needle), len(text))
+    return start_char, end_char
+
+
+def build_parent_id(content: str, metadata: dict) -> str:
+    """Build a parent id with the existing deterministic record-id primitive."""
+    from vector_store.base import build_record_id
+
+    return build_record_id(content, metadata)
+
+
 def split_text(text: str, chunk_size: int = 800, chunk_overlap: int = 120) -> List[str]:
     """Split plain text with default splitter settings."""
     return TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap).split_text(text)
@@ -155,3 +294,19 @@ def split_text(text: str, chunk_size: int = 800, chunk_overlap: int = 120) -> Li
 def split_document(document: Document, chunk_size: int = 800, chunk_overlap: int = 120) -> List[Document]:
     """Split a Document with default splitter settings."""
     return TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap).split_document(document)
+
+
+def split_document_hierarchical(
+    document: Document,
+    parent_chunk_size: int = 1600,
+    parent_chunk_overlap: int = 200,
+    child_chunk_size: int = 400,
+    child_chunk_overlap: int = 80,
+) -> ParentChildSplitResult:
+    """Split a Document into parent chunks and child chunks."""
+    return ParentChildSplitter(
+        parent_chunk_size=parent_chunk_size,
+        parent_chunk_overlap=parent_chunk_overlap,
+        child_chunk_size=child_chunk_size,
+        child_chunk_overlap=child_chunk_overlap,
+    ).split_document(document)

@@ -104,6 +104,12 @@ class Config:
     BM25_K1 = _env_float("BM25_K1", 1.5)
     BM25_B = _env_float("BM25_B", 0.75)
 
+    PARENT_CHILD_ENABLED = _env_bool("PARENT_CHILD_ENABLED", False)
+    PARENT_CHUNK_SIZE = _env_int("PARENT_CHUNK_SIZE", 1600)
+    PARENT_CHUNK_OVERLAP = _env_int("PARENT_CHUNK_OVERLAP", 200)
+    CHILD_CHUNK_SIZE = _env_int("CHILD_CHUNK_SIZE", 400)
+    CHILD_CHUNK_OVERLAP = _env_int("CHILD_CHUNK_OVERLAP", 80)
+
     @classmethod
     def validate(cls):
         """Validate required configuration values."""
@@ -207,4 +213,29 @@ class Config:
         logger.debug("RRF k: %s", cls.RRF_K)
         logger.debug("BM25 k1: %s", cls.BM25_K1)
         logger.debug("BM25 b: %s", cls.BM25_B)
+        return True
+
+    @classmethod
+    def validate_parent_child(cls):
+        """Validate parent-child chunking configuration."""
+        if cls.PARENT_CHUNK_SIZE <= 0:
+            raise ValueError("PARENT_CHUNK_SIZE must be greater than 0.")
+        if cls.CHILD_CHUNK_SIZE <= 0:
+            raise ValueError("CHILD_CHUNK_SIZE must be greater than 0.")
+        if cls.PARENT_CHUNK_OVERLAP < 0:
+            raise ValueError("PARENT_CHUNK_OVERLAP cannot be negative.")
+        if cls.CHILD_CHUNK_OVERLAP < 0:
+            raise ValueError("CHILD_CHUNK_OVERLAP cannot be negative.")
+        if cls.PARENT_CHUNK_OVERLAP >= cls.PARENT_CHUNK_SIZE:
+            raise ValueError("PARENT_CHUNK_OVERLAP must be smaller than PARENT_CHUNK_SIZE.")
+        if cls.CHILD_CHUNK_OVERLAP >= cls.CHILD_CHUNK_SIZE:
+            raise ValueError("CHILD_CHUNK_OVERLAP must be smaller than CHILD_CHUNK_SIZE.")
+        if cls.CHILD_CHUNK_SIZE >= cls.PARENT_CHUNK_SIZE:
+            raise ValueError("CHILD_CHUNK_SIZE must be smaller than PARENT_CHUNK_SIZE.")
+
+        logger.debug("Parent-child enabled: %s", cls.PARENT_CHILD_ENABLED)
+        logger.debug("Parent chunk size: %s", cls.PARENT_CHUNK_SIZE)
+        logger.debug("Parent chunk overlap: %s", cls.PARENT_CHUNK_OVERLAP)
+        logger.debug("Child chunk size: %s", cls.CHILD_CHUNK_SIZE)
+        logger.debug("Child chunk overlap: %s", cls.CHILD_CHUNK_OVERLAP)
         return True

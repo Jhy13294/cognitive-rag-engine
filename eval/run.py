@@ -55,6 +55,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bm25-k1", type=float, default=Config.BM25_K1, help="BM25 k1 parameter.")
     parser.add_argument("--bm25-b", type=float, default=Config.BM25_B, help="BM25 b parameter.")
+    parser.add_argument("--parent-child", action="store_true", help="Use parent-child chunking.")
+    parser.add_argument(
+        "--expand-parents",
+        action="store_true",
+        help="Return parent content in reports for diagnostic inspection; retrieval metrics should use the default child list.",
+    )
+    parser.add_argument(
+        "--no-parent-expand",
+        action="store_true",
+        help="Compatibility flag; parent expansion is disabled by default for retrieval metrics.",
+    )
+    parser.add_argument("--parent-chunk-size", type=int, default=Config.PARENT_CHUNK_SIZE, help="Parent chunk size.")
+    parser.add_argument(
+        "--parent-chunk-overlap",
+        type=int,
+        default=Config.PARENT_CHUNK_OVERLAP,
+        help="Parent chunk overlap.",
+    )
+    parser.add_argument("--child-chunk-size", type=int, default=Config.CHILD_CHUNK_SIZE, help="Child chunk size.")
+    parser.add_argument(
+        "--child-chunk-overlap",
+        type=int,
+        default=Config.CHILD_CHUNK_OVERLAP,
+        help="Child chunk overlap.",
+    )
     parser.add_argument(
         "--rerank-provider",
         choices=["none", "deterministic", "cohere"],
@@ -106,6 +131,12 @@ def main(argv: List[str] = None) -> int:
         sparse_weight=args.hybrid_sparse_weight,
         bm25_k1=args.bm25_k1,
         bm25_b=args.bm25_b,
+        parent_child_enabled=args.parent_child,
+        expand_parent_context=args.expand_parents and not args.no_parent_expand,
+        parent_chunk_size=args.parent_chunk_size,
+        parent_chunk_overlap=args.parent_chunk_overlap,
+        child_chunk_size=args.child_chunk_size,
+        child_chunk_overlap=args.child_chunk_overlap,
     )
 
     metadata = {
@@ -170,6 +201,12 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
             sparse_weight=args.hybrid_sparse_weight,
             bm25_k1=args.bm25_k1,
             bm25_b=args.bm25_b,
+            parent_child_enabled=args.parent_child,
+            expand_parent_context=args.expand_parents and not args.no_parent_expand,
+            parent_chunk_size=args.parent_chunk_size,
+            parent_chunk_overlap=args.parent_chunk_overlap,
+            child_chunk_size=args.child_chunk_size,
+            child_chunk_overlap=args.child_chunk_overlap,
         )
         reports[label] = evaluate_retriever(
             retrieve=retrieve,
@@ -184,20 +221,33 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
             },
         )
 
+    metadata = {
+        **common_metadata,
+        "comparison_modes": [label for label, _ in modes],
+        "reranker": None,
+        "rrf_k": args.rrf_k,
+        "hybrid_dense_weight": args.hybrid_dense_weight,
+        "hybrid_sparse_weight": args.hybrid_sparse_weight,
+        "bm25_k1": args.bm25_k1,
+        "bm25_b": args.bm25_b,
+        "hybrid_fetch_k": args.hybrid_fetch_k,
+        "evaluator_contract": "retrieve(question, top_k)",
+    }
+    if args.parent_child:
+        metadata.update(
+            {
+                "parent_child_enabled": True,
+                "expand_parent_context": args.expand_parents and not args.no_parent_expand,
+                "parent_chunk_size": args.parent_chunk_size,
+                "parent_chunk_overlap": args.parent_chunk_overlap,
+                "child_chunk_size": args.child_chunk_size,
+                "child_chunk_overlap": args.child_chunk_overlap,
+            }
+        )
+
     return {
         "report_type": "hybrid_comparison",
-        "metadata": {
-            **common_metadata,
-            "comparison_modes": [label for label, _ in modes],
-            "reranker": None,
-            "rrf_k": args.rrf_k,
-            "hybrid_dense_weight": args.hybrid_dense_weight,
-            "hybrid_sparse_weight": args.hybrid_sparse_weight,
-            "bm25_k1": args.bm25_k1,
-            "bm25_b": args.bm25_b,
-            "hybrid_fetch_k": args.hybrid_fetch_k,
-            "evaluator_contract": "retrieve(question, top_k)",
-        },
+        "metadata": metadata,
         "k_values": sorted(set(args.k)),
         "reports": reports,
         "comparison": summarize_comparison(reports),

@@ -47,6 +47,7 @@ def render_markdown_report(report: Dict) -> str:
         "| k | hit_rate | MRR | recall | negative_empty_rate | negative_false_recall_rate |",
         "|---|---:|---:|---:|---:|---:|",
     ]
+    insert_parent_child_metadata(lines, metadata, after="- rerank_top_n")
 
     for k, values in report.get("metrics", {}).items():
         lines.append(
@@ -144,6 +145,7 @@ def render_hybrid_comparison_report(report: Dict) -> str:
         "| mode | k | MRR | hit_rate | recall | negative_false_recall_rate |",
         "|---|---:|---:|---:|---:|---:|",
     ]
+    insert_parent_child_metadata(lines, metadata, after="- hybrid_fetch_k")
 
     for mode, values in comparison.items():
         for k in k_values:
@@ -180,3 +182,20 @@ def render_hybrid_comparison_report(report: Dict) -> str:
             )
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def insert_parent_child_metadata(lines, metadata: Dict, after: str) -> None:
+    """Insert parent-child metadata only for reports that enabled it."""
+    if "parent_child_enabled" not in metadata:
+        return
+
+    insert_at = next((index + 1 for index, line in enumerate(lines) if line.startswith(after)), len(lines))
+    parent_lines = [
+        f"- parent_child_enabled: `{metadata.get('parent_child_enabled')}`",
+        f"- expand_parent_context: `{metadata.get('expand_parent_context')}`",
+        f"- parent_chunk_size: `{metadata.get('parent_chunk_size')}`",
+        f"- parent_chunk_overlap: `{metadata.get('parent_chunk_overlap')}`",
+        f"- child_chunk_size: `{metadata.get('child_chunk_size')}`",
+        f"- child_chunk_overlap: `{metadata.get('child_chunk_overlap')}`",
+    ]
+    lines[insert_at:insert_at] = parent_lines

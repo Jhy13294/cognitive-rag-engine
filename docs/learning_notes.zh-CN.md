@@ -29,6 +29,8 @@
 - BM25 稀疏检索器
 - RRF 融合器
 - reranker 关闭条件下的 dense-only / bm25-only / fused 三路 hybrid 对照评估
+- Parent-Child 分块与父块展开
+- 内存 ParentStore
 
 ## 为什么先做文档加载
 
@@ -193,6 +195,44 @@ T06 的评估必须关闭 reranker。原因是当前 T05 确定性 reranker 已�
 
 RRF 当前默认配置为 `k=60`、dense weight `0.2`、sparse weight `1.0`。这样做是因为 hash dense 路语义噪声较大，如果等权融合，dense 噪声可能拖累 BM25；下调 dense 权重后，fusion 可以稳定不低于 bm25-only，并保留未来接入真实语义 embedding 时的双路融合空间。
 
+## Parent-Child 分块
+
+T07 的核心是把“检索单元”和“生成单元”拆开：
+
+- 子块小，负责进入 embedding、向量库、BM25、RRF 和 rerank。
+- 父块大，不生成 embedding，不进任何检索索引，只通过 `parent_id` 从 ParentStore 取回。
+- 父块展开发生在最终 top-k 子块之后，只替换内容，并按父块折叠兄弟子块。
+
+这个设计解决的是“命中片段太窄，喂给 LLM 的上下文不完整”的问题。它不应该改变召回顺序，也不应该被拿来宣称 MRR 提升。
+
+当前实现遵守这些边界：
+
+- `ParentChildSplitter` 先切父块，再切子块。
+- 子块 metadata 携带 `parent_id`、`parent_index`、父块跨度和自身跨度。
+- `InMemoryParentStore` 只支持 `add_parents()`、`get_parent()`、`count()`、`clear()`，没有 `similarity_search()`。
+- `RAGPipeline.retrieve` 在 dense/BM25/RRF/rerank 都完成之后，才根据 `parent_id` 展开父块。
+- 命中同一父块的多个兄弟子块会折叠成一个父块 source，保留排名最高的子块，并记录 `collapsed_child_count`。
+
+评估时必须特别小心：父子模式会让子块比原来的 flat chunk 更小，检索指标可能上下浮动。这种变化来自“切分粒度变化”，不是父块展开本身的功劳。当前 `eval.run --parent-child` 默认关闭父块展开，只评子块 ranked list；如果显式打开 `--expand-parents`，报告只适合做内容展开诊断，不能拿来宣称检索指标提升。
+
+当前 T07 的离线证据：
+
+- eval fixture 产生 5 个父块、17 个子块。
+- 17/17 个子块都能唯一映射到父块。
+- 17/17 个子块内容都是父块内容的子串。
+- 17/17 个子块跨度都被父块跨度覆盖。
+- q001 的 ORION-17 子块从 216 字符展开为 834 字符父块，补齐了后续上下文。
+- 兄弟子块折叠测试中，两个同父子块折叠为一个父块 source，`collapsed_child_count=2`。
+
+预算相关能力仍然不属于 T07：
+
+- 预算感知装填。
+- 句中截断修复。
+- 跨源近重复去重。
+- 真实 token 预算估算。
+
+这些都留给 T08 上下文装填与去重修复。
+
 ## 最小 RAG 管线
 
 当前的最小 RAG 管线包括四步：
@@ -219,4 +259,4 @@ RRF 当前默认配置为 `k=60`、dense weight `0.2`、sparse weight `1.0`。�
 
 ## 当前风险
 
-当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线、rerank 漏斗和 hybrid 检索融合。下一步建议在两个方向中选择一个：工程化方向先回补索引构建/查询职责分离；检索质量方向继续做 parent-child 分块和上下文装填修复。同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。
+当前项目已经有了最小测试体系、统一加载入口、OpenAI embedding provider、内存向量库、Qdrant 向量库适配器、最小 RAG 管线、RAG CLI、检索评估基线、rerank 漏斗、hybrid 检索融合和 parent-child 父块展开。下一步建议在两个方向中选择一个：工程化方向先回补索引构建/查询职责分离；检索质量方向继续做 T08 上下文装填修复。同时继续补更多边界样例，例如扫描版 PDF、超长 Markdown、空文档、乱码文本、多表格 Word、以及带权限元数据的企业文档。

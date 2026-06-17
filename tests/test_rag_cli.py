@@ -65,6 +65,15 @@ class RAGCLITests(unittest.TestCase):
                 "1.4",
                 "--bm25-b",
                 "0.7",
+                "--parent-child",
+                "--parent-chunk-size",
+                "1600",
+                "--parent-chunk-overlap",
+                "200",
+                "--child-chunk-size",
+                "400",
+                "--child-chunk-overlap",
+                "80",
                 "--no-clean",
                 "--non-recursive",
             ]
@@ -87,6 +96,11 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(args.hybrid_sparse_weight, 1.0)
         self.assertEqual(args.bm25_k1, 1.4)
         self.assertEqual(args.bm25_b, 0.7)
+        self.assertTrue(args.parent_child)
+        self.assertEqual(args.parent_chunk_size, 1600)
+        self.assertEqual(args.parent_chunk_overlap, 200)
+        self.assertEqual(args.child_chunk_size, 400)
+        self.assertEqual(args.child_chunk_overlap, 80)
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
@@ -116,6 +130,7 @@ class RAGCLITests(unittest.TestCase):
             embedding_dimension=64,
             vector_store_name="memory",
             rerank_provider_name="none",
+            parent_child_enabled=False,
             top_k=2,
             max_context_chars=1000,
         )
@@ -139,6 +154,7 @@ class RAGCLITests(unittest.TestCase):
             vector_store_name="memory",
             rerank_provider_name="deterministic",
             rerank_fetch_k=8,
+            parent_child_enabled=False,
             top_k=2,
             max_context_chars=1000,
         )
@@ -163,6 +179,7 @@ class RAGCLITests(unittest.TestCase):
             rrf_k=50,
             hybrid_dense_weight=0.2,
             hybrid_sparse_weight=1.0,
+            parent_child_enabled=False,
             top_k=2,
             max_context_chars=1000,
         )
@@ -170,6 +187,29 @@ class RAGCLITests(unittest.TestCase):
         self.assertIsNotNone(pipeline.bm25_retriever)
         self.assertEqual(pipeline.fetch_k, 8)
         self.assertEqual(pipeline.rrf.config.k, 50)
+
+    def test_explicit_parent_child_enables_parent_store(self):
+        pipeline = build_rag_pipeline_from_path(
+            str(FIXTURES_DIR),
+            chat_client=FakeChatClient(),
+            clean=True,
+            recursive=True,
+            embedding_provider_name="hash",
+            embedding_dimension=64,
+            vector_store_name="memory",
+            rerank_provider_name="none",
+            parent_child_enabled=True,
+            parent_chunk_size=160,
+            parent_chunk_overlap=20,
+            child_chunk_size=80,
+            child_chunk_overlap=10,
+            top_k=2,
+            max_context_chars=1000,
+        )
+
+        self.assertIsNotNone(pipeline.parent_store)
+        self.assertTrue(pipeline.expand_parent_context)
+        self.assertGreater(pipeline.parent_store.count(), 0)
 
     def test_format_response_includes_answer_and_sources(self):
         chat_client = FakeChatClient()
@@ -184,6 +224,7 @@ class RAGCLITests(unittest.TestCase):
             embedding_dimension=64,
             vector_store_name="memory",
             rerank_provider_name="none",
+            parent_child_enabled=False,
             top_k=2,
             max_context_chars=1000,
         )

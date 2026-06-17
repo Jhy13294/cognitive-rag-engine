@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Protocol
 from embeddings import EmbeddingProvider
 from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion
 from logger import setup_logger
+from parent_store import ParentStore
 from rerank import Reranker
 from vector_store import SearchResult, VectorStore
 
@@ -61,6 +62,8 @@ class RAGPipeline:
         fetch_k: Optional[int] = None,
         bm25_retriever: Optional[BM25Retriever] = None,
         rrf: Optional[ReciprocalRankFusion] = None,
+        parent_store: Optional[ParentStore] = None,
+        expand_parent_context: bool = True,
     ):
         """Initialize the RAG pipeline."""
         if top_k <= 0:
@@ -80,6 +83,8 @@ class RAGPipeline:
         self.fetch_k = fetch_k
         self.bm25_retriever = bm25_retriever
         self.rrf = rrf or ReciprocalRankFusion()
+        self.parent_store = parent_store
+        self.expand_parent_context = expand_parent_context
 
     def retrieve(
         self,
@@ -99,17 +104,17 @@ class RAGPipeline:
                 metadata_filter=metadata_filter,
             )
             if self.reranker is None:
-                return sources[:requested_top_k]
+                return self._finalize_sources(sources[:requested_top_k])
 
             try:
-                return self._rerank_sources(question, sources, requested_top_k)
+                return self._finalize_sources(self._rerank_sources(question, sources, requested_top_k))
             except Exception as e:
                 logger.warning(
                     "Rerank failed; falling back to hybrid order | error=%s | requested_top_k=%s",
                     e,
                     requested_top_k,
                 )
-                return sources[:requested_top_k]
+                return self._finalize_sources(sources[:requested_top_k])
 
         search_results = self.vector_store.similarity_search(
             query_embedding,
@@ -119,17 +124,17 @@ class RAGPipeline:
         sources = self._to_sources(search_results)
 
         if self.reranker is None:
-            return sources
+            return self._finalize_sources(sources)
 
         try:
-            return self._rerank_sources(question, sources, requested_top_k)
+            return self._finalize_sources(self._rerank_sources(question, sources, requested_top_k))
         except Exception as e:
             logger.warning(
                 "Rerank failed; falling back to dense order | error=%s | requested_top_k=%s",
                 e,
                 requested_top_k,
             )
-            return sources[:requested_top_k]
+            return self._finalize_sources(sources[:requested_top_k])
 
     def build_prompt(self, question: str, sources: List[RetrievedSource]) -> str:
         """Build the user prompt sent to the chat client."""
@@ -261,6 +266,75 @@ class RAGPipeline:
             )
         return sources
 
+    def _finalize_sources(self, sources: List[RetrievedSource]) -> List[RetrievedSource]:
+        """Apply post-retrieval source transformations."""
+        if self.parent_store is None or not self.expand_parent_context:
+            return sources
+        return self._expand_parent_sources(sources)
+
+    def _expand_parent_sources(self, sources: List[RetrievedSource]) -> List[RetrievedSource]:
+        """Replace child chunk content with parent content after retrieval."""
+        expanded_sources = []
+        parent_positions = {}
+
+        for source in sources:
+            parent_id = source.metadata.get("parent_id")
+            if not parent_id:
+                expanded_sources.append(source)
+                continue
+
+            parent = self.parent_store.get_parent(str(parent_id))
+            if parent is None:
+                logger.warning(
+                    "Parent chunk not found; keeping child source | parent_id=%s | child_index=%s",
+                    parent_id,
+                    source.index,
+                )
+                metadata = dict(source.metadata)
+                metadata["parent_lookup_failed"] = True
+                expanded_sources.append(
+                    RetrievedSource(
+                        index=source.index,
+                        content=source.content,
+                        score=source.score,
+                        metadata=metadata,
+                    )
+                )
+                continue
+
+            if parent.id in parent_positions:
+                existing = expanded_sources[parent_positions[parent.id]]
+                existing.metadata["collapsed_child_count"] += 1
+                existing.metadata.setdefault("collapsed_child_ids", []).append(child_id_for(source))
+                continue
+
+            metadata = dict(source.metadata)
+            metadata.update(
+                {
+                    "child_id": child_id_for(source),
+                    "child_score": source.score,
+                    "child_start_char": source.metadata.get("start_char"),
+                    "child_end_char": source.metadata.get("end_char"),
+                    "parent_id": parent.id,
+                    "parent_index": parent.metadata.get("parent_index", source.metadata.get("parent_index")),
+                    "parent_start_char": parent.metadata.get("start_char"),
+                    "parent_end_char": parent.metadata.get("end_char"),
+                    "parent_expanded": True,
+                    "collapsed_child_count": 1,
+                    "collapsed_child_ids": [child_id_for(source)],
+                }
+            )
+            expanded_source = RetrievedSource(
+                index=source.index,
+                content=parent.content,
+                score=source.score,
+                metadata=metadata,
+            )
+            parent_positions[parent.id] = len(expanded_sources)
+            expanded_sources.append(expanded_source)
+
+        return expanded_sources
+
     def _build_context(self, sources: List[RetrievedSource]) -> str:
         """Build a bounded context block from retrieved sources."""
         context_blocks = []
@@ -325,3 +399,9 @@ def dense_search_results_to_ranked_records(search_results: List[SearchResult]) -
             )
         )
     return ranked_records
+
+
+def child_id_for(source: RetrievedSource) -> str:
+    """Return the stable child id for a retrieved source."""
+    metadata = source.metadata or {}
+    return str(metadata.get("child_id") or metadata.get("id") or "")

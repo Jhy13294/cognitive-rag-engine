@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Type
 
 from .base import Document, DocumentLoader
-from .chunking import TextSplitter
+from .chunking import ParentChildSplitResult, ParentChildSplitter, TextSplitter
 from .md_loader import MDLoader
 from .pdf_loader import PDFLoader
 from .txt_loader import TXTLoader
@@ -142,3 +142,37 @@ def load_and_split_documents(
 
     logger.info("Documents loaded and split | path=%s | chunks=%s", path, len(chunks))
     return chunks
+
+
+def load_and_split_documents_hierarchical(
+    path: str,
+    recursive: bool = True,
+    clean: bool = True,
+    parent_chunk_size: int = 1600,
+    parent_chunk_overlap: int = 200,
+    child_chunk_size: int = 400,
+    child_chunk_overlap: int = 80,
+    **loader_kwargs,
+) -> ParentChildSplitResult:
+    """Load and split documents into parent chunks and child chunks."""
+    documents = load_documents(path, recursive=recursive, clean=clean, **loader_kwargs)
+    splitter = ParentChildSplitter(
+        parent_chunk_size=parent_chunk_size,
+        parent_chunk_overlap=parent_chunk_overlap,
+        child_chunk_size=child_chunk_size,
+        child_chunk_overlap=child_chunk_overlap,
+    )
+    result = splitter.split_documents(documents)
+
+    for parent in result.parents:
+        parent.metadata["loader_entrypoint"] = "load_and_split_documents_hierarchical"
+    for child in result.children:
+        child.metadata["loader_entrypoint"] = "load_and_split_documents_hierarchical"
+
+    logger.info(
+        "Documents loaded and split hierarchically | path=%s | parents=%s | children=%s",
+        path,
+        len(result.parents),
+        len(result.children),
+    )
+    return result
