@@ -110,6 +110,18 @@ class FakeEmbeddingResponse:
         }
 
 
+class FixedTokenCounter:
+    """Fixed token counter for batching tests."""
+
+    encoding_name = "fixed-test"
+
+    def __init__(self, counts):
+        self.counts = counts
+
+    def count(self, text):
+        return self.counts[text]
+
+
 def make_embedding_data(count, dimension):
     return [
         {
@@ -175,6 +187,33 @@ class OpenAIEmbeddingProviderTests(unittest.TestCase):
         self.assertEqual(embedded_documents[0].metadata["embedding_provider"], "openai")
         self.assertEqual(embedded_documents[0].metadata["embedding_dimension"], 4)
         self.assertEqual(embedded_documents[0].metadata["chunk_index"], 0)
+
+    def test_build_batches_uses_injected_token_counter(self):
+        provider = self.build_provider(
+            batch_size=10,
+            max_batch_tokens=5,
+            token_counter=FixedTokenCounter(
+                {
+                    "中文片段一": 4,
+                    "中文片段二": 4,
+                    "english": 1,
+                }
+            ),
+        )
+
+        batches = provider._build_batches(["中文片段一", "中文片段二", "english"])
+
+        self.assertEqual(batches, [["中文片段一"], ["中文片段二", "english"]])
+
+    def test_build_batches_rejects_single_input_over_token_limit(self):
+        provider = self.build_provider(
+            batch_size=10,
+            max_batch_tokens=5,
+            token_counter=FixedTokenCounter({"too long": 6}),
+        )
+
+        with self.assertRaises(OpenAIEmbeddingError):
+            provider._build_batches(["too long"])
 
     @patch("embeddings.openai_provider.requests.post")
     def test_embed_text_retries_rate_limit(self, mock_post):

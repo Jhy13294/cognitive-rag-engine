@@ -1,12 +1,15 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Protocol
+from typing import Dict, List, Optional, Protocol, Tuple
 
 from embeddings import EmbeddingProvider
 from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion
 from logger import setup_logger
 from parent_store import ParentStore
 from rerank import Reranker
+from tokenization import TokenCounter, create_token_counter
 from vector_store import SearchResult, VectorStore
+
+from .context_packing import ContextPacker
 
 logger = setup_logger(__name__)
 
@@ -64,6 +67,13 @@ class RAGPipeline:
         rrf: Optional[ReciprocalRankFusion] = None,
         parent_store: Optional[ParentStore] = None,
         expand_parent_context: bool = True,
+        context_packing_enabled: bool = False,
+        context_dedup_enabled: bool = False,
+        context_near_dup_enabled: bool = False,
+        context_near_dup_threshold: float = 0.9,
+        context_max_tokens: Optional[int] = None,
+        tokenizer_encoding: str = "cl100k_base",
+        token_counter: Optional[TokenCounter] = None,
     ):
         """Initialize the RAG pipeline."""
         if top_k <= 0:
@@ -85,6 +95,26 @@ class RAGPipeline:
         self.rrf = rrf or ReciprocalRankFusion()
         self.parent_store = parent_store
         self.expand_parent_context = expand_parent_context
+        self.context_packing_enabled = context_packing_enabled
+        self.context_dedup_enabled = context_dedup_enabled
+        self.context_near_dup_enabled = context_near_dup_enabled
+        self.context_near_dup_threshold = context_near_dup_threshold
+        self.context_max_tokens = context_max_tokens
+        self.tokenizer_encoding = tokenizer_encoding
+        self.token_counter = token_counter
+        self.context_packer = None
+
+        if self.context_packing_enabled:
+            self.token_counter = token_counter or create_token_counter(tokenizer_encoding)
+            self.context_packer = ContextPacker(
+                max_context_chars=self.max_context_chars,
+                max_context_tokens=self.context_max_tokens,
+                token_counter=self.token_counter if self.context_max_tokens is not None else None,
+                label_formatter=self._format_source_label,
+                dedup_enabled=self.context_dedup_enabled,
+                near_dup_enabled=self.context_near_dup_enabled,
+                near_dup_threshold=self.context_near_dup_threshold,
+            )
 
     def retrieve(
         self,
@@ -138,13 +168,8 @@ class RAGPipeline:
 
     def build_prompt(self, question: str, sources: List[RetrievedSource]) -> str:
         """Build the user prompt sent to the chat client."""
-        context = self._build_context(sources)
-        return (
-            "Use the context below to answer the question.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question:\n{question}\n\n"
-            "Answer with source citations."
-        )
+        prompt, _ = self._build_prompt_and_sources(question, sources)
+        return prompt
 
     def answer(
         self,
@@ -154,18 +179,40 @@ class RAGPipeline:
     ) -> RAGResponse:
         """Retrieve context and generate an answer."""
         sources = self.retrieve(question, top_k=top_k, metadata_filter=metadata_filter)
-        prompt = self.build_prompt(question, sources)
+        prompt, used_sources = self._build_prompt_and_sources(question, sources)
         raw_response = self.chat_client.chat(prompt, system_prompt=self.system_prompt)
         answer = extract_chat_content(raw_response)
 
-        logger.info("RAG answer generated | sources=%s | answer_chars=%s", len(sources), len(answer))
+        logger.info("RAG answer generated | sources=%s | answer_chars=%s", len(used_sources), len(answer))
         return RAGResponse(
             question=question,
             answer=answer,
-            sources=sources,
+            sources=used_sources,
             prompt=prompt,
             raw_response=raw_response,
         )
+
+    def _build_prompt_and_sources(
+        self,
+        question: str,
+        sources: List[RetrievedSource],
+    ) -> Tuple[str, List[RetrievedSource]]:
+        """Build a prompt and return the sources actually used in context."""
+        if self.context_packing_enabled:
+            packed_context = self.context_packer.pack(sources)
+            context = packed_context.context
+            used_sources = packed_context.used_sources
+        else:
+            context = self._build_context(sources)
+            used_sources = sources
+
+        prompt = (
+            "Use the context below to answer the question.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question:\n{question}\n\n"
+            "Answer with source citations."
+        )
+        return prompt, used_sources
 
     def _to_sources(self, search_results: List[SearchResult]) -> List[RetrievedSource]:
         """Convert vector search results to RAG sources."""
@@ -337,6 +384,9 @@ class RAGPipeline:
 
     def _build_context(self, sources: List[RetrievedSource]) -> str:
         """Build a bounded context block from retrieved sources."""
+        if self.context_packing_enabled:
+            return self.context_packer.pack(sources).context
+
         context_blocks = []
         used_chars = 0
 

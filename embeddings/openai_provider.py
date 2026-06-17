@@ -1,4 +1,3 @@
-import math
 import random
 import time
 from typing import Dict, Iterable, List, Optional
@@ -8,6 +7,7 @@ import requests
 from config import Config
 from document_loader import Document
 from logger import mask_sensitive_info, setup_logger
+from tokenization import HeuristicTokenCounter, TokenCounter, create_token_counter
 
 from .base import EmbeddedDocument, EmbeddingConfig, EmbeddingProvider, Vector
 
@@ -46,6 +46,8 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         base_delay: Optional[float] = None,
         max_delay: Optional[float] = None,
         user: Optional[str] = None,
+        token_counter: Optional[TokenCounter] = None,
+        tokenizer_encoding: Optional[str] = None,
     ):
         """Initialize the OpenAI embedding provider."""
         self.api_key = api_key or Config.EMBEDDING_API_KEY
@@ -59,6 +61,8 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self.base_delay = base_delay if base_delay is not None else Config.EMBEDDING_BASE_DELAY
         self.max_delay = max_delay if max_delay is not None else Config.EMBEDDING_MAX_DELAY
         self.user = user if user is not None else Config.EMBEDDING_USER
+        self.tokenizer_encoding = tokenizer_encoding or Config.TOKENIZER_ENCODING
+        self.token_counter = token_counter or create_token_counter(self.tokenizer_encoding)
 
         if not self.api_key:
             raise ValueError("OpenAI embedding API key is required")
@@ -260,13 +264,17 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         return vectors
 
     def _build_batches(self, texts: List[str]) -> List[List[str]]:
-        """Build request batches by item count and approximate token count."""
+        """Build request batches by item count and token count."""
         batches = []
         current_batch = []
         current_tokens = 0
 
         for text in texts:
-            token_count = estimate_token_count(text)
+            token_count = estimate_token_count(text, token_counter=self.token_counter)
+            if token_count > self.max_batch_tokens:
+                raise OpenAIEmbeddingError(
+                    "Single embedding input exceeds max_batch_tokens; split the document into smaller chunks."
+                )
             if current_batch and (
                 len(current_batch) >= self.batch_size
                 or current_tokens + token_count > self.max_batch_tokens
@@ -284,11 +292,10 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         return batches
 
 
-def estimate_token_count(text: str) -> int:
-    """Estimate token count without adding a tokenizer dependency."""
-    if not text:
-        return 1
-    return max(1, math.ceil(len(text) / 4))
+def estimate_token_count(text: str, token_counter: Optional[TokenCounter] = None) -> int:
+    """Estimate token count through an injectable counter."""
+    counter = token_counter or HeuristicTokenCounter()
+    return counter.count(text)
 
 
 def default_openai_embedding_dimension(model_name: str) -> int:

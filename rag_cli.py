@@ -11,6 +11,7 @@ from logger import setup_logger
 from parent_store import InMemoryParentStore
 from rag import RAGPipeline, RAGResponse
 from rerank import create_reranker
+from tokenization import validate_tokenizer_encoding
 from vector_store import create_vector_store
 from vector_store.base import embedded_document_to_record
 
@@ -57,6 +58,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parent-chunk-overlap", type=int, default=None, help="Parent chunk overlap.")
     parser.add_argument("--child-chunk-size", type=int, default=None, help="Child chunk size for retrieval indexing.")
     parser.add_argument("--child-chunk-overlap", type=int, default=None, help="Child chunk overlap.")
+    parser.add_argument("--context-packing", action="store_true", help="Enable T08 context packing.")
+    parser.add_argument("--context-dedup", action="store_true", help="Enable exact context deduplication.")
+    parser.add_argument("--context-near-dup", action="store_true", help="Enable fuzzy near-duplicate context deduplication.")
+    parser.add_argument("--context-near-dup-threshold", type=float, default=None, help="Near-duplicate threshold.")
+    parser.add_argument("--context-max-tokens", type=int, default=None, help="Maximum context tokens when packing is enabled.")
+    parser.add_argument("--tokenizer-encoding", default=None, help="Tokenizer encoding for token budgets.")
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
@@ -105,12 +112,40 @@ def build_rag_pipeline_from_path(
     parent_chunk_overlap: Optional[int] = None,
     child_chunk_size: Optional[int] = None,
     child_chunk_overlap: Optional[int] = None,
+    context_packing_enabled: Optional[bool] = None,
+    context_dedup_enabled: Optional[bool] = None,
+    context_near_dup_enabled: Optional[bool] = None,
+    context_near_dup_threshold: Optional[float] = None,
+    context_max_tokens: Optional[int] = None,
+    tokenizer_encoding: Optional[str] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
     """Ingest documents and build a ready-to-query RAG pipeline."""
     use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+    use_context_dedup = Config.CONTEXT_DEDUP_ENABLED if context_dedup_enabled is None else context_dedup_enabled
+    use_context_near_dup = (
+        Config.CONTEXT_NEAR_DUP_ENABLED if context_near_dup_enabled is None else context_near_dup_enabled
+    )
+    requested_context_packing = (
+        Config.CONTEXT_PACKING_ENABLED if context_packing_enabled is None else context_packing_enabled
+    )
+    use_context_packing = requested_context_packing or use_context_dedup or use_context_near_dup
+    selected_context_threshold = (
+        context_near_dup_threshold
+        if context_near_dup_threshold is not None
+        else Config.CONTEXT_NEAR_DUP_THRESHOLD
+    )
+    selected_context_max_tokens = context_max_tokens if context_max_tokens is not None else Config.CONTEXT_MAX_TOKENS
+    selected_tokenizer_encoding = tokenizer_encoding or Config.TOKENIZER_ENCODING
     parent_store = None
+
+    if use_context_packing or use_context_dedup or use_context_near_dup:
+        if selected_context_threshold < 0 or selected_context_threshold > 1:
+            raise ValueError("CONTEXT_NEAR_DUP_THRESHOLD must be between 0 and 1.")
+        if selected_context_max_tokens <= 0:
+            raise ValueError("CONTEXT_MAX_TOKENS must be greater than 0.")
+        validate_tokenizer_encoding(selected_tokenizer_encoding)
 
     if use_parent_child:
         Config.validate_parent_child()
@@ -197,7 +232,7 @@ def build_rag_pipeline_from_path(
         chat_client = APIClient(Config.API_KEY, Config.API_URL)
 
     logger.info(
-        "RAG pipeline ready | chunks=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s",
+        "RAG pipeline ready | chunks=%s | parents=%s | embedding_provider=%s | embedding_dimension=%s | vector_store=%s | reranker=%s | hybrid=%s | parent_child=%s | context_packing=%s | context_dedup=%s",
         len(chunks),
         parent_store.count() if parent_store is not None else 0,
         embedding_provider.model_name,
@@ -206,6 +241,8 @@ def build_rag_pipeline_from_path(
         reranker.model_name if reranker else None,
         use_hybrid,
         use_parent_child,
+        use_context_packing,
+        use_context_dedup,
     )
     return RAGPipeline(
         embedding_provider=embedding_provider,
@@ -218,6 +255,12 @@ def build_rag_pipeline_from_path(
         bm25_retriever=bm25_retriever,
         rrf=rrf,
         parent_store=parent_store,
+        context_packing_enabled=use_context_packing,
+        context_dedup_enabled=use_context_dedup,
+        context_near_dup_enabled=use_context_near_dup,
+        context_near_dup_threshold=selected_context_threshold,
+        context_max_tokens=selected_context_max_tokens if use_context_packing else None,
+        tokenizer_encoding=selected_tokenizer_encoding,
     )
 
 
@@ -334,6 +377,12 @@ def main(argv=None) -> int:
             parent_chunk_overlap=args.parent_chunk_overlap,
             child_chunk_size=args.child_chunk_size,
             child_chunk_overlap=args.child_chunk_overlap,
+            context_packing_enabled=True if args.context_packing else None,
+            context_dedup_enabled=True if args.context_dedup else None,
+            context_near_dup_enabled=True if args.context_near_dup else None,
+            context_near_dup_threshold=args.context_near_dup_threshold,
+            context_max_tokens=args.context_max_tokens,
+            tokenizer_encoding=args.tokenizer_encoding,
             top_k=args.top_k,
             max_context_chars=args.max_context_chars,
         )

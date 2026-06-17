@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 
 from logger import mask_sensitive_info, setup_logger
+from tokenization import validate_tokenizer_encoding
 
 logger = setup_logger(__name__, level=logging.INFO)
 
@@ -109,6 +110,13 @@ class Config:
     PARENT_CHUNK_OVERLAP = _env_int("PARENT_CHUNK_OVERLAP", 200)
     CHILD_CHUNK_SIZE = _env_int("CHILD_CHUNK_SIZE", 400)
     CHILD_CHUNK_OVERLAP = _env_int("CHILD_CHUNK_OVERLAP", 80)
+
+    CONTEXT_PACKING_ENABLED = _env_bool("CONTEXT_PACKING_ENABLED", False)
+    CONTEXT_DEDUP_ENABLED = _env_bool("CONTEXT_DEDUP_ENABLED", False)
+    CONTEXT_NEAR_DUP_ENABLED = _env_bool("CONTEXT_NEAR_DUP_ENABLED", False)
+    CONTEXT_NEAR_DUP_THRESHOLD = _env_float("CONTEXT_NEAR_DUP_THRESHOLD", 0.9)
+    CONTEXT_MAX_TOKENS = _env_int("CONTEXT_MAX_TOKENS", 2048)
+    TOKENIZER_ENCODING = os.getenv("TOKENIZER_ENCODING", "cl100k_base")
 
     @classmethod
     def validate(cls):
@@ -238,4 +246,21 @@ class Config:
         logger.debug("Parent chunk overlap: %s", cls.PARENT_CHUNK_OVERLAP)
         logger.debug("Child chunk size: %s", cls.CHILD_CHUNK_SIZE)
         logger.debug("Child chunk overlap: %s", cls.CHILD_CHUNK_OVERLAP)
+        return True
+
+    @classmethod
+    def validate_context_packing(cls):
+        """Validate context packing configuration."""
+        if cls.CONTEXT_NEAR_DUP_THRESHOLD < 0 or cls.CONTEXT_NEAR_DUP_THRESHOLD > 1:
+            raise ValueError("CONTEXT_NEAR_DUP_THRESHOLD must be between 0 and 1.")
+        if cls.CONTEXT_MAX_TOKENS <= 0:
+            raise ValueError("CONTEXT_MAX_TOKENS must be greater than 0.")
+        validate_tokenizer_encoding(cls.TOKENIZER_ENCODING)
+
+        logger.debug("Context packing enabled: %s", cls.CONTEXT_PACKING_ENABLED)
+        logger.debug("Context dedup enabled: %s", cls.CONTEXT_DEDUP_ENABLED)
+        logger.debug("Context near-duplicate enabled: %s", cls.CONTEXT_NEAR_DUP_ENABLED)
+        logger.debug("Context near-duplicate threshold: %s", cls.CONTEXT_NEAR_DUP_THRESHOLD)
+        logger.debug("Context max tokens: %s", cls.CONTEXT_MAX_TOKENS)
+        logger.debug("Tokenizer encoding: %s", cls.TOKENIZER_ENCODING)
         return True

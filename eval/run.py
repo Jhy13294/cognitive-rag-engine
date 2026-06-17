@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -15,6 +16,11 @@ from .reporting import render_markdown_report, write_reports
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
 DEFAULT_KNOWLEDGE_PATH = "eval/fixtures/knowledge_base"
 DEFAULT_REPORT_DIR = "eval/reports"
+PARENT_EXPANSION_SCORING_ERROR = (
+    "Refusing to score --expand-parents output. Parent expansion is diagnostic/generation-side only; "
+    "it collapses sibling child chunks and can inflate top-k retrieval metrics. "
+    "Run --parent-child without --expand-parents for metrics of record."
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -59,7 +65,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--expand-parents",
         action="store_true",
-        help="Return parent content in reports for diagnostic inspection; retrieval metrics should use the default child list.",
+        help="Deprecated diagnostic flag; scored retrieval evaluation refuses parent-expanded output.",
     )
     parser.add_argument(
         "--no-parent-expand",
@@ -98,6 +104,10 @@ def main(argv: List[str] = None) -> int:
     """Run the deterministic hash baseline evaluation."""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+
+    if expanded_parent_scoring_requested(args):
+        print(PARENT_EXPANSION_SCORING_ERROR, file=sys.stderr)
+        return 2
 
     examples = load_golden_set(args.golden_set)
     if args.compare_hybrid:
@@ -175,6 +185,11 @@ def main(argv: List[str] = None) -> int:
             return 1
 
     return 0
+
+
+def expanded_parent_scoring_requested(args) -> bool:
+    """Return True when CLI args would score parent-expanded sources."""
+    return bool(args.parent_child and args.expand_parents and not args.no_parent_expand)
 
 
 def build_hybrid_comparison_report(args, examples) -> Dict:

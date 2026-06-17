@@ -11,11 +11,14 @@ from eval.run import main as eval_main
 from eval.schemas import GoldenExample, RelevantItem
 
 
-def make_source(source: str, chunk_index: int = 0, score: float = 1.0):
+def make_source(source: str, chunk_index: int = 0, score: float = 1.0, metadata=None):
+    source_metadata = {"source": source, "chunk_index": chunk_index}
+    if metadata:
+        source_metadata.update(metadata)
     return SimpleNamespace(
         content=f"content from {source}",
         score=score,
-        metadata={"source": source, "chunk_index": chunk_index},
+        metadata=source_metadata,
     )
 
 
@@ -94,6 +97,57 @@ class RetrievalEvaluationTests(unittest.TestCase):
 
         self.assertEqual(calls, [("query", 10)])
 
+    def test_evaluator_rejects_parent_expanded_metadata(self):
+        examples = [
+            GoldenExample(
+                qid="q1",
+                question="query",
+                relevant=[RelevantItem(source="a.md")],
+                capability="exact_name",
+                note="manual",
+            )
+        ]
+        calls = []
+
+        def retrieve(question: str, top_k: int):
+            calls.append((question, top_k))
+            return [make_source("a.md")]
+
+        with self.assertRaisesRegex(ValueError, "parent-expanded retrieval results"):
+            evaluate_retriever(
+                retrieve,
+                examples,
+                k_values=[3],
+                metadata={"expand_parent_context": True},
+            )
+
+        self.assertEqual(calls, [])
+
+    def test_evaluator_rejects_parent_expanded_sources(self):
+        examples = [
+            GoldenExample(
+                qid="q1",
+                question="query",
+                relevant=[RelevantItem(source="a.md")],
+                capability="exact_name",
+                note="manual",
+            )
+        ]
+
+        def retrieve(question: str, top_k: int):
+            return [
+                make_source(
+                    "a.md",
+                    metadata={
+                        "parent_expanded": True,
+                        "collapsed_child_count": 2,
+                    },
+                )
+            ]
+
+        with self.assertRaisesRegex(ValueError, "parent-expanded retrieval results"):
+            evaluate_retriever(retrieve, examples, k_values=[3])
+
     def test_same_evaluator_detects_worse_retriever(self):
         examples = [
             GoldenExample(
@@ -165,6 +219,22 @@ class RetrievalEvaluationTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertTrue(any(path.suffix == ".json" for path in report_files))
         self.assertTrue(any(path.suffix == ".md" for path in report_files))
+
+    def test_eval_run_rejects_expand_parents_for_scored_metrics(self):
+        exit_code = eval_main(
+            [
+                "--golden-set",
+                "eval/golden_set.jsonl",
+                "--knowledge-path",
+                "eval/fixtures/knowledge_base",
+                "--parent-child",
+                "--expand-parents",
+                "--no-write-report",
+                "--quiet",
+            ]
+        )
+
+        self.assertEqual(exit_code, 2)
 
     def test_eval_run_writes_hybrid_comparison_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:

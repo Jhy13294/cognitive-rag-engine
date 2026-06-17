@@ -31,6 +31,8 @@
 - reranker 关闭条件下的 dense-only / bm25-only / fused 三路 hybrid 对照评估
 - Parent-Child 分块与父块展开
 - 内存 ParentStore
+- T08 上下文装填器 ContextPacker
+- TokenCounter 抽象和 OpenAI embedding token batch 修复
 
 ## 为什么先做文档加载
 
@@ -85,7 +87,7 @@ Embedding 抽象层把“文本转向量”的能力从 RAG 主流程里拆出�
 
 - OpenAI `text-embedding-3-small` 和 `text-embedding-3-large`。
 - `dimensions` 参数，用于 Matryoshka 维度裁剪。
-- 按 chunk 数量和近似 token 数分批。
+- 按 chunk 数量和 TokenCounter 结果分批。
 - 429、5xx、超时和网络抖动重试。
 - usage token 和请求耗时日志。
 - mock 测试，不消耗真实 API 额度。
@@ -232,6 +234,34 @@ T07 的核心是把“检索单元”和“生成单元”拆开：
 - 真实 token 预算估算。
 
 这些都留给 T08 上下文装填与去重修复。
+
+## T08 上下文装填与去重
+
+T08 的核心不是检索，而是把最终喂给 LLM 的 context 字符串当成一等公民来装配。它消费 T07 之后的 source 列表，产出 context 字符串和真正被纳入的 used_sources。
+
+它解决三类结构问题：
+
+- 旧 `_build_context` 在预算不足时会 `block[:remaining]`，可能把句子或引用块从中间切断。
+- 重复 source 会重复占用上下文预算，把后续不同内容挤出去。
+- 旧 OpenAI embedding batch 用 `len/4` 估 token，对中文会严重低估。
+
+当前实现新增了：
+
+- `rag/context_packing.py`：`ContextPacker` 负责整块装填、跳块、引用连号、精确去重和可选近重复去重。
+- `tokenization/counter.py`：`TokenCounter` 抽象，包含可选 `TiktokenCounter` 和离线 `HeuristicTokenCounter`。
+- `OpenAIEmbeddingProvider._build_batches()` 改为使用注入式 TokenCounter。
+
+边界必须记牢：
+
+- T08 不进入 `retrieve()`，所以 MRR、recall、hit_rate 不应该因为 T08 开关变化。
+- 所有 context flag 默认关闭，关闭时保留旧的字符制 context 行为。
+- ContextPacker 只在 `build_prompt` / `answer` 路径工作。
+- 精确去重可通过 `CONTEXT_DEDUP_ENABLED` 开启；近重复去重默认关闭，因为它可能误删相似但事实不同的块。
+- token 预算是 opt-in；tiktoken 缺失时使用确定性启发式兜底。
+
+本卡不能宣称“生成质量提升”。当前只能证明结构正确：不句中截断、不重复占预算、引用连号、token 计数不再用旧 `len/4` 低估。答案连贯性和 Context Precision 的真实收益留给 T14 Ragas。
+
+一个容易说错的点：中文真实 token 通常比 `len/4` 更多，因此同样 `max_batch_tokens` 下 batch 可能变多、变小。T08 的收益是避免超限请求，不是“批数下降”。
 
 ## 最小 RAG 管线
 

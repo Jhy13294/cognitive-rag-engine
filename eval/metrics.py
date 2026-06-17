@@ -5,6 +5,12 @@ from .schemas import GoldenExample, RelevantItem
 
 RetrieveFn = Callable[[str, int], Sequence[Any]]
 
+PARENT_EXPANSION_EVAL_ERROR = (
+    "Refusing to score parent-expanded retrieval results. "
+    "Parent expansion is a generation-side content transform that can collapse sibling child chunks "
+    "and change the measured top-k window. Evaluate the child ranked list instead."
+)
+
 
 def evaluate_retriever(
     retrieve: RetrieveFn,
@@ -40,10 +46,13 @@ def evaluate_retriever(
     if any(k <= 0 for k in normalized_k_values):
         raise ValueError("all k values must be greater than 0")
 
+    assert_metric_input_is_child_ranked_list(metadata=metadata)
+
     max_k = max(normalized_k_values)
     cases = []
     for example in examples:
         retrieved = list(retrieve(example.question, max_k))
+        assert_metric_input_is_child_ranked_list(retrieved=retrieved)
         case = {
             "qid": example.qid,
             "question": example.question,
@@ -78,6 +87,23 @@ def evaluate_retriever(
         "low_recall_cases": low_recall_cases(cases, str(max_k)),
     }
     return report
+
+
+def assert_metric_input_is_child_ranked_list(
+    metadata: Optional[Dict] = None,
+    retrieved: Optional[Sequence[Any]] = None,
+) -> None:
+    """Reject generation-side parent-expanded results in retrieval metrics."""
+    if metadata and metadata.get("expand_parent_context") is True:
+        raise ValueError(PARENT_EXPANSION_EVAL_ERROR)
+
+    if retrieved is None:
+        return
+
+    for item in retrieved:
+        item_metadata = dict(getattr(item, "metadata", {}) or {})
+        if item_metadata.get("parent_expanded") is True or "collapsed_child_count" in item_metadata:
+            raise ValueError(PARENT_EXPANSION_EVAL_ERROR)
 
 
 def evaluate_case_at_k(

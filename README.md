@@ -15,12 +15,13 @@ The current codebase focuses on the foundation:
 - Shared lexical retrieval primitives
 - Hybrid dense + BM25 retrieval with RRF fusion
 - Parent-child chunking for child retrieval and parent context expansion
+- Optional context packing with whole-block inclusion, deterministic deduplication, and token-aware budgets
 
 Caching, monitoring, API service, and permission control are planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel with rerank, hybrid retrieval, and parent-child context expansion.
+Current milestone: evaluated retrieval funnel plus post-retrieval context packing for generation input assembly.
 
 Implemented:
 
@@ -37,6 +38,7 @@ Implemented:
 - Sample fixtures and ingestion tests
 - Embedding provider abstraction
 - OpenAI production embedding provider with dimensions support, batching, retries, and usage logging
+- Shared token counting abstraction with optional tiktoken support and deterministic offline fallback
 - Deterministic local hash embedding provider for tests
 - Vector store abstraction
 - In-memory vector store for local retrieval tests
@@ -53,6 +55,8 @@ Implemented:
 - Parent-child splitter that indexes child chunks and stores parent chunks separately
 - In-memory ParentStore for deterministic parent lookup by `parent_id`
 - Optional post-top-k parent expansion in `RAGPipeline.retrieve`, with sibling child collapse by parent id
+- ContextPacker for build_prompt/answer paths only: whole-block packing, exact deduplication, optional near-duplicate deduplication, contiguous citations, and token budgets
+- OpenAI embedding batch construction based on TokenCounter instead of the legacy `len/4` estimate
 
 Not implemented yet:
 
@@ -92,6 +96,8 @@ Not implemented yet:
 ├── parent_store/
 │   ├── base.py                # Parent chunk key-value store interface
 │   └── memory_store.py        # In-memory parent store
+├── tokenization/
+│   └── counter.py             # TokenCounter, tiktoken counter, and offline fallback
 ├── eval/
 │   ├── golden_set.jsonl       # Retrieval golden set with relevant source lists
 │   ├── baseline.py            # Deterministic HashEmbeddingProvider baseline
@@ -113,6 +119,7 @@ Not implemented yet:
 │   ├── cohere_provider.py     # Cohere Rerank provider with retries
 │   └── factory.py             # Reranker factory
 ├── rag/
+│   ├── context_packing.py     # Post-retrieval context packing
 │   └── pipeline.py            # Minimal RAG pipeline
 ├── text_cleaner/
 │   └── cleaner.py             # Text cleaning
@@ -123,6 +130,8 @@ Not implemented yet:
 │   ├── test_eval_metrics.py
 │   ├── test_hybrid.py
 │   ├── test_parent_child.py
+│   ├── test_context_packing.py
+│   ├── test_token_counter.py
 │   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
@@ -172,6 +181,13 @@ PARENT_CHUNK_SIZE=1600
 PARENT_CHUNK_OVERLAP=200
 CHILD_CHUNK_SIZE=400
 CHILD_CHUNK_OVERLAP=80
+
+CONTEXT_PACKING_ENABLED=false
+CONTEXT_DEDUP_ENABLED=false
+CONTEXT_NEAR_DUP_ENABLED=false
+CONTEXT_NEAR_DUP_THRESHOLD=0.9
+CONTEXT_MAX_TOKENS=2048
+TOKENIZER_ENCODING=cl100k_base
 ```
 
 ## Usage
@@ -210,6 +226,9 @@ python rag_cli.py knowledge_base \
   --parent-child \
   --parent-chunk-size 1600 \
   --child-chunk-size 400 \
+  --context-packing \
+  --context-dedup \
+  --context-max-tokens 2048 \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -351,6 +370,21 @@ pipeline = RAGPipeline(
 )
 ```
 
+Run with context packing:
+
+```python
+pipeline = RAGPipeline(
+    provider,
+    store,
+    client,
+    top_k=5,
+    context_packing_enabled=True,
+    context_dedup_enabled=True,
+    context_max_tokens=2048,
+    tokenizer_encoding="cl100k_base",
+)
+```
+
 Run with parent-child context expansion:
 
 ```python
@@ -423,6 +457,8 @@ Current T06 hybrid comparison, with reranker disabled and `HashEmbeddingProvider
 
 Current T07 parent-child mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
 
+Current T08 context packing is a generation-input assembly step. It does not enter `retrieve()` and must not be reported as MRR/recall improvement. With all context flags off, the legacy character-based `_build_context` path is preserved. When enabled, packing includes whole blocks or skips them, renumbers citations contiguously, folds exact duplicates, optionally folds near duplicates behind a flag, and uses `TokenCounter` for token budgets. tiktoken is optional; when it is unavailable, the system falls back to a deterministic heuristic counter. For Chinese text, true token counting may create more but legal smaller batches; the benefit is correctness and zero over-limit requests, not claiming fewer batches. Generation quality and coherence remain deferred to T14 Ragas.
+
 ## Development Conventions
 
 - Code identifiers use English.
@@ -436,6 +472,6 @@ Current T07 parent-child mode uses child chunks for retrieval and parent chunks 
 
 1. Add more ingestion edge-case fixtures.
 2. Split indexing and querying commands.
-3. Add context packing improvements measured against the golden set.
-4. Add score thresholding or abstain logic for negative queries.
+3. Add score thresholding or abstain logic for negative queries.
+4. Add query rewrite / multi-query retrieval.
 5. Add caching, observability, and access-control features.

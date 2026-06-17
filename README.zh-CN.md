@@ -15,12 +15,13 @@
 - 共享词法检索基础能力
 - Dense + BM25 混合检索和 RRF 融合
 - Parent-Child 分块：子块检索、父块展开供给生成
+- 可选上下文装填：整块纳入、确定性去重、引用连号和 token 预算
 
 缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗，已包含 rerank、hybrid retrieval 和 parent-child context expansion。
+当前阶段：可评估的检索漏斗，以及面向生成输入的上下文装填能力。
 
 已完成：
 
@@ -37,6 +38,7 @@
 - 样例 fixture 和文档入库测试
 - Embedding 抽象层
 - 支持 dimensions、批处理、重试和 usage 日志的 OpenAI 生产级 Embedding Provider
+- 共享 TokenCounter 抽象：支持可选 tiktoken 和离线确定性兜底
 - 用于测试管线的本地确定性 Hash Embedding Provider
 - 向量库抽象层
 - 用于本地检索测试的内存向量库
@@ -53,6 +55,8 @@
 - Parent-Child 分块器：只索引子块，父块通过 `parent_id` 键值取回
 - 内存 `ParentStore`，用于本地确定性父块展开
 - `RAGPipeline.retrieve` 支持 top-k 之后展开父块，并按父块折叠兄弟子块
+- `ContextPacker` 只接入 build_prompt/answer 路径，支持整块装填、精确去重、可选近重复去重、引用连号和 token 预算
+- OpenAI embedding batch 切分改为使用 TokenCounter，不再依赖旧的 `len/4` 估算
 
 尚未完成：
 
@@ -92,6 +96,8 @@
 ├── parent_store/
 │   ├── base.py                # 父块键值存储接口
 │   └── memory_store.py        # 内存父块存储
+├── tokenization/
+│   └── counter.py             # TokenCounter、tiktoken 计数器和离线兜底
 ├── eval/
 │   ├── golden_set.jsonl       # 使用 relevant 列表标注的检索 golden set
 │   ├── baseline.py            # HashEmbeddingProvider 确定性基线
@@ -113,6 +119,7 @@
 │   ├── cohere_provider.py     # 带重试的 Cohere Rerank Provider
 │   └── factory.py             # Reranker 工厂
 ├── rag/
+│   ├── context_packing.py     # top-k 后的上下文装填
 │   └── pipeline.py            # 最小 RAG 管线
 ├── text_cleaner/
 │   └── cleaner.py             # 文本清洗
@@ -123,6 +130,8 @@
 │   ├── test_eval_metrics.py
 │   ├── test_hybrid.py
 │   ├── test_parent_child.py
+│   ├── test_context_packing.py
+│   ├── test_token_counter.py
 │   ├── test_rerank.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
@@ -172,6 +181,13 @@ PARENT_CHUNK_SIZE=1600
 PARENT_CHUNK_OVERLAP=200
 CHILD_CHUNK_SIZE=400
 CHILD_CHUNK_OVERLAP=80
+
+CONTEXT_PACKING_ENABLED=false
+CONTEXT_DEDUP_ENABLED=false
+CONTEXT_NEAR_DUP_ENABLED=false
+CONTEXT_NEAR_DUP_THRESHOLD=0.9
+CONTEXT_MAX_TOKENS=2048
+TOKENIZER_ENCODING=cl100k_base
 ```
 
 ## 使用
@@ -210,6 +226,9 @@ python rag_cli.py knowledge_base \
   --parent-child \
   --parent-chunk-size 1600 \
   --child-chunk-size 400 \
+  --context-packing \
+  --context-dedup \
+  --context-max-tokens 2048 \
   --rerank-provider deterministic \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
@@ -351,6 +370,21 @@ pipeline = RAGPipeline(
 )
 ```
 
+启用上下文装填：
+
+```python
+pipeline = RAGPipeline(
+    provider,
+    store,
+    client,
+    top_k=5,
+    context_packing_enabled=True,
+    context_dedup_enabled=True,
+    context_max_tokens=2048,
+    tokenizer_encoding="cl100k_base",
+)
+```
+
 使用 Parent-Child 父块展开运行管线：
 
 ```python
@@ -423,6 +457,8 @@ python -m eval.run --parent-child
 
 当前 T07 Parent-Child 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。生成侧连贯性和 Context Precision 的真账留到 T14 Ragas。
 
+当前 T08 上下文装填只属于生成输入组装，不进入 `retrieve()`，不能被拿来声明 MRR 或 recall 提升。所有 context flag 关闭时，旧的字符制 `_build_context` 路径保持兼容；显式开启后，ContextPacker 会整块纳入或跳过，引用重新连号，精确重复默认由开关控制，可选近重复去重由独立 flag 守卫，并使用 TokenCounter 计算 token 预算。tiktoken 是可选依赖，缺失时自动使用确定性启发式兜底。对中文文本，真实 token 计数可能让 batch 变多、变小但合法；收益是避免超限请求，而不是“批数下降”。生成质量和连贯性结论仍延后到 T14 Ragas。
+
 ## 代码规范
 
 - 代码命名使用英文。
@@ -436,6 +472,6 @@ python -m eval.run --parent-child
 
 1. 增加更多文档入库边界样例。
 2. 拆分索引构建和查询命令。
-3. 用同一份 golden set 度量上下文装填改造。
-4. 增加分数阈值或拒答逻辑，改善 negative query。
+3. 增加分数阈值或拒答逻辑，改善 negative query。
+4. 进入 Query Rewrite / Multi-Query。
 5. 增加缓存、可观测性和权限控制。
