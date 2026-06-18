@@ -17,12 +17,13 @@ The current codebase focuses on the foundation:
 - Parent-child chunking for child retrieval and parent context expansion
 - Optional context packing with whole-block inclusion, deterministic deduplication, and token-aware budgets
 - Query rewrite / multi-query retrieval with deterministic fixtures and cross-query RRF
+- Async FastAPI service layer for ingest/query and SSE streaming
 
-Caching, monitoring, API service, and permission control are planned but not implemented yet.
+Caching, monitoring, and permission control are planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel plus post-retrieval context packing for generation input assembly.
+Current milestone: evaluated retrieval funnel plus async HTTP service layer.
 
 Implemented:
 
@@ -46,6 +47,7 @@ Implemented:
 - Qdrant production vector store adapter with batching, metadata filters, payload indexes, and retry handling
 - Vector-store factory and CLI provider selection
 - Minimal RAG pipeline with retrieval, context assembly, chat generation, and sources
+- Split ingest/query CLI commands with cross-process persistence through Qdrant
 - Deterministic retrieval evaluation with a JSONL golden set, HashEmbeddingProvider baseline, and JSON/Markdown reports
 - Reranker abstraction with deterministic offline reranker and Cohere neural reranker provider
 - Optional rerank insertion in `RAGPipeline.retrieve`: dense fetch, rerank, top-k selection, and dense fallback on failure
@@ -60,13 +62,13 @@ Implemented:
 - OpenAI embedding batch construction based on TokenCounter instead of the legacy `len/4` estimate
 - QueryRewriter abstraction with deterministic fixture-backed rewrites and a chat-backed production provider
 - Multi-query retrieval in `RAGPipeline.retrieve`: original query plus variants, per-variant retrieval, cross-query RRF, then the existing rerank/parent expansion/context packing stages
+- Async FastAPI adapter with `/ingest`, `/query`, `/query/stream`, Pydantic models, threadpool offload for the synchronous retrieval funnel, sanitized exception mapping, and cache invalidation after ingest
+- Async `httpx.AsyncClient` chat and OpenAI embedding providers with `asyncio.sleep` retry backoff and OpenAI-compatible streaming chat deltas
 
 Not implemented yet:
 
-- Separate ingest and query commands
 - Cache layer
 - Monitoring
-- API service layer
 - Enterprise access control
 
 ## Directory Structure
@@ -78,6 +80,7 @@ Not implemented yet:
 ├── logger.py                  # Logging utilities
 ├── main.py                    # CLI chat entry point
 ├── rag_cli.py                 # RAG application CLI
+├── service/                   # FastAPI HTTP adapter
 ├── requirements.txt           # Python dependencies
 ├── document_loader/
 │   ├── base.py                # Document model and loader interface
@@ -135,6 +138,7 @@ Not implemented yet:
 ├── tests/
 │   ├── fixtures/              # Sample TXT and Markdown fixtures
 │   ├── test_document_ingestion.py
+│   ├── test_api_client.py
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
 │   ├── test_hybrid.py
@@ -146,6 +150,7 @@ Not implemented yet:
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
 │   ├── test_rag_pipeline.py
+│   ├── test_service.py
 │   └── test_rag_cli.py
 └── docs/
     └── learning_notes.zh-CN.md
@@ -243,6 +248,14 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 ```
 
 The `memory` vector store is process-local and is useful for separation tests only; use Qdrant for cross-process persistence.
+
+Run the HTTP service locally:
+
+```bash
+uvicorn service.app:app --host 127.0.0.1 --port 8000
+```
+
+The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, and `GET /health`. Authentication is intentionally not implemented yet, so do not expose it publicly.
 
 Useful RAG CLI options:
 

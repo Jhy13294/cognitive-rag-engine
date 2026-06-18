@@ -1,9 +1,11 @@
+import asyncio
 import random
 import time
 from typing import Dict, Iterable, List, Optional
 
-import requests
+import httpx
 
+from api_client import run_async_blocking
 from config import Config
 from document_loader import Document
 from logger import mask_sensitive_info, setup_logger
@@ -17,10 +19,17 @@ logger = setup_logger(__name__)
 class OpenAIEmbeddingError(Exception):
     """Raised when OpenAI embedding generation fails."""
 
-    def __init__(self, message: str, status_code: int = None, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = None,
+        retryable: bool = False,
+        error_kind: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+        self.error_kind = error_kind
 
     def __str__(self):
         if self.status_code:
@@ -103,25 +112,38 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         )
 
     def embed_text(self, text: str) -> Vector:
-        """Embed a single text string."""
-        return self.embed_texts([text])[0]
+        """Embed a single text string from synchronous code."""
+        return run_async_blocking(self.async_embed_text(text))
+
+    async def async_embed_text(self, text: str) -> Vector:
+        """Embed a single text string without blocking the event loop."""
+        vectors = await self.async_embed_texts([text])
+        return vectors[0]
 
     def embed_texts(self, texts: Iterable[str]) -> List[Vector]:
-        """Embed multiple text strings with batching and retry handling."""
+        """Embed multiple text strings from synchronous code."""
+        return run_async_blocking(self.async_embed_texts(texts))
+
+    async def async_embed_texts(self, texts: Iterable[str]) -> List[Vector]:
+        """Embed multiple text strings with async batching and retry handling."""
         text_list = [str(text) for text in texts]
         if not text_list:
             return []
 
         vectors = []
         for batch in self._build_batches(text_list):
-            vectors.extend(self._embed_batch(batch))
+            vectors.extend(await self._embed_batch(batch))
 
         return vectors
 
     def embed_documents(self, documents: List[Document]) -> List[EmbeddedDocument]:
-        """Embed Document objects in batches while preserving metadata."""
+        """Embed Document objects from synchronous code."""
+        return run_async_blocking(self.async_embed_documents(documents))
+
+    async def async_embed_documents(self, documents: List[Document]) -> List[EmbeddedDocument]:
+        """Embed Document objects in async batches while preserving metadata."""
         document_list = list(documents)
-        vectors = self.embed_texts(document.content for document in document_list)
+        vectors = await self.async_embed_texts(document.content for document in document_list)
         embedded_documents = []
 
         for document, vector in zip(document_list, vectors):
@@ -145,7 +167,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
         return embedded_documents
 
-    def _embed_batch(self, texts: List[str]) -> List[Vector]:
+    async def _embed_batch(self, texts: List[str]) -> List[Vector]:
         """Embed one batch of texts."""
         payload = {
             "model": self.model_name,
@@ -157,9 +179,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         if self.user:
             payload["user"] = self.user
 
-        start_time = time.time()
-        response_data = self._post_with_retries(payload)
-        elapsed = time.time() - start_time
+        start_time = time.monotonic()
+        response_data = await self._post_with_retries(payload)
+        elapsed = time.monotonic() - start_time
 
         vectors = self._extract_vectors(response_data, expected_count=len(texts))
         usage = response_data.get("usage", {})
@@ -180,55 +202,64 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         )
         return vectors
 
-    def _post_with_retries(self, payload: Dict) -> Dict:
-        """Post an embedding request with retry handling."""
+    async def _post_with_retries(self, payload: Dict) -> Dict:
+        """Post an embedding request with async retry handling."""
         last_error = None
 
-        for attempt in range(self.max_retries + 1):
-            try:
-                response = requests.post(
-                    self.api_url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.timeout,
-                )
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    response = await client.post(
+                        self.api_url,
+                        headers=self.headers,
+                        json=payload,
+                    )
 
-                if response.status_code == 200:
-                    return response.json()
+                    if response.status_code == 200:
+                        return response.json()
 
-                retryable = response.status_code in self.RETRYABLE_STATUS_CODES
-                error = OpenAIEmbeddingError(
-                    f"OpenAI embedding request failed: {response.text[:300]}",
-                    status_code=response.status_code,
-                    retryable=retryable,
-                )
+                    retryable = response.status_code in self.RETRYABLE_STATUS_CODES
+                    error = OpenAIEmbeddingError(
+                        f"OpenAI embedding request failed: {response.text[:300]}",
+                        status_code=response.status_code,
+                        retryable=retryable,
+                        error_kind=self._status_to_error_kind(response.status_code),
+                    )
 
-                if retryable and attempt < self.max_retries:
-                    self._sleep_before_retry(attempt, response)
-                    last_error = error
-                    continue
+                    if retryable and attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt, response)
+                        last_error = error
+                        continue
 
-                logger.error("OpenAI embedding request failed | error=%s", error)
-                raise error
+                    logger.error("OpenAI embedding request failed | error=%s", error)
+                    raise error
 
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                last_error = OpenAIEmbeddingError(f"OpenAI embedding network error: {e}", retryable=True)
-                if attempt < self.max_retries:
-                    self._sleep_before_retry(attempt)
-                    continue
-                raise last_error
+                except httpx.TimeoutException as e:
+                    last_error = OpenAIEmbeddingError(
+                        f"OpenAI embedding request timed out: {e}",
+                        retryable=True,
+                        error_kind="timeout",
+                    )
+                    if attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
 
-            except requests.exceptions.RequestException as e:
-                last_error = OpenAIEmbeddingError(f"OpenAI embedding request error: {e}", retryable=True)
-                if attempt < self.max_retries:
-                    self._sleep_before_retry(attempt)
-                    continue
-                raise last_error
+                except (httpx.ConnectError, httpx.ReadError, httpx.RequestError) as e:
+                    last_error = OpenAIEmbeddingError(
+                        f"OpenAI embedding network error: {e}",
+                        retryable=True,
+                        error_kind="network",
+                    )
+                    if attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
 
         raise last_error
 
-    def _sleep_before_retry(self, attempt: int, response=None) -> None:
-        """Sleep before retrying a failed request."""
+    async def _sleep_before_retry(self, attempt: int, response=None) -> None:
+        """Sleep asynchronously before retrying a failed request."""
         retry_after = None
         if response is not None:
             retry_after = response.headers.get("Retry-After")
@@ -240,7 +271,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             delay += random.uniform(0, delay * 0.1)
 
         logger.warning("Retrying OpenAI embedding request | attempt=%s | delay=%.2fs", attempt + 1, delay)
-        time.sleep(delay)
+        await asyncio.sleep(delay)
 
     def _extract_vectors(self, response_data: Dict, expected_count: int) -> List[Vector]:
         """Extract vectors from an OpenAI embeddings response."""
@@ -262,6 +293,16 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             vectors.append(vector)
 
         return vectors
+
+    def _status_to_error_kind(self, status_code: int) -> Optional[str]:
+        """Map HTTP status codes to typed upstream error categories."""
+        if status_code == 401:
+            return "authentication"
+        if status_code == 429:
+            return "rate_limit"
+        if status_code in {408, 504}:
+            return "timeout"
+        return None
 
     def _build_batches(self, texts: List[str]) -> List[List[str]]:
         """Build request batches by item count and token count."""

@@ -1,6 +1,6 @@
 import math
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from document_loader import Document, load_and_split_document
 from embeddings import (
@@ -110,6 +110,44 @@ class FakeEmbeddingResponse:
         }
 
 
+class FakeEmbeddingAsyncClient:
+    """Async httpx client test double for OpenAI embedding requests."""
+
+    created_count = 0
+    responses = []
+    requests = []
+
+    def __init__(self, timeout=None):
+        FakeEmbeddingAsyncClient.created_count += 1
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        FakeEmbeddingAsyncClient.requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "json": json,
+                "timeout": self.timeout,
+            }
+        )
+        response = FakeEmbeddingAsyncClient.responses.pop(0)
+        if callable(response):
+            return response(url=url, headers=headers, json=json)
+        return response
+
+
+def reset_fake_embedding_client(*responses):
+    FakeEmbeddingAsyncClient.created_count = 0
+    FakeEmbeddingAsyncClient.responses = list(responses)
+    FakeEmbeddingAsyncClient.requests = []
+
+
 class FixedTokenCounter:
     """Fixed token counter for batching tests."""
 
@@ -150,27 +188,27 @@ class OpenAIEmbeddingProviderTests(unittest.TestCase):
         defaults.update(overrides)
         return OpenAIEmbeddingProvider(**defaults)
 
-    @patch("embeddings.openai_provider.requests.post")
-    def test_embed_text_sends_dimensions_and_returns_vector(self, mock_post):
-        mock_post.return_value = FakeEmbeddingResponse(data=make_embedding_data(1, 4))
+    @patch("embeddings.openai_provider.httpx.AsyncClient", new=FakeEmbeddingAsyncClient)
+    def test_embed_text_sends_dimensions_and_returns_vector(self):
+        reset_fake_embedding_client(FakeEmbeddingResponse(data=make_embedding_data(1, 4)))
         provider = self.build_provider(dimensions=4)
 
         vector = provider.embed_text("hello world")
 
         self.assertEqual(vector, [1.0, 1.0, 1.0, 1.0])
-        payload = mock_post.call_args.kwargs["json"]
+        payload = FakeEmbeddingAsyncClient.requests[0]["json"]
         self.assertEqual(payload["model"], "text-embedding-3-small")
         self.assertEqual(payload["input"], ["hello world"])
         self.assertEqual(payload["dimensions"], 4)
         self.assertEqual(payload["encoding_format"], "float")
 
-    @patch("embeddings.openai_provider.requests.post")
-    def test_embed_documents_batches_requests(self, mock_post):
+    @patch("embeddings.openai_provider.httpx.AsyncClient", new=FakeEmbeddingAsyncClient)
+    def test_embed_documents_batches_requests(self):
         def fake_post(*args, **kwargs):
             batch_size = len(kwargs["json"]["input"])
             return FakeEmbeddingResponse(data=make_embedding_data(batch_size, 4))
 
-        mock_post.side_effect = fake_post
+        reset_fake_embedding_client(fake_post, fake_post, fake_post)
         provider = self.build_provider(batch_size=2, dimensions=4)
         documents = [
             Document(content=f"document {index}", metadata={"chunk_index": index})
@@ -180,10 +218,10 @@ class OpenAIEmbeddingProviderTests(unittest.TestCase):
         embedded_documents = provider.embed_documents(documents)
 
         self.assertEqual(len(embedded_documents), 5)
-        self.assertEqual(mock_post.call_count, 3)
-        self.assertEqual(len(mock_post.call_args_list[0].kwargs["json"]["input"]), 2)
-        self.assertEqual(len(mock_post.call_args_list[1].kwargs["json"]["input"]), 2)
-        self.assertEqual(len(mock_post.call_args_list[2].kwargs["json"]["input"]), 1)
+        self.assertEqual(len(FakeEmbeddingAsyncClient.requests), 3)
+        self.assertEqual(len(FakeEmbeddingAsyncClient.requests[0]["json"]["input"]), 2)
+        self.assertEqual(len(FakeEmbeddingAsyncClient.requests[1]["json"]["input"]), 2)
+        self.assertEqual(len(FakeEmbeddingAsyncClient.requests[2]["json"]["input"]), 1)
         self.assertEqual(embedded_documents[0].metadata["embedding_provider"], "openai")
         self.assertEqual(embedded_documents[0].metadata["embedding_dimension"], 4)
         self.assertEqual(embedded_documents[0].metadata["chunk_index"], 0)
@@ -215,30 +253,33 @@ class OpenAIEmbeddingProviderTests(unittest.TestCase):
         with self.assertRaises(OpenAIEmbeddingError):
             provider._build_batches(["too long"])
 
-    @patch("embeddings.openai_provider.requests.post")
-    def test_embed_text_retries_rate_limit(self, mock_post):
-        mock_post.side_effect = [
+    @patch("embeddings.openai_provider.httpx.AsyncClient", new=FakeEmbeddingAsyncClient)
+    def test_embed_text_retries_rate_limit(self):
+        reset_fake_embedding_client(
             FakeEmbeddingResponse(
                 status_code=429,
                 text='{"error":{"message":"rate limited"}}',
                 headers={"Retry-After": "0"},
             ),
             FakeEmbeddingResponse(data=make_embedding_data(1, 4)),
-        ]
+        )
         provider = self.build_provider(max_retries=1, dimensions=4)
 
-        with patch("embeddings.openai_provider.time.sleep") as mock_sleep:
+        with patch("embeddings.openai_provider.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             vector = provider.embed_text("retry me")
 
         self.assertEqual(vector, [1.0, 1.0, 1.0, 1.0])
-        self.assertEqual(mock_post.call_count, 2)
-        mock_sleep.assert_called_once()
+        self.assertEqual(FakeEmbeddingAsyncClient.created_count, 1)
+        self.assertEqual(len(FakeEmbeddingAsyncClient.requests), 2)
+        mock_sleep.assert_awaited_once()
 
-    @patch("embeddings.openai_provider.requests.post")
-    def test_embed_text_raises_non_retryable_error(self, mock_post):
-        mock_post.return_value = FakeEmbeddingResponse(
-            status_code=401,
-            text='{"error":{"message":"invalid api key"}}',
+    @patch("embeddings.openai_provider.httpx.AsyncClient", new=FakeEmbeddingAsyncClient)
+    def test_embed_text_raises_non_retryable_error(self):
+        reset_fake_embedding_client(
+            FakeEmbeddingResponse(
+                status_code=401,
+                text='{"error":{"message":"invalid api key"}}',
+            )
         )
         provider = self.build_provider(max_retries=1, dimensions=4)
 

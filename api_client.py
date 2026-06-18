@@ -1,9 +1,12 @@
+import asyncio
+import json
 import logging
 import random
+import threading
 import time
-from typing import Dict, Optional, Set
+from typing import AsyncIterator, Dict, Optional, Set
 
-import requests
+import httpx
 
 from config import Config
 from logger import mask_sensitive_info, setup_logger
@@ -39,6 +42,162 @@ class APIClient:
         masked_key = mask_sensitive_info(api_key)
         logger.info("APIClient initialized | api_key=%s | max_retries=%s", masked_key, max_retries)
 
+    def chat(self, message: str, system_prompt: Optional[str] = None) -> Dict:
+        """Send a chat request from synchronous code."""
+        return run_async_blocking(self.async_chat(message, system_prompt=system_prompt))
+
+    async def async_chat(self, message: str, system_prompt: Optional[str] = None) -> Dict:
+        """Send a chat request without blocking the event loop."""
+        payload = self._build_payload(message, system_prompt=system_prompt, stream=False)
+        return await self._post_json_with_retries(payload)
+
+    async def stream_chat(self, message: str, system_prompt: Optional[str] = None) -> AsyncIterator[str]:
+        """Stream chat-completion deltas from the upstream provider."""
+        payload = self._build_payload(message, system_prompt=system_prompt, stream=True)
+        async for token in self._stream_with_retries(payload):
+            yield token
+
+    def _build_payload(self, message: str, system_prompt: Optional[str], stream: bool) -> Dict:
+        """Build a chat-completion compatible request payload."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": message})
+
+        payload = {
+            "model": Config.MODEL_NAME,
+            "messages": messages,
+            "temperature": Config.TEMPERATURE,
+            "max_tokens": Config.MAX_TOKENS,
+        }
+        if stream:
+            payload["stream"] = True
+        return payload
+
+    async def _post_json_with_retries(self, payload: Dict) -> Dict:
+        """Post a JSON request with async retry handling."""
+        start_time = time.monotonic()
+        last_error = None
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    if attempt == 0:
+                        logger.info("Sending API request | url=%s", self.api_url)
+                    else:
+                        logger.warning(
+                            "Retrying API request | attempt=%s/%s",
+                            attempt + 1,
+                            self.max_retries + 1,
+                        )
+
+                    response = await client.post(
+                        self.api_url,
+                        headers=self.headers,
+                        json=payload,
+                    )
+
+                    elapsed_time = time.monotonic() - start_time
+                    self._handle_error(response)
+
+                    logger.info(
+                        "API call succeeded | elapsed=%.2fs | status_code=%s | attempt=%s",
+                        elapsed_time,
+                        response.status_code,
+                        attempt + 1,
+                    )
+                    return response.json()
+
+                except APIError as e:
+                    last_error = e
+                    if e.retryable and attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt, retry_after=e.retry_after)
+                        continue
+                    logger.error("API call failed | error=%s", e)
+                    raise
+
+                except httpx.TimeoutException as e:
+                    last_error = APIError("Request timed out", status_code=0, retryable=True, error_kind="timeout")
+                    logger.warning("Request timed out | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    if attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
+
+                except httpx.RequestError as e:
+                    last_error = APIError(f"Network error: {e}", status_code=0, retryable=True, error_kind="network")
+                    logger.warning("Network error | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    if attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
+
+        raise last_error
+
+    async def _stream_with_retries(self, payload: Dict) -> AsyncIterator[str]:
+        """Open a streaming request and yield upstream token deltas."""
+        last_error = None
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    async with client.stream(
+                        "POST",
+                        self.api_url,
+                        headers=self.headers,
+                        json=payload,
+                    ) as response:
+                        if response.status_code != 200:
+                            await response.aread()
+                        self._handle_error(response)
+                        async for line in response.aiter_lines():
+                            token = parse_chat_stream_line(line)
+                            if token is None:
+                                continue
+                            if token == STREAM_DONE:
+                                return
+                            yield token
+                        return
+
+                except APIError as e:
+                    last_error = e
+                    if e.retryable and attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt, retry_after=e.retry_after)
+                        continue
+                    logger.error("Streaming API call failed | error=%s", e)
+                    raise
+
+                except httpx.TimeoutException as e:
+                    last_error = APIError("Request timed out", status_code=0, retryable=True, error_kind="timeout")
+                    logger.warning("Streaming request timed out | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    if attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
+
+                except httpx.RequestError as e:
+                    last_error = APIError(f"Network error: {e}", status_code=0, retryable=True, error_kind="network")
+                    logger.warning("Streaming network error | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    if attempt < self.max_retries:
+                        await self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
+
+        raise last_error
+
+    async def _sleep_before_retry(self, attempt: int, response=None, retry_after: Optional[str] = None) -> None:
+        """Sleep asynchronously before retrying a failed request."""
+        if response is not None and retry_after is None:
+            retry_after = response.headers.get("Retry-After")
+
+        if retry_after:
+            delay = float(retry_after)
+        else:
+            delay = self._calculate_delay(attempt)
+
+        logger.warning("Waiting %.2fs before retry", delay)
+        await asyncio.sleep(delay)
+
     def _should_retry(self, status_code: int) -> bool:
         """Return whether a response status code is retryable."""
         should_retry = status_code in self.RETRYABLE_STATUS_CODES
@@ -59,137 +218,19 @@ class APIClient:
         logger.debug("Retry delay calculated | attempt=%s | delay=%.2fs", attempt + 1, delay)
         return delay
 
-    def chat(self, message: str, system_prompt: Optional[str] = None) -> Dict:
-        """Send a chat request.
-
-        Args:
-            message: User message.
-            system_prompt: Optional system prompt.
-
-        Returns:
-            Parsed API response.
-
-        Raises:
-            APIError: If the request fails.
-        """
-        start_time = time.time()
-        last_error = None
-
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": message})
-
-        payload = {
-            "model": Config.MODEL_NAME,
-            "messages": messages,
-            "temperature": Config.TEMPERATURE,
-            "max_tokens": Config.MAX_TOKENS,
-        }
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                if attempt == 0:
-                    logger.info("Sending API request | url=%s", self.api_url)
-                else:
-                    logger.warning(
-                        "Retrying API request | attempt=%s/%s",
-                        attempt + 1,
-                        self.max_retries + 1,
-                    )
-
-                logger.debug("Request payload: %s", payload)
-
-                response = requests.post(
-                    self.api_url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=30,
-                )
-
-                elapsed_time = time.time() - start_time
-                self._handle_error(response)
-
-                if attempt > 0:
-                    logger.info(
-                        "API call succeeded after retry | elapsed=%.2fs | status_code=%s",
-                        elapsed_time,
-                        response.status_code,
-                    )
-                else:
-                    logger.info(
-                        "API call succeeded | elapsed=%.2fs | status_code=%s",
-                        elapsed_time,
-                        response.status_code,
-                    )
-
-                return response.json()
-
-            except APIError as e:
-                last_error = e
-
-                if e.status_code and self._should_retry(e.status_code):
-                    if attempt < self.max_retries:
-                        delay = self._calculate_delay(attempt)
-                        logger.warning("Waiting %.2fs before retry", delay)
-                        time.sleep(delay)
-                        continue
-
-                    logger.error(
-                        "Retry limit reached | max_retries=%s | last_error=%s",
-                        self.max_retries,
-                        e,
-                    )
-                    raise
-
-                logger.error("Non-retryable API error | error=%s", e)
-                raise
-
-            except requests.exceptions.Timeout:
-                last_error = APIError("Request timed out", status_code=0, retryable=True)
-                logger.warning(
-                    "Request timed out | attempt=%s/%s",
-                    attempt + 1,
-                    self.max_retries + 1,
-                )
-
-                if attempt < self.max_retries:
-                    delay = self._calculate_delay(attempt)
-                    logger.warning("Waiting %.2fs before retry", delay)
-                    time.sleep(delay)
-                    continue
-
-                logger.error("Retry limit reached | timeout")
-                raise last_error
-
-            except requests.exceptions.RequestException as e:
-                last_error = APIError(f"Network error: {e}", status_code=0, retryable=True)
-                logger.warning(
-                    "Network error | attempt=%s/%s",
-                    attempt + 1,
-                    self.max_retries + 1,
-                )
-
-                if attempt < self.max_retries:
-                    delay = self._calculate_delay(attempt)
-                    logger.warning("Waiting %.2fs before retry", delay)
-                    time.sleep(delay)
-                    continue
-
-                logger.error("Retry limit reached | network error")
-                raise last_error
-
-        raise last_error
-
     def _handle_error(self, response) -> None:
         """Raise APIError for non-successful responses."""
         if response.status_code == 200:
             return
 
+        try:
+            response_text = getattr(response, "text", "") or ""
+        except Exception:
+            response_text = ""
         logger.error(
             "API error | status_code=%s | response=%s",
             response.status_code,
-            response.text[:200],
+            response_text[:200],
         )
 
         retryable = self._should_retry(response.status_code)
@@ -199,11 +240,12 @@ class APIClient:
                 "Authentication failed. Check API key and Authorization header.",
                 status_code=401,
                 retryable=False,
+                error_kind="authentication",
             )
 
         if response.status_code == 400:
             raise APIError(
-                f"Bad request: {response.text[:200]}",
+                f"Bad request: {response_text[:200]}",
                 status_code=400,
                 retryable=False,
             )
@@ -217,6 +259,8 @@ class APIClient:
                 "Rate limit exceeded.",
                 status_code=429,
                 retryable=True,
+                retry_after=retry_after,
+                error_kind="rate_limit",
             )
 
         if response.status_code >= 500:
@@ -227,7 +271,7 @@ class APIClient:
             )
 
         raise APIError(
-            f"Unknown API error: {response.text[:200]}",
+            f"Unknown API error: {response_text[:200]}",
             status_code=response.status_code,
             retryable=retryable,
         )
@@ -236,13 +280,80 @@ class APIClient:
 class APIError(Exception):
     """Custom API exception."""
 
-    def __init__(self, message: str, status_code: int = None, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = None,
+        retryable: bool = False,
+        retry_after: Optional[str] = None,
+        error_kind: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.message = message
         self.retryable = retryable
+        self.retry_after = retry_after
+        self.error_kind = error_kind
 
     def __str__(self):
         if self.status_code:
             return f"[HTTP {self.status_code}] {self.message}"
         return self.message
+
+
+STREAM_DONE = "__stream_done__"
+
+
+def parse_chat_stream_line(line: str) -> Optional[str]:
+    """Parse one OpenAI-compatible SSE line into a token delta."""
+    if not line:
+        return None
+    if not line.startswith("data:"):
+        return None
+
+    raw_data = line[len("data:"):].strip()
+    if raw_data == "[DONE]":
+        return STREAM_DONE
+
+    try:
+        payload = json.loads(raw_data)
+    except json.JSONDecodeError:
+        logger.warning("Skipping malformed stream payload | payload=%s", raw_data[:200])
+        return None
+
+    choices = payload.get("choices") or []
+    if not choices:
+        return None
+
+    choice = choices[0]
+    delta = choice.get("delta") or {}
+    content = delta.get("content")
+    if content is None:
+        message = choice.get("message") or {}
+        content = message.get("content")
+    return content
+
+
+def run_async_blocking(coro):
+    """Run an async coroutine from synchronous code, including inside a live event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result = {}
+    error = {}
+
+    def runner():
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception as e:
+            error["value"] = e
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if error:
+        raise error["value"]
+    return result.get("value")

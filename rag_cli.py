@@ -12,7 +12,7 @@ from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
 from logger import setup_logger
 from parent_store import InMemoryParentStore
 from query_rewrite import create_query_rewriter
-from rag import RAGPipeline, RAGResponse
+from rag import EmbeddingSpaceInvalidError, EmbeddingSpaceMismatchError, IndexNotReadyError, RAGPipeline, RAGResponse
 from rerank import create_reranker
 from tokenization import validate_tokenizer_encoding
 from vector_store import create_vector_store
@@ -617,7 +617,7 @@ def validate_index_embedding_profile(
 ) -> None:
     """Validate that query embeddings match the indexed embedding space."""
     if not vector_records:
-        raise ValueError(f"Vector store collection is empty or unavailable: {collection_name}")
+        raise IndexNotReadyError(f"Vector store collection is empty or unavailable: {collection_name}")
 
     models = {str(record.metadata.get("embedding_model")) for record in vector_records if record.metadata.get("embedding_model")}
     dimensions = {
@@ -627,23 +627,23 @@ def validate_index_embedding_profile(
     }
 
     if not models:
-        raise ValueError("Vector index records are missing embedding_model metadata.")
+        raise EmbeddingSpaceInvalidError("Vector index records are missing embedding_model metadata.")
     if not dimensions:
-        raise ValueError("Vector index records are missing embedding_dimension metadata.")
+        raise EmbeddingSpaceInvalidError("Vector index records are missing embedding_dimension metadata.")
     if len(models) > 1:
-        raise ValueError(f"Vector index contains mixed embedding models: {sorted(models)}")
+        raise EmbeddingSpaceInvalidError(f"Vector index contains mixed embedding models: {sorted(models)}")
     if len(dimensions) > 1:
-        raise ValueError(f"Vector index contains mixed embedding dimensions: {sorted(dimensions)}")
+        raise EmbeddingSpaceInvalidError(f"Vector index contains mixed embedding dimensions: {sorted(dimensions)}")
 
     indexed_model = next(iter(models))
     indexed_dimension = next(iter(dimensions))
     if indexed_model != embedding_provider.model_name:
-        raise ValueError(
+        raise EmbeddingSpaceMismatchError(
             f"Embedding model mismatch for collection {collection_name}: "
             f"index={indexed_model}, query={embedding_provider.model_name}"
         )
     if indexed_dimension != embedding_provider.dimension:
-        raise ValueError(
+        raise EmbeddingSpaceMismatchError(
             f"Embedding dimension mismatch for collection {collection_name}: "
             f"index={indexed_dimension}, query={embedding_provider.dimension}"
         )

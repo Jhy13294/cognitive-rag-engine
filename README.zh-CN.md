@@ -17,12 +17,13 @@
 - Parent-Child 分块：子块检索、父块展开供给生成
 - 可选上下文装填：整块纳入、确定性去重、引用连号和 token 预算
 - Query Rewrite / Multi-Query：确定性改写 fixture 与跨 query RRF 融合
+- FastAPI 异步服务层：ingest/query HTTP 接口和 SSE 流式返回
 
-缓存、监控、API 服务层、权限控制等企业级能力尚未实现。
+缓存、监控、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗，以及面向生成输入的上下文装填能力。
+当前阶段：可评估的检索漏斗，以及异步 HTTP 服务层。
 
 已完成：
 
@@ -46,6 +47,7 @@
 - 支持批量写入、metadata 过滤、payload index 和重试机制的 Qdrant 生产级向量库适配器
 - 向量库工厂和 CLI provider 选择
 - 最小 RAG 管线：检索、上下文组装、LLM 生成、引用来源返回
+- ingest/query CLI 职责分离，Qdrant 路径支持跨进程持久化
 - 确定性检索评估：JSONL golden set、HashEmbeddingProvider 基线、JSON/Markdown 报告
 - Reranker 抽象层：确定性离线重排器和 Cohere neural reranker provider
 - `RAGPipeline.retrieve` 可选接入重排：dense 召回、rerank、取 top-k，失败时降级回 dense 原序
@@ -60,13 +62,13 @@
 - OpenAI embedding batch 切分改为使用 TokenCounter，不再依赖旧的 `len/4` 估算
 - QueryRewriter 抽象层：支持确定性 fixture 改写器和生产 Chat 改写器
 - `RAGPipeline.retrieve` 支持 Multi-Query：原始 query + 改写变体，多路检索后用 RRF 融合，再进入既有 rerank、父块展开和上下文装填
+- FastAPI HTTP 适配层：提供 `/ingest`、`/query`、`/query/stream`，使用 Pydantic 模型、线程池 offload 既有同步检索漏斗、统一脱敏异常映射，并在 ingest 后失效 pipeline 缓存
+- 聊天客户端和 OpenAI embedding provider 已迁移到 `httpx.AsyncClient`，重试退避使用 `asyncio.sleep`，聊天侧支持 OpenAI 兼容流式 delta
 
 尚未完成：
 
-- 索引构建和查询命令拆分
 - 缓存层
 - 监控
-- API 服务层
 - 企业权限控制
 
 ## 目录结构
@@ -78,6 +80,7 @@
 ├── logger.py                  # 日志工具
 ├── main.py                    # 命令行问答入口
 ├── rag_cli.py                 # RAG 应用命令行入口
+├── service/                   # FastAPI HTTP 适配层
 ├── requirements.txt           # Python 依赖
 ├── document_loader/
 │   ├── base.py                # Document 模型和加载器接口
@@ -135,6 +138,7 @@
 ├── tests/
 │   ├── fixtures/              # TXT 和 Markdown 样例文档
 │   ├── test_document_ingestion.py
+│   ├── test_api_client.py
 │   ├── test_embeddings.py
 │   ├── test_eval_metrics.py
 │   ├── test_hybrid.py
@@ -146,6 +150,7 @@
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
 │   ├── test_rag_pipeline.py
+│   ├── test_service.py
 │   └── test_rag_cli.py
 └── docs/
     └── learning_notes.zh-CN.md
@@ -243,6 +248,14 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 ```
 
 `memory` 向量库是进程内状态，只适合职责分离测试；跨进程持久化请使用 Qdrant。
+
+本地启动 HTTP 服务：
+
+```bash
+uvicorn service.app:app --host 127.0.0.1 --port 8000
+```
+
+服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /health`。当前尚未实现鉴权，禁止直接暴露到公网。
 
 常用 RAG CLI 参数：
 
