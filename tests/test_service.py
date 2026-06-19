@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import httpx
 
 from api_client import APIError
+from config import Config
 from rag import EmbeddingSpaceMismatchError, IndexNotReadyError
 from rag import RAGResponse, RetrievedSource
 from service.app import ServiceState, create_app, stream_query_events
@@ -93,6 +94,15 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
     async def open_client(self, app):
         transport = httpx.ASGITransport(app=app)
         return httpx.AsyncClient(transport=transport, base_url="http://testserver")
+
+    async def test_create_app_validates_cache_configuration(self):
+        original_ttl = Config.CACHE_EMBEDDING_TTL
+        try:
+            Config.CACHE_EMBEDDING_TTL = 0
+            with self.assertRaisesRegex(ValueError, "CACHE_EMBEDDING_TTL"):
+                create_app(ServiceState(cache_store=object()))
+        finally:
+            Config.CACHE_EMBEDDING_TTL = original_ttl
 
     async def test_query_offloads_sync_answer_work_for_concurrent_requests(self):
         state = ServiceState(
@@ -237,6 +247,7 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/ingest", body["paths"])
         self.assertIn("/query", body["paths"])
         self.assertIn("/query/stream", body["paths"])
+        self.assertIn("/cache/stats", body["paths"])
 
 
 if __name__ == "__main__":

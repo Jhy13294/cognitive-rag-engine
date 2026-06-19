@@ -18,12 +18,13 @@ The current codebase focuses on the foundation:
 - Optional context packing with whole-block inclusion, deterministic deduplication, and token-aware budgets
 - Query rewrite / multi-query retrieval with deterministic fixtures and cross-query RRF
 - Async FastAPI service layer for ingest/query and SSE streaming
+- Optional Redis cache wrappers for query embeddings, retrieval results, and generated answers
 
-Caching, monitoring, and permission control are planned but not implemented yet.
+Monitoring and permission control are planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel plus async HTTP service layer.
+Current milestone: evaluated retrieval funnel plus async HTTP service layer and optional Redis caching.
 
 Implemented:
 
@@ -64,12 +65,26 @@ Implemented:
 - Multi-query retrieval in `RAGPipeline.retrieve`: original query plus variants, per-variant retrieval, cross-query RRF, then the existing rerank/parent expansion/context packing stages
 - Async FastAPI adapter with `/ingest`, `/query`, `/query/stream`, Pydantic models, threadpool offload for the synchronous retrieval funnel, sanitized exception mapping, and cache invalidation after ingest
 - Async `httpx.AsyncClient` chat and OpenAI embedding providers with `asyncio.sleep` retry backoff and OpenAI-compatible streaming chat deltas
+- Redis-backed cache decorators:
+  - L1 caches query embeddings by embedding model, dimension, normalization flag, and normalized question.
+  - L2 caches retrieved sources by persistent corpus version, exact query/options key, top-k, and metadata filter.
+  - L3 caches full `RAGResponse` answers by the L2 key plus system prompt and chat generation factors.
+  - The Redis store owns a dedicated background event loop for the `redis.asyncio` client, so synchronous CLI/evaluation calls and service threadpool calls do not reuse a client across closed event loops.
+  - Redis failures fail open as cache misses.
+  - `/ingest` clears the in-process pipeline cache and increments a Redis-persisted corpus version.
 
 Not implemented yet:
 
-- Cache layer
 - Monitoring
 - Enterprise access control
+
+## Advanced Learning Notes
+
+Start here when you want to understand the engineering choices behind the project:
+
+- **[Technology Selection](docs/tech-selection.md)**: why the project uses the current embedding providers, vector stores, retrieval stack, service protocol, and Redis cache design.
+- **[Architecture](docs/architecture.md)**: system architecture, ingest/query data flow, retrieval funnel, parent-child expansion, Redis cache layout, and evaluation boundaries.
+- **[Crash / Pitfall Log](docs/dev-log-crashing.md)**: hard-earned debugging notes about metric pollution, fake streaming, async traps, cache invalidation, Redis event-loop ownership, and other issues.
 
 ## Directory Structure
 
@@ -81,6 +96,7 @@ Not implemented yet:
 ├── main.py                    # CLI chat entry point
 ├── rag_cli.py                 # RAG application CLI
 ├── service/                   # FastAPI HTTP adapter
+├── cache/                     # Redis cache decorators and serialization
 ├── requirements.txt           # Python dependencies
 ├── document_loader/
 │   ├── base.py                # Document model and loader interface
@@ -153,7 +169,10 @@ Not implemented yet:
 │   ├── test_service.py
 │   └── test_rag_cli.py
 └── docs/
-    └── learning_notes.zh-CN.md
+    ├── tech-selection.md      # Technology selection notes
+    ├── architecture.md        # System architecture and data-flow diagrams
+    ├── dev-log-crashing.md    # Core pitfall and incident debugging log
+    └── learning_notes.zh-CN.md # Legacy learning-note index
 ```
 
 ## Setup
@@ -211,6 +230,17 @@ QUERY_REWRITE_TEMPERATURE=0.1
 QUERY_REWRITE_CACHE_ENABLED=true
 QUERY_REWRITE_WEIGHT_ORIGINAL=1.0
 QUERY_REWRITE_WEIGHT_VARIANT=0.7
+
+REDIS_URL=redis://localhost:6379/0
+CACHE_NAMESPACE=rag-cache
+CACHE_ENABLED=false
+CACHE_EMBEDDING_ENABLED=true
+CACHE_RETRIEVAL_ENABLED=true
+CACHE_ANSWER_ENABLED=true
+CACHE_EMBEDDING_TTL=604800
+CACHE_RETRIEVAL_TTL=900
+CACHE_ANSWER_TTL=300
+CACHE_TIMEOUT=0.25
 ```
 
 ## Usage
@@ -255,7 +285,9 @@ Run the HTTP service locally:
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, and `GET /health`. Authentication is intentionally not implemented yet, so do not expose it publicly.
+The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, and `GET /health`. Authentication is intentionally not implemented yet, so do not expose it publicly.
+
+Redis caching is disabled by default. To enable it, run Redis, set `CACHE_ENABLED=true`, and configure `REDIS_URL`. `/query/stream` replays a cached L3 answer when present and marks the SSE payload with `cached=true`; otherwise it keeps the live provider stream and backfills L3 after completion.
 
 Useful RAG CLI options:
 
@@ -504,17 +536,26 @@ Run deterministic multi-query retrieval evaluation:
 python -m eval.run --multi-query
 ```
 
+Force evaluation to bypass Redis cache wrappers:
+
+```bash
+python -m eval.run --no-cache
+```
+
 The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
 
 Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The latest rerank report is under `eval/reports/`.
 
-Current T06 hybrid comparison, with reranker disabled and `HashEmbeddingProvider`, reports dense-only MRR@3 `0.677083`, bm25-only MRR@3 `1.000000`, and fused MRR@3 `1.000000`. The fused route also lifts exact_name and long_tail MRR@3 to `1.000000` while preserving deterministic byte-stable reports. The latest T06 reports are under `eval/reports/`.
+Current hybrid retrieval comparison, with reranker disabled and `HashEmbeddingProvider`, reports dense-only MRR@3 `0.677083`, bm25-only MRR@3 `1.000000`, and fused MRR@3 `1.000000`. The fused route also lifts exact_name and long_tail MRR@3 to `1.000000` while preserving deterministic byte-stable reports. The latest hybrid reports are under `eval/reports/`.
 
-Current T07 parent-child mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
+Current parent-child retrieval mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
 
-Current T08 context packing is a generation-input assembly step. It does not enter `retrieve()` and must not be reported as MRR/recall improvement. With all context flags off, the legacy character-based `_build_context` path is preserved. When enabled, packing includes whole blocks or skips them, renumbers citations contiguously, folds exact duplicates, optionally folds near duplicates behind a flag, and uses `TokenCounter` for token budgets. tiktoken is optional; when it is unavailable, the system falls back to a deterministic heuristic counter. For Chinese text, true token counting may create more but legal smaller batches; the benefit is correctness and zero over-limit requests, not claiming fewer batches. Generation quality and coherence remain deferred to T14 Ragas.
+Current context packing is a generation-input assembly step. It does not enter `retrieve()` and must not be reported as MRR/recall improvement. With all context flags off, the legacy character-based `_build_context` path is preserved. When enabled, packing includes whole blocks or skips them, renumbers citations contiguously, folds exact duplicates, optionally folds near duplicates behind a flag, and uses `TokenCounter` for token budgets. tiktoken is optional; when it is unavailable, the system falls back to a deterministic heuristic counter. For Chinese text, true token counting may create more but legal smaller batches; the benefit is correctness and zero over-limit requests, not claiming fewer batches. Generation quality and coherence remain deferred to Ragas-style answer-quality evaluation.
 
-Current T09 multi-query retrieval is a retrieval-side change, so hit_rate/MRR/recall are valid measurement surfaces. The deterministic fixture keeps the original query as `q0`, adds frozen variants for paraphrase and long-tail cases, fuses per-query results with the existing RRF implementation, and then reuses the existing rerank, parent expansion, and context packing stages. In the offline HashEmbeddingProvider baseline, `python -m eval.run --multi-query` improves paraphrase recall@3 from `0.800000` to `1.000000`, keeps long_tail recall@3 at `0.900000`, and improves long_tail MRR@3 from `0.566667` to `0.900000`. The four negative queries have no fixture rewrite, so multi-query is fully bypassed for them and their results are byte-identical to the single-path baseline; multi-query-on-negative risk is not covered offline and is deferred to the abstain/threshold work in the roadmap. These deterministic fixture gains are a controlled demonstration that RRF fusion plumbing delivers the targeted paraphrase/long_tail gains when fed known-good rewrites. Production LLM rewrites may land above or below this, and query drift can fall below single-path. This is not a production floor.
+Current multi-query retrieval is a retrieval-side change, so hit_rate/MRR/recall are valid measurement surfaces. The deterministic fixture keeps the original query as `q0`, adds frozen variants for paraphrase and long-tail cases, fuses per-query results with the existing RRF implementation, and then reuses the existing rerank, parent expansion, and context packing stages. In the offline HashEmbeddingProvider baseline, `python -m eval.run --multi-query` improves paraphrase recall@3 from `0.800000` to `1.000000`, keeps long_tail recall@3 at `0.900000`, and improves long_tail MRR@3 from `0.566667` to `0.900000`. The four negative queries have no fixture rewrite, so multi-query is fully bypassed for them and their results are byte-identical to the single-path baseline; multi-query-on-negative risk is not covered offline and is deferred to the abstain/threshold work in the roadmap. These deterministic fixture gains are a controlled demonstration that RRF fusion plumbing delivers the targeted paraphrase/long_tail gains when fed known-good rewrites. Production LLM rewrites may land above or below this, and query drift can fall below single-path. This is not a production floor.
+
+Current Redis caching is an outer wrapper, not a second retrieval pipeline. With `CACHE_ENABLED=false`, providers and pipelines are returned unwrapped. With cache enabled, L1 wraps `EmbeddingProvider.embed_text`, L2 wraps `retrieve`, and L3 wraps `answer`; `rag/pipeline.py` remains unchanged. L1 does not include `corpus_version` because text embeddings are a model+text function. L2/L3 include the Redis-persisted corpus version so `/ingest` makes stale retrieval and answer entries unreachable across process restarts and multiple service replicas. Negative answers are cached like any other exact query result but remain bounded by TTL and corpus version. The default unit tests use a FakeRedis substitute; true `redis.asyncio` coverage is gated behind `REDIS_URL` and must include both live Redis commands and cross-event-loop calls.
+The live Redis path has passed the production-shape regression: repeated synchronous and service-thread calls reuse a store-owned Redis loop, hit L1/L2/L3 on the second call, and keep Redis error counts at zero.
 
 ## Development Conventions
 
@@ -529,5 +570,5 @@ Current T09 multi-query retrieval is a retrieval-side change, so hit_rate/MRR/re
 
 1. Add more ingestion edge-case fixtures.
 2. Add score thresholding or abstain logic for negative queries.
-3. Add caching, observability, and access-control features.
+3. Add observability and access-control features.
 4. Add production deployment checks around Qdrant version compatibility and health probes.

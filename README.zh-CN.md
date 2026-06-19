@@ -18,12 +18,13 @@
 - 可选上下文装填：整块纳入、确定性去重、引用连号和 token 预算
 - Query Rewrite / Multi-Query：确定性改写 fixture 与跨 query RRF 融合
 - FastAPI 异步服务层：ingest/query HTTP 接口和 SSE 流式返回
+- 可选 Redis 三层缓存：query embedding、检索结果和生成答案
 
-缓存、监控、权限控制等企业级能力尚未实现。
+监控、权限控制等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗，以及异步 HTTP 服务层。
+当前阶段：可评估的检索漏斗、异步 HTTP 服务层，以及可选 Redis 缓存层。
 
 已完成：
 
@@ -64,10 +65,16 @@
 - `RAGPipeline.retrieve` 支持 Multi-Query：原始 query + 改写变体，多路检索后用 RRF 融合，再进入既有 rerank、父块展开和上下文装填
 - FastAPI HTTP 适配层：提供 `/ingest`、`/query`、`/query/stream`，使用 Pydantic 模型、线程池 offload 既有同步检索漏斗、统一脱敏异常映射，并在 ingest 后失效 pipeline 缓存
 - 聊天客户端和 OpenAI embedding provider 已迁移到 `httpx.AsyncClient`，重试退避使用 `asyncio.sleep`，聊天侧支持 OpenAI 兼容流式 delta
+- Redis 缓存装饰器：
+  - L1 按 embedding model、dimension、normalize 和归一化 question 缓存 query embedding。
+  - L2 按持久 corpus version、精确 query/options key、top_k 和 metadata_filter 缓存检索结果。
+  - L3 在 L2 key 基础上叠加 system prompt 和生成模型因子，缓存完整 `RAGResponse`。
+  - Redis store 为 `redis.asyncio` 客户端持有独立后台事件循环，避免 CLI/评估同步桥和服务线程池调用跨已关闭 loop 复用同一连接。
+  - Redis 故障时 fail-open 为 cache miss，不影响回答。
+  - `/ingest` 会清空进程内 pipeline cache，并递增 Redis 持久化 corpus version。
 
 尚未完成：
 
-- 缓存层
 - 监控
 - 企业权限控制
 
@@ -81,6 +88,7 @@
 ├── main.py                    # 命令行问答入口
 ├── rag_cli.py                 # RAG 应用命令行入口
 ├── service/                   # FastAPI HTTP 适配层
+├── cache/                     # Redis 缓存装饰器和序列化
 ├── requirements.txt           # Python 依赖
 ├── document_loader/
 │   ├── base.py                # Document 模型和加载器接口
@@ -153,7 +161,10 @@
 │   ├── test_service.py
 │   └── test_rag_cli.py
 └── docs/
-    └── learning_notes.zh-CN.md
+    ├── tech-selection.md      # 技术选型思考
+    ├── architecture.md        # 系统架构与数据流图
+    ├── dev-log-crashing.md    # 核心踩坑记录
+    └── learning_notes.zh-CN.md # 学习笔记索引
 ```
 
 ## 安装
@@ -211,6 +222,17 @@ QUERY_REWRITE_TEMPERATURE=0.1
 QUERY_REWRITE_CACHE_ENABLED=true
 QUERY_REWRITE_WEIGHT_ORIGINAL=1.0
 QUERY_REWRITE_WEIGHT_VARIANT=0.7
+
+REDIS_URL=redis://localhost:6379/0
+CACHE_NAMESPACE=rag-cache
+CACHE_ENABLED=false
+CACHE_EMBEDDING_ENABLED=true
+CACHE_RETRIEVAL_ENABLED=true
+CACHE_ANSWER_ENABLED=true
+CACHE_EMBEDDING_TTL=604800
+CACHE_RETRIEVAL_TTL=900
+CACHE_ANSWER_TTL=300
+CACHE_TIMEOUT=0.25
 ```
 
 ## 使用
@@ -255,7 +277,9 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /health`。当前尚未实现鉴权，禁止直接暴露到公网。
+服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats` 和 `GET /health`。当前尚未实现鉴权，禁止直接暴露到公网。
+
+Redis 缓存默认关闭。启用时需要运行 Redis，设置 `CACHE_ENABLED=true` 并配置 `REDIS_URL`。`/query/stream` 在 L3 命中时会重放缓存答案，并在 SSE payload 中标记 `cached=true`；未命中时保持真实 provider 流式输出，并在完成后回填 L3。
 
 常用 RAG CLI 参数：
 
@@ -504,17 +528,26 @@ python -m eval.run --parent-child
 python -m eval.run --multi-query
 ```
 
+强制评估绕过 Redis 缓存装饰器：
+
+```bash
+python -m eval.run --no-cache
+```
+
 评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
 
-当前 T05 重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
+当前重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
 
-当前 T06 hybrid 对照在关闭 reranker、使用 `HashEmbeddingProvider` 的条件下：dense-only MRR@3 为 `0.677083`，bm25-only MRR@3 为 `1.000000`，fused MRR@3 为 `1.000000`；fused 的 exact_name 和 long_tail MRR@3 也达到 `1.000000`，并保持报告逐字节可复现。最新 T06 报告位于 `eval/reports/`。
+当前 hybrid retrieval 对照在关闭 reranker、使用 `HashEmbeddingProvider` 的条件下：dense-only MRR@3 为 `0.677083`，bm25-only MRR@3 为 `1.000000`，fused MRR@3 为 `1.000000`；fused 的 exact_name 和 long_tail MRR@3 也达到 `1.000000`，并保持报告逐字节可复现。最新 hybrid 报告位于 `eval/reports/`。
 
-当前 T07 Parent-Child 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。生成侧连贯性和 Context Precision 的真账留到 T14 Ragas。
+当前 Parent-Child retrieval 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。生成侧连贯性和 Context Precision 的真账留到 Ragas 质量评估。
 
-当前 T08 上下文装填只属于生成输入组装，不进入 `retrieve()`，不能被拿来声明 MRR 或 recall 提升。所有 context flag 关闭时，旧的字符制 `_build_context` 路径保持兼容；显式开启后，ContextPacker 会整块纳入或跳过，引用重新连号，精确重复默认由开关控制，可选近重复去重由独立 flag 守卫，并使用 TokenCounter 计算 token 预算。tiktoken 是可选依赖，缺失时自动使用确定性启发式兜底。对中文文本，真实 token 计数可能让 batch 变多、变小但合法；收益是避免超限请求，而不是“批数下降”。生成质量和连贯性结论仍延后到 T14 Ragas。
+当前上下文装填只属于生成输入组装，不进入 `retrieve()`，不能被拿来声明 MRR 或 recall 提升。所有 context flag 关闭时，旧的字符制 `_build_context` 路径保持兼容；显式开启后，ContextPacker 会整块纳入或跳过，引用重新连号，精确重复默认由开关控制，可选近重复去重由独立 flag 守卫，并使用 TokenCounter 计算 token 预算。tiktoken 是可选依赖，缺失时自动使用确定性启发式兜底。对中文文本，真实 token 计数可能让 batch 变多、变小但合法；收益是避免超限请求，而不是“批数下降”。生成质量和连贯性结论仍延后到 Ragas 质量评估。
 
-当前 T09 Multi-Query 是检索侧改动，因此 hit_rate、MRR、recall 是合法测量面。确定性 fixture 保证原始 query 始终作为 `q0`，只给 paraphrase 和 long_tail 样本增加冻结改写变体，多路检索后复用既有 RRF 融合，再进入既有 rerank、父块展开和上下文装填。离线 HashEmbeddingProvider 基线下，`python -m eval.run --multi-query` 将 paraphrase recall@3 从 `0.800000` 提升到 `1.000000`，long_tail recall@3 保持 `0.900000`，long_tail MRR@3 从 `0.566667` 提升到 `0.900000`。4 条 negative query 没有 fixture 改写，因此 multi-query 对它们整段旁路，结果与单路基线逐字节一致；multi-query 在 negative 上触发的风险没有被离线门禁覆盖，后续交给 roadmap 中的阈值 / abstain 工作处理。这些确定性 fixture 涨幅只是“给定已知优质改写时，RRF 融合管线能带来目标 paraphrase/long_tail 收益”的机制受控演示。线上 LLM 改写可能高于也可能低于这组数字，query drift 甚至可能跌破单路；这不是生产保底。
+当前 Multi-Query retrieval 是检索侧改动，因此 hit_rate、MRR、recall 是合法测量面。确定性 fixture 保证原始 query 始终作为 `q0`，只给 paraphrase 和 long_tail 样本增加冻结改写变体，多路检索后复用既有 RRF 融合，再进入既有 rerank、父块展开和上下文装填。离线 HashEmbeddingProvider 基线下，`python -m eval.run --multi-query` 将 paraphrase recall@3 从 `0.800000` 提升到 `1.000000`，long_tail recall@3 保持 `0.900000`，long_tail MRR@3 从 `0.566667` 提升到 `0.900000`。4 条 negative query 没有 fixture 改写，因此 multi-query 对它们整段旁路，结果与单路基线逐字节一致；multi-query 在 negative 上触发的风险没有被离线门禁覆盖，后续交给 roadmap 中的阈值 / abstain 工作处理。这些确定性 fixture 涨幅只是“给定已知优质改写时，RRF 融合管线能带来目标 paraphrase/long_tail 收益”的机制受控演示。线上 LLM 改写可能高于也可能低于这组数字，query drift 甚至可能跌破单路；这不是生产保底。
+
+当前 Redis 缓存是包在现有漏斗外的装饰层，不是第二条检索管线。`CACHE_ENABLED=false` 时 provider 和 pipeline 不会被包装；启用后，L1 包 `EmbeddingProvider.embed_text`，L2 包 `retrieve`，L3 包 `answer`，`rag/pipeline.py` 不改。L1 不含 `corpus_version`，因为文本向量是 model+text 的函数；L2/L3 必须含 Redis 持久化 corpus version，使 `/ingest` 后旧检索和旧答案跨进程、跨副本都不可达。negative/abstain 类结果按精确 query 正常缓存，但受 TTL 和 corpus version 双重约束。默认单测使用 FakeRedis 替身；真实 `redis.asyncio` 覆盖必须由 `REDIS_URL` 守卫，并同时覆盖真实 Redis 命令和跨事件循环调用。
+真实 Redis 路径已通过生产形态回归：连续同步调用和服务线程池调用会复用 store 自有 Redis loop，第二次命中 L1/L2/L3，并保持 Redis error 计数为 0。
 
 ## 代码规范
 
@@ -529,5 +562,5 @@ python -m eval.run --multi-query
 
 1. 增加更多文档入库边界样例。
 2. 增加分数阈值或拒答逻辑，改善 negative query。
-3. 增加缓存、可观测性和权限控制。
+3. 增加可观测性和权限控制。
 4. 增加 Qdrant 版本兼容与健康检查等生产部署门禁。

@@ -124,6 +124,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Disable query rewrite cache for this evaluation run.",
     )
     parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable Redis cache wrappers for this evaluation run.",
+    )
+    parser.add_argument(
         "--query-rewrite-weight-original",
         type=float,
         default=Config.QUERY_REWRITE_WEIGHT_ORIGINAL,
@@ -198,6 +203,7 @@ def main(argv: List[str] = None) -> int:
         query_rewrite_cache_enabled=not args.no_query_rewrite_cache,
         query_rewrite_weight_original=args.query_rewrite_weight_original,
         query_rewrite_weight_variant=args.query_rewrite_weight_variant,
+        cache_enabled=Config.CACHE_ENABLED and not args.no_cache,
     )
 
     metadata = {
@@ -315,6 +321,7 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
             query_rewrite_cache_enabled=not args.no_query_rewrite_cache,
             query_rewrite_weight_original=args.query_rewrite_weight_original,
             query_rewrite_weight_variant=args.query_rewrite_weight_variant,
+            cache_enabled=Config.CACHE_ENABLED and not args.no_cache,
         )
         reports[label] = evaluate_retriever(
             retrieve=retrieve,

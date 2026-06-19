@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
@@ -7,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
 from api_client import APIClient
+from cache import get_default_cache_store
 from config import Config
 from logger import setup_logger
 from rag import RAGPipeline, RAGResponse, RetrievedSource
@@ -32,6 +34,7 @@ class ServiceState:
     ingest_callable: Any = ingest_documents
     pipeline_builder: Any = build_rag_pipeline_from_index
     chat_client_factory: Any = None
+    cache_store: Any = None
     pipeline_cache: Dict[Tuple, RAGPipeline] = field(default_factory=dict)
     cache_generation: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -40,22 +43,40 @@ class ServiceState:
         """Install the default chat client factory."""
         if self.chat_client_factory is None:
             self.chat_client_factory = default_chat_client_factory
+        if self.cache_store is None:
+            self.cache_store = get_default_cache_store()
 
     async def invalidate(self) -> None:
         """Invalidate cached query pipelines after ingestion."""
         async with self.lock:
             self.pipeline_cache.clear()
             self.cache_generation += 1
+        if self.cache_store is not None:
+            await self.cache_store.bump_corpus_version()
 
 
 def create_app(state: Optional[ServiceState] = None) -> FastAPI:
     """Create the FastAPI application."""
+    Config.validate_cache()
+    service_state = state or ServiceState()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """Close process-level cache resources on shutdown."""
+        try:
+            yield
+        finally:
+            cache_store = service_state.cache_store
+            if cache_store is not None and hasattr(cache_store, "aclose"):
+                await cache_store.aclose()
+
     app = FastAPI(
         title="Enterprise RAG Service",
         version="0.1.0",
         description="Async HTTP adapter for the existing ingest/query RAG pipeline.",
+        lifespan=lifespan,
     )
-    app.state.service_state = state or ServiceState()
+    app.state.service_state = service_state
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -64,6 +85,14 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
             status="ok",
             warning="Authentication is not implemented; do not expose this service publicly.",
         )
+
+    @app.get("/cache/stats")
+    async def cache_stats() -> Dict:
+        """Return in-process cache counters."""
+        service_state = get_state(app)
+        if service_state.cache_store is None:
+            return {"enabled": False}
+        return service_state.cache_store.stats()
 
     @app.post("/ingest", response_model=IngestResponse)
     async def ingest(request: IngestRequest) -> IngestResponse:
@@ -188,6 +217,28 @@ async def stream_query_events(app: FastAPI, request: QueryRequest, pipeline: Opt
     try:
         if pipeline is None:
             pipeline = await get_or_build_pipeline(app, request)
+
+        cached_getter = getattr(pipeline, "get_cached_answer", None)
+        if cached_getter is not None:
+            cached_response = await asyncio.to_thread(
+                cached_getter,
+                request.question,
+                request.top_k,
+                request.metadata_filter,
+            )
+            if cached_response is not None:
+                yield sse_event(
+                    "sources",
+                    {
+                        "sources": sources_to_models(cached_response.sources),
+                        "cached": True,
+                        "stream_replay": True,
+                    },
+                )
+                yield sse_event("token", {"delta": cached_response.answer, "cached": True})
+                yield sse_event("done", {"answer": cached_response.answer, "cached": True})
+                return
+
         sources = await asyncio.to_thread(
             pipeline.retrieve,
             request.question,
@@ -209,7 +260,19 @@ async def stream_query_events(app: FastAPI, request: QueryRequest, pipeline: Opt
             answer_parts.append(token)
             yield sse_event("token", {"delta": token})
 
-        yield sse_event("done", {"answer": "".join(answer_parts)})
+        answer = "".join(answer_parts)
+        store_answer = getattr(pipeline, "store_answer", None)
+        if store_answer is not None:
+            streamed_response = RAGResponse(
+                question=request.question,
+                answer=answer,
+                sources=used_sources,
+                prompt=prompt,
+                raw_response={"choices": [{"message": {"content": answer}}], "streamed": True},
+            )
+            await asyncio.to_thread(store_answer, streamed_response, request.top_k, request.metadata_filter)
+
+        yield sse_event("done", {"answer": answer})
     except Exception as e:
         http_error = to_http_exception(e)
         yield sse_event("error", http_error.detail)

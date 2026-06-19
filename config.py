@@ -127,6 +127,17 @@ class Config:
     QUERY_REWRITE_WEIGHT_ORIGINAL = _env_float("QUERY_REWRITE_WEIGHT_ORIGINAL", 1.0)
     QUERY_REWRITE_WEIGHT_VARIANT = _env_float("QUERY_REWRITE_WEIGHT_VARIANT", 0.7)
 
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    CACHE_NAMESPACE = os.getenv("CACHE_NAMESPACE", "rag-cache")
+    CACHE_ENABLED = _env_bool("CACHE_ENABLED", False)
+    CACHE_EMBEDDING_ENABLED = _env_bool("CACHE_EMBEDDING_ENABLED", True)
+    CACHE_RETRIEVAL_ENABLED = _env_bool("CACHE_RETRIEVAL_ENABLED", True)
+    CACHE_ANSWER_ENABLED = _env_bool("CACHE_ANSWER_ENABLED", True)
+    CACHE_EMBEDDING_TTL = _env_int("CACHE_EMBEDDING_TTL", 604800)
+    CACHE_RETRIEVAL_TTL = _env_int("CACHE_RETRIEVAL_TTL", 900)
+    CACHE_ANSWER_TTL = _env_int("CACHE_ANSWER_TTL", 300)
+    CACHE_TIMEOUT = _env_float("CACHE_TIMEOUT", 0.25)
+
     @classmethod
     def validate(cls):
         """Validate required configuration values."""
@@ -300,4 +311,25 @@ class Config:
         logger.debug("Query rewrite cache enabled: %s", cls.QUERY_REWRITE_CACHE_ENABLED)
         logger.debug("Query rewrite original weight: %s", cls.QUERY_REWRITE_WEIGHT_ORIGINAL)
         logger.debug("Query rewrite variant weight: %s", cls.QUERY_REWRITE_WEIGHT_VARIANT)
+        return True
+
+    @classmethod
+    def validate_cache(cls):
+        """Validate Redis cache configuration."""
+        if cls.CACHE_EMBEDDING_TTL <= 0:
+            raise ValueError("CACHE_EMBEDDING_TTL must be greater than 0.")
+        if cls.CACHE_RETRIEVAL_TTL <= 0:
+            raise ValueError("CACHE_RETRIEVAL_TTL must be greater than 0.")
+        if cls.CACHE_ANSWER_TTL <= 0:
+            raise ValueError("CACHE_ANSWER_TTL must be greater than 0.")
+        if cls.CACHE_TIMEOUT <= 0:
+            raise ValueError("CACHE_TIMEOUT must be greater than 0.")
+        if cls.CACHE_ENABLED and not cls.REDIS_URL:
+            raise ValueError("REDIS_URL is required when CACHE_ENABLED is true.")
+
+        logger.debug("Cache enabled: %s", cls.CACHE_ENABLED)
+        logger.debug("Cache namespace: %s", cls.CACHE_NAMESPACE)
+        logger.debug("Cache embedding enabled: %s", cls.CACHE_EMBEDDING_ENABLED)
+        logger.debug("Cache retrieval enabled: %s", cls.CACHE_RETRIEVAL_ENABLED)
+        logger.debug("Cache answer enabled: %s", cls.CACHE_ANSWER_ENABLED)
         return True

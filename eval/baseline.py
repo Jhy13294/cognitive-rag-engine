@@ -1,5 +1,6 @@
 from typing import Callable, Dict, List, Optional, Tuple
 
+from cache import maybe_wrap_embedding_provider, maybe_wrap_pipeline
 from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
 from embeddings import HashEmbeddingProvider
 from hybrid import BM25Retriever, RRFConfig, RankedRecord, ReciprocalRankFusion
@@ -41,6 +42,7 @@ def build_hash_retriever(
     query_rewrite_cache_enabled: bool = True,
     query_rewrite_weight_original: float = 1.0,
     query_rewrite_weight_variant: float = 0.7,
+    cache_enabled: bool = False,
 ) -> Tuple[Callable[[str, int], List[RetrievedSource]], Dict]:
     """Build a deterministic offline retriever for evaluation baselines.
 
@@ -76,6 +78,8 @@ def build_hash_retriever(
         raise ValueError(f"No supported documents loaded from knowledge path: {knowledge_path}")
 
     embedding_provider = HashEmbeddingProvider(dimension=embedding_dimension)
+    if cache_enabled:
+        embedding_provider = maybe_wrap_embedding_provider(embedding_provider)
     embedded_documents = embedding_provider.embed_documents(chunks)
     vector_records = [embedded_document_to_record(document) for document in embedded_documents]
     vector_store = InMemoryVectorStore(dimension=embedding_provider.dimension)
@@ -125,6 +129,8 @@ def build_hash_retriever(
         query_rewrite_weight_original=query_rewrite_weight_original,
         query_rewrite_weight_variant=query_rewrite_weight_variant,
     )
+    if cache_enabled:
+        pipeline = maybe_wrap_pipeline(pipeline, vector_records)
 
     def retrieve(question: str, top_k: int) -> List[RetrievedSource]:
         if normalized_mode == "bm25":
@@ -163,6 +169,7 @@ def build_hash_retriever(
         "chunk_overlap": chunk_overlap,
         "chunk_count": len(chunks),
         "record_count": len(vector_records),
+        "cache_enabled": cache_enabled,
     }
     if query_rewrite_enabled:
         metadata.update(

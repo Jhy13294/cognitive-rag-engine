@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from cache import maybe_wrap_embedding_provider, maybe_wrap_pipeline
 from config import Config
 from document_loader import Document
 from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
@@ -400,6 +401,7 @@ def build_rag_pipeline_from_records(
     max_context_chars: int = 4000,
 ) -> RAGPipeline:
     """Assemble a RAG pipeline from already indexed vector records."""
+    embedding_provider = maybe_wrap_embedding_provider(embedding_provider)
     use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
     use_context_dedup = Config.CONTEXT_DEDUP_ENABLED if context_dedup_enabled is None else context_dedup_enabled
     use_context_near_dup = (
@@ -531,7 +533,7 @@ def build_rag_pipeline_from_records(
         use_context_dedup,
         use_query_rewrite,
     )
-    return RAGPipeline(
+    pipeline = RAGPipeline(
         embedding_provider=embedding_provider,
         vector_store=vector_store,
         chat_client=chat_client,
@@ -554,6 +556,7 @@ def build_rag_pipeline_from_records(
         query_rewrite_weight_original=selected_query_rewrite_weight_original,
         query_rewrite_weight_variant=selected_query_rewrite_weight_variant,
     )
+    return maybe_wrap_pipeline(pipeline, vector_records)
 
 
 def add_parent_payload_to_children(children: List[Document], parents: List[Document]) -> None:
@@ -777,10 +780,10 @@ def create_embedding_provider(
 
     if provider == "openai":
         Config.validate_embedding()
-        return OpenAIEmbeddingProvider(dimensions=embedding_dimension)
+        return maybe_wrap_embedding_provider(OpenAIEmbeddingProvider(dimensions=embedding_dimension))
 
     if provider == "hash":
-        return HashEmbeddingProvider(dimension=embedding_dimension or 128)
+        return maybe_wrap_embedding_provider(HashEmbeddingProvider(dimension=embedding_dimension or 128))
 
     raise ValueError(f"Unsupported embedding provider: {provider}")
 
