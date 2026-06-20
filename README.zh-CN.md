@@ -19,12 +19,13 @@
 - Query Rewrite / Multi-Query：确定性改写 fixture 与跨 query RRF 融合
 - FastAPI 异步服务层：ingest/query HTTP 接口和 SSE 流式返回
 - 可选 Redis 三层缓存：query embedding、检索结果和生成答案
+- 可选 MySQL ACL/RBAC 检索前过滤：权限异常 fail-closed
 
-监控、权限控制等企业级能力尚未实现。
+监控和内置认证等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗、异步 HTTP 服务层，以及可选 Redis 缓存层。
+当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存层，以及可选 ACL/RBAC 检索前过滤。
 
 已完成：
 
@@ -72,11 +73,24 @@
   - Redis store 为 `redis.asyncio` 客户端持有独立后台事件循环，避免 CLI/评估同步桥和服务线程池调用跨已关闭 loop 复用同一连接。
   - Redis 故障时 fail-open 为 cache miss，不影响回答。
   - `/ingest` 会清空进程内 pipeline cache，并递增 Redis 持久化 corpus version。
+- ACL/RBAC 检索前过滤：
+  - MySQL metadata resolver 支持 principal membership 和 document/chunk ACL binding。
+  - ingest 可将受信 ACL subjects 或 MySQL `acl_binding` subjects 写入向量 payload metadata。
+  - FastAPI query 端点默认从受信上游 header 读取 principal，身份缺失或 ACL 解析失败时 fail-closed。
+  - dense memory、Qdrant payload filter、BM25 稀疏检索、multi-query 各变体和 L2/L3 缓存 key 使用同一个有效 ACL filter。
 
 尚未完成：
 
 - 监控
-- 企业权限控制
+- 内置认证、JWT 校验或 session 管理
+
+## 高级学习笔记
+
+想理解项目背后的工程取舍时，可以从这里开始：
+
+- **[技术选型思考](docs/tech-selection.md)**：为什么选择当前 embedding provider、向量库、检索栈、服务协议和 Redis 缓存设计。
+- **[系统架构](docs/architecture.md)**：系统架构、ingest/query 数据流、检索漏斗、父块展开、Redis 缓存布局和评估边界。
+- **[核心踩坑记录](docs/dev-log-crashing.md)**：关于指标污染、假流式、异步陷阱、缓存失效、Redis 事件循环归属和 ACL 边界等问题的调试记录。
 
 ## 目录结构
 
@@ -89,6 +103,7 @@
 ├── rag_cli.py                 # RAG 应用命令行入口
 ├── service/                   # FastAPI HTTP 适配层
 ├── cache/                     # Redis 缓存装饰器和序列化
+├── access/                    # ACL/RBAC filter、resolver 和 MySQL metadata 适配器
 ├── requirements.txt           # Python 依赖
 ├── document_loader/
 │   ├── base.py                # Document 模型和加载器接口
@@ -154,6 +169,8 @@
 │   ├── test_context_packing.py
 │   ├── test_token_counter.py
 │   ├── test_rerank.py
+│   ├── test_acl.py
+│   ├── test_acl_mysql_integration.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
@@ -233,6 +250,14 @@ CACHE_EMBEDDING_TTL=604800
 CACHE_RETRIEVAL_TTL=900
 CACHE_ANSWER_TTL=300
 CACHE_TIMEOUT=0.25
+
+ACL_ENABLED=false
+ACL_METADATA_KEY=acl
+ACL_DEFAULT_DENY=true
+ACL_PRINCIPAL_HEADER=X-Principal
+ACL_ALLOW_BODY_PRINCIPAL=false
+ACL_INGEST_BINDINGS_ENABLED=false
+METADATA_DB_URL=mysql://user:password@localhost:3306/rag_metadata
 ```
 
 ## 使用
@@ -277,9 +302,11 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats` 和 `GET /health`。当前尚未实现鉴权，禁止直接暴露到公网。
+服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats` 和 `GET /health`。当前尚未内置鉴权，不能在没有受信网关的情况下直接暴露到公网。
 
 Redis 缓存默认关闭。启用时需要运行 Redis，设置 `CACHE_ENABLED=true` 并配置 `REDIS_URL`。`/query/stream` 在 L3 命中时会重放缓存答案，并在 SSE payload 中标记 `cached=true`；未命中时保持真实 provider 流式输出，并在完成后回填 L3。
+
+ACL/RBAC 过滤默认关闭。启用时设置 `ACL_ENABLED=true`，配置 metadata 数据库，并把服务放在认证网关后，由网关写入 `ACL_PRINCIPAL_HEADER` 指定的受信 principal header（默认 `X-Principal`）。请求体中的 principal 默认拒绝，只有本地测试显式设置 `ACL_ALLOW_BODY_PRINCIPAL=true` 时才允许 fallback。设置 `ACL_INGEST_BINDINGS_ENABLED=true` 后，ingest 可把 MySQL ACL binding 写入向量 payload；Qdrant payload 仍是检索执行快照，因此 MySQL binding 变更需要 re-ingest 或 re-sync 后才会影响检索。
 
 常用 RAG CLI 参数：
 
@@ -306,6 +333,7 @@ python rag_cli.py knowledge_base \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
   --chunk-overlap 120 \
+  --principal alice \
   --metadata-filter "{\"file_type\":\"markdown\"}"
 ```
 
@@ -549,6 +577,8 @@ python -m eval.run --no-cache
 当前 Redis 缓存是包在现有漏斗外的装饰层，不是第二条检索管线。`CACHE_ENABLED=false` 时 provider 和 pipeline 不会被包装；启用后，L1 包 `EmbeddingProvider.embed_text`，L2 包 `retrieve`，L3 包 `answer`，`rag/pipeline.py` 不改。L1 不含 `corpus_version`，因为文本向量是 model+text 的函数；L2/L3 必须含 Redis 持久化 corpus version，使 `/ingest` 后旧检索和旧答案跨进程、跨副本都不可达。negative/abstain 类结果按精确 query 正常缓存，但受 TTL 和 corpus version 双重约束。默认单测使用 FakeRedis 替身；真实 `redis.asyncio` 覆盖必须由 `REDIS_URL` 守卫，并同时覆盖真实 Redis 命令和跨事件循环调用。
 真实 Redis 路径已通过生产形态回归：连续同步调用和服务线程池调用会复用 store 自有 Redis loop，第二次命中 L1/L2/L3，并保持 Redis error 计数为 0。
 
+当前 ACL/RBAC 支持的是 fail-closed 检索前过滤，不是检索后过滤。有效 ACL filter 由服务端根据受信 principal 构造，再与客户端 metadata filter 做 AND，因此客户端只能收窄结果，不能放宽权限。记录授权条件为 `record.acl` 与解析出的 allowed ACL subjects 有交集；缺失或空 ACL 的记录对普通用户视为受限。同一个 filter 会在 dense scoring、BM25 sparse scoring、multi-query 每个变体和缓存 key 构造前生效。MySQL 作为 principal membership 和可选 document/chunk ACL binding 的 metadata 真相源，Qdrant payload 作为高性能检索执行快照；修改 MySQL binding 后需要 re-ingest 或 re-sync 才会进入向量库 payload。FastAPI 服务本身不验证 JWT 或 session，生产部署必须由受信认证网关持有 principal header。
+
 ## 代码规范
 
 - 代码命名使用英文。
@@ -562,5 +592,6 @@ python -m eval.run --no-cache
 
 1. 增加更多文档入库边界样例。
 2. 增加分数阈值或拒答逻辑，改善 negative query。
-3. 增加可观测性和权限控制。
+3. 增加可观测性、审计日志和服务健康门禁。
 4. 增加 Qdrant 版本兼容与健康检查等生产部署门禁。
+5. 增加内置认证或生产网关集成检查。

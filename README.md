@@ -19,12 +19,13 @@ The current codebase focuses on the foundation:
 - Query rewrite / multi-query retrieval with deterministic fixtures and cross-query RRF
 - Async FastAPI service layer for ingest/query and SSE streaming
 - Optional Redis cache wrappers for query embeddings, retrieval results, and generated answers
+- Optional MySQL-backed ACL/RBAC pre-filtering with fail-closed access checks
 
-Monitoring and permission control are planned but not implemented yet.
+Monitoring and built-in authentication are planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel plus async HTTP service layer and optional Redis caching.
+Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, and optional ACL/RBAC pre-filtering.
 
 Implemented:
 
@@ -72,11 +73,16 @@ Implemented:
   - The Redis store owns a dedicated background event loop for the `redis.asyncio` client, so synchronous CLI/evaluation calls and service threadpool calls do not reuse a client across closed event loops.
   - Redis failures fail open as cache misses.
   - `/ingest` clears the in-process pipeline cache and increments a Redis-persisted corpus version.
+- ACL/RBAC pre-filtering:
+  - MySQL metadata resolver for principal membership and document/chunk ACL bindings.
+  - Ingest can denormalize trusted ACL subjects or MySQL `acl_binding` subjects into vector payload metadata.
+  - FastAPI query endpoints read principal from a trusted upstream header by default and fail closed when identity or ACL resolution is missing.
+  - Dense memory search, Qdrant payload filters, BM25 sparse retrieval, multi-query variants, and L2/L3 cache keys all use the same effective ACL filter.
 
 Not implemented yet:
 
 - Monitoring
-- Enterprise access control
+- Built-in authentication, JWT validation, or session management
 
 ## Advanced Learning Notes
 
@@ -97,6 +103,7 @@ Start here when you want to understand the engineering choices behind the projec
 ├── rag_cli.py                 # RAG application CLI
 ├── service/                   # FastAPI HTTP adapter
 ├── cache/                     # Redis cache decorators and serialization
+├── access/                    # ACL/RBAC filters, resolvers, and MySQL metadata adapter
 ├── requirements.txt           # Python dependencies
 ├── document_loader/
 │   ├── base.py                # Document model and loader interface
@@ -162,6 +169,8 @@ Start here when you want to understand the engineering choices behind the projec
 │   ├── test_context_packing.py
 │   ├── test_token_counter.py
 │   ├── test_rerank.py
+│   ├── test_acl.py
+│   ├── test_acl_mysql_integration.py
 │   ├── test_qdrant_store_mock.py
 │   ├── test_qdrant_store_integration.py
 │   ├── test_vector_store.py
@@ -241,6 +250,14 @@ CACHE_EMBEDDING_TTL=604800
 CACHE_RETRIEVAL_TTL=900
 CACHE_ANSWER_TTL=300
 CACHE_TIMEOUT=0.25
+
+ACL_ENABLED=false
+ACL_METADATA_KEY=acl
+ACL_DEFAULT_DENY=true
+ACL_PRINCIPAL_HEADER=X-Principal
+ACL_ALLOW_BODY_PRINCIPAL=false
+ACL_INGEST_BINDINGS_ENABLED=false
+METADATA_DB_URL=mysql://user:password@localhost:3306/rag_metadata
 ```
 
 ## Usage
@@ -285,9 +302,11 @@ Run the HTTP service locally:
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, and `GET /health`. Authentication is intentionally not implemented yet, so do not expose it publicly.
+The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, and `GET /health`. Authentication is intentionally not implemented yet, so do not expose it publicly without a trusted gateway.
 
 Redis caching is disabled by default. To enable it, run Redis, set `CACHE_ENABLED=true`, and configure `REDIS_URL`. `/query/stream` replays a cached L3 answer when present and marks the SSE payload with `cached=true`; otherwise it keeps the live provider stream and backfills L3 after completion.
+
+ACL/RBAC filtering is disabled by default. To enable it, set `ACL_ENABLED=true`, configure the metadata database, and place the service behind an authentication gateway that writes the trusted principal header named by `ACL_PRINCIPAL_HEADER` (`X-Principal` by default). Body-provided principals are rejected unless `ACL_ALLOW_BODY_PRINCIPAL=true` is explicitly enabled for local testing. MySQL ACL bindings can be denormalized into vector payloads during ingest with `ACL_INGEST_BINDINGS_ENABLED=true`; Qdrant payloads remain execution snapshots, so binding changes require re-ingest or re-sync before they affect retrieval.
 
 Useful RAG CLI options:
 
@@ -314,6 +333,7 @@ python rag_cli.py knowledge_base \
   --rerank-fetch-k 30 \
   --chunk-size 800 \
   --chunk-overlap 120 \
+  --principal alice \
   --metadata-filter "{\"file_type\":\"markdown\"}"
 ```
 
@@ -557,6 +577,8 @@ Current multi-query retrieval is a retrieval-side change, so hit_rate/MRR/recall
 Current Redis caching is an outer wrapper, not a second retrieval pipeline. With `CACHE_ENABLED=false`, providers and pipelines are returned unwrapped. With cache enabled, L1 wraps `EmbeddingProvider.embed_text`, L2 wraps `retrieve`, and L3 wraps `answer`; `rag/pipeline.py` remains unchanged. L1 does not include `corpus_version` because text embeddings are a model+text function. L2/L3 include the Redis-persisted corpus version so `/ingest` makes stale retrieval and answer entries unreachable across process restarts and multiple service replicas. Negative answers are cached like any other exact query result but remain bounded by TTL and corpus version. The default unit tests use a FakeRedis substitute; true `redis.asyncio` coverage is gated behind `REDIS_URL` and must include both live Redis commands and cross-event-loop calls.
 The live Redis path has passed the production-shape regression: repeated synchronous and service-thread calls reuse a store-owned Redis loop, hit L1/L2/L3 on the second call, and keep Redis error counts at zero.
 
+Current ACL/RBAC support is fail-closed pre-filtering, not post-filtering. The effective ACL filter is built on the server side from a trusted principal, then ANDed with any client metadata filter so clients can narrow results but cannot widen access. Records are authorized when `record.acl` intersects the resolved allowed ACL subjects; records with missing or empty ACL are restricted for ordinary users. The same filter is applied before dense scoring, BM25 sparse scoring, each multi-query variant, and cache key construction. MySQL is the metadata source for principal membership and optional document/chunk ACL bindings, while Qdrant payloads are execution snapshots used for fast retrieval. Updating bindings in MySQL requires re-ingest or re-sync before the vector-store payload changes. The FastAPI service does not validate JWTs or sessions; production deployments must put it behind a trusted authentication gateway that owns the principal header.
+
 ## Development Conventions
 
 - Code identifiers use English.
@@ -570,5 +592,6 @@ The live Redis path has passed the production-shape regression: repeated synchro
 
 1. Add more ingestion edge-case fixtures.
 2. Add score thresholding or abstain logic for negative queries.
-3. Add observability and access-control features.
+3. Add observability, audit logs, and service health gates.
 4. Add production deployment checks around Qdrant version compatibility and health probes.
+5. Add built-in authentication or gateway integration checks for production deployments.

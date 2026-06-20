@@ -70,6 +70,38 @@ class QdrantVectorStoreIntegrationTests(unittest.TestCase):
 
         self.assertEqual(persisted_ids, memory_ids)
 
+    def test_qdrant_acl_match_any_filters_before_top_k(self):
+        records = [
+            VectorRecord(
+                id="unauthorized-nearest",
+                content="nearest but forbidden",
+                embedding=[1.0, 0.0],
+                metadata={"source": "secret.txt", "acl": ["role:secret"], "chunk_index": 0},
+            ),
+            VectorRecord(
+                id="authorized-farther",
+                content="farther but allowed",
+                embedding=[0.0, 1.0],
+                metadata={"source": "finance.txt", "acl": ["role:finance"], "chunk_index": 1},
+            ),
+        ]
+        qdrant_store = self.build_qdrant_store(recreate=True)
+        qdrant_store.add_records(records)
+
+        results = qdrant_store.similarity_search(
+            [1.0, 0.0],
+            top_k=1,
+            metadata_filter={"acl": ["role:finance"]},
+        )
+        denied = qdrant_store.similarity_search(
+            [1.0, 0.0],
+            top_k=1,
+            metadata_filter={"acl": ["role:legal"]},
+        )
+
+        self.assertEqual([result.record.id for result in results], ["authorized-farther"])
+        self.assertEqual(denied, [])
+
     def test_rag_cli_ingest_and_query_split_persists_across_processes(self):
         collection_name = f"ai_qa_t03_{uuid.uuid4().hex}"
         ingest_script = f"""

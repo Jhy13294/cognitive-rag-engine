@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from access import build_effective_metadata_filter, create_acl_resolver_from_config, normalize_acl_values
 from cache import maybe_wrap_embedding_provider, maybe_wrap_pipeline
 from config import Config
 from document_loader import Document
@@ -117,6 +118,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--query-rewrite-weight-variant", type=float, default=None, help="Rewritten query RRF weight.")
     parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
     parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
+    parser.add_argument("--principal", help="Authenticated principal used for ACL-filtered query commands.")
+    parser.add_argument(
+        "--acl",
+        action="append",
+        help="ACL subject for trusted local ingest or CLI query. Repeat or pass comma-separated values.",
+    )
     parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
     parser.add_argument("--non-recursive", action="store_true", help="Disable recursive directory ingestion.")
     parser.add_argument("--show-prompt", action="store_true", help="Print the generated RAG prompt.")
@@ -170,6 +177,73 @@ def parse_metadata_filter(raw_filter: Optional[str]) -> Optional[Dict]:
     return metadata_filter
 
 
+def parse_acl_values(raw_values: Optional[List[str]]) -> List[str]:
+    """Parse repeated or comma-separated ACL subjects into a stable list."""
+    values = []
+    for raw_value in raw_values or []:
+        values.extend(part.strip() for part in str(raw_value).split(","))
+    return normalize_acl_values(values)
+
+
+def build_cli_metadata_filter(
+    client_filter: Optional[Dict],
+    principal: Optional[str] = None,
+    allowed_acl: Optional[List[str]] = None,
+) -> Optional[Dict]:
+    """Build the effective CLI metadata filter, failing closed when ACL is enabled."""
+    parsed_acl = normalize_acl_values(allowed_acl or [])
+    if not Config.ACL_ENABLED and not parsed_acl:
+        return client_filter
+
+    if not parsed_acl:
+        Config.validate_acl()
+        resolver = create_acl_resolver_from_config(Config)
+        parsed_acl = resolver.allowed_acl_for_principal(principal)
+
+    return build_effective_metadata_filter(
+        client_filter,
+        parsed_acl,
+        metadata_key=Config.ACL_METADATA_KEY,
+        default_deny=Config.ACL_DEFAULT_DENY,
+    )
+
+
+def apply_acl_metadata(chunks: List[Document], acl: Optional[List[str]]) -> None:
+    """Denormalize trusted ACL subjects into chunk metadata for payload filtering."""
+    acl_values = normalize_acl_values(acl or [])
+    if acl_values:
+        for chunk in chunks:
+            chunk.metadata[Config.ACL_METADATA_KEY] = list(acl_values)
+        return
+
+    if not Config.ACL_INGEST_BINDINGS_ENABLED:
+        return
+
+    Config.validate_acl()
+    resolver = create_acl_resolver_from_config(Config)
+    apply_acl_metadata_from_bindings(chunks, resolver)
+
+
+def apply_acl_metadata_from_bindings(chunks: List[Document], acl_binding_resolver) -> None:
+    """Denormalize MySQL document ACL bindings into chunk metadata."""
+    source_acl_cache = {}
+    for chunk in chunks:
+        source = chunk.metadata.get("source")
+        if not source:
+            raise ValueError("Document source metadata is required for ACL binding lookup.")
+        source_key = str(source)
+        if source_key not in source_acl_cache:
+            if not hasattr(acl_binding_resolver, "acl_for_source"):
+                raise ValueError("ACL binding resolver must implement acl_for_source(source).")
+            source_acl_cache[source_key] = normalize_acl_values(
+                acl_binding_resolver.acl_for_source(source_key),
+                field_name="source_acl",
+            )
+            if not source_acl_cache[source_key]:
+                raise ValueError(f"Document source has no ACL bindings: {source_key}")
+        chunk.metadata[Config.ACL_METADATA_KEY] = list(source_acl_cache[source_key])
+
+
 def validate_query_rewrite_values(
     provider: str,
     num_queries: int,
@@ -211,6 +285,7 @@ def ingest_documents(
     embedding_provider: Optional[EmbeddingProvider] = None,
     vector_store: Optional[VectorStore] = None,
     vector_store_overrides: Optional[Dict] = None,
+    acl: Optional[List[str]] = None,
 ) -> IngestResult:
     """Load, split, embed, and upsert documents into a vector store."""
     use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
@@ -244,6 +319,7 @@ def ingest_documents(
     if not chunks:
         raise ValueError("No supported documents were loaded from the provided path")
 
+    apply_acl_metadata(chunks, acl)
     assign_ingest_sequence(chunks)
     selected_embedding_provider = embedding_provider or create_embedding_provider(
         provider_name=embedding_provider_name,
@@ -399,6 +475,7 @@ def build_rag_pipeline_from_records(
     query_rewrite_weight_variant: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
+    acl: Optional[List[str]] = None,
 ) -> RAGPipeline:
     """Assemble a RAG pipeline from already indexed vector records."""
     embedding_provider = maybe_wrap_embedding_provider(embedding_provider)
@@ -720,6 +797,7 @@ def build_rag_pipeline_from_path(
     query_rewrite_weight_variant: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
+    acl: Optional[List[str]] = None,
 ) -> RAGPipeline:
     """Ingest documents and build a ready-to-query RAG pipeline."""
     ingest_result = ingest_documents(
@@ -736,6 +814,7 @@ def build_rag_pipeline_from_path(
         parent_chunk_overlap=parent_chunk_overlap,
         child_chunk_size=child_chunk_size,
         child_chunk_overlap=child_chunk_overlap,
+        acl=acl,
     )
     return build_rag_pipeline_from_records(
         vector_records=ingest_result.records,
@@ -875,6 +954,7 @@ def main(argv=None) -> int:
                 parent_chunk_overlap=args.parent_chunk_overlap,
                 child_chunk_size=args.child_chunk_size,
                 child_chunk_overlap=args.child_chunk_overlap,
+                acl=parse_acl_values(args.acl),
             )
             print(
                 "Ingested "
@@ -885,7 +965,11 @@ def main(argv=None) -> int:
             )
             return 0
 
-        metadata_filter = parse_metadata_filter(args.metadata_filter)
+        metadata_filter = build_cli_metadata_filter(
+            parse_metadata_filter(args.metadata_filter),
+            principal=args.principal,
+            allowed_acl=parse_acl_values(args.acl),
+        )
         if args.command == "query":
             pipeline = build_rag_pipeline_from_index(
                 embedding_provider_name=args.embedding_provider,
@@ -958,6 +1042,7 @@ def main(argv=None) -> int:
                 query_rewrite_weight_variant=args.query_rewrite_weight_variant,
                 top_k=args.top_k,
                 max_context_chars=args.max_context_chars,
+                acl=parse_acl_values(args.acl),
             )
 
         if args.question:

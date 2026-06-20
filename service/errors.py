@@ -2,6 +2,7 @@ from typing import Tuple
 
 from fastapi import HTTPException
 
+from access import ACLAccessError
 from api_client import APIError
 from embeddings import OpenAIEmbeddingError
 from logger import setup_logger
@@ -33,6 +34,9 @@ def classify_exception(error: Exception) -> Tuple[int, str, str]:
     """Classify an exception into HTTP status, code, and safe message."""
     if isinstance(error, (APIError, OpenAIEmbeddingError)):
         return classify_upstream_error(error)
+
+    if isinstance(error, ACLAccessError):
+        return 403, "acl_forbidden", "Access denied by ACL policy."
 
     if isinstance(error, IndexNotReadyError):
         return 409, "index_not_ready", "Vector index is empty or unavailable."

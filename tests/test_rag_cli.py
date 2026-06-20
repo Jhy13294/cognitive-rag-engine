@@ -1,15 +1,20 @@
 import unittest
 
 from rag_cli import (
+    apply_acl_metadata_from_bindings,
+    build_cli_metadata_filter,
     build_arg_parser,
     build_rag_pipeline_from_index,
     build_rag_pipeline_from_path,
     create_embedding_provider,
     format_response,
     ingest_documents,
+    parse_acl_values,
     parse_metadata_filter,
     run_single_question,
 )
+from config import Config
+from document_loader import Document
 from embeddings import HashEmbeddingProvider
 from tests.test_document_ingestion import FIXTURES_DIR
 from vector_store import InMemoryVectorStore
@@ -121,6 +126,12 @@ class RAGCLITests(unittest.TestCase):
                 "1.0",
                 "--query-rewrite-weight-variant",
                 "0.7",
+                "--principal",
+                "alice",
+                "--acl",
+                "role:finance,role:admin",
+                "--acl",
+                "role:hr",
                 "--no-clean",
                 "--non-recursive",
             ]
@@ -163,6 +174,8 @@ class RAGCLITests(unittest.TestCase):
         self.assertTrue(args.no_query_rewrite_cache)
         self.assertEqual(args.query_rewrite_weight_original, 1.0)
         self.assertEqual(args.query_rewrite_weight_variant, 0.7)
+        self.assertEqual(args.principal, "alice")
+        self.assertEqual(args.acl, ["role:finance,role:admin", "role:hr"])
         self.assertTrue(args.no_clean)
         self.assertTrue(args.non_recursive)
 
@@ -194,6 +207,25 @@ class RAGCLITests(unittest.TestCase):
     def test_parse_metadata_filter_rejects_non_object_json(self):
         with self.assertRaises(ValueError):
             parse_metadata_filter('["txt"]')
+
+    def test_parse_acl_values_accepts_repeated_and_comma_separated_values(self):
+        values = parse_acl_values(["role:finance, role:admin", "role:finance"])
+
+        self.assertEqual(values, ["role:admin", "role:finance"])
+
+    def test_build_cli_metadata_filter_adds_acl_when_supplied(self):
+        original_enabled = Config.ACL_ENABLED
+        try:
+            Config.ACL_ENABLED = False
+            metadata_filter = build_cli_metadata_filter(
+                {"source": "finance.md"},
+                principal=None,
+                allowed_acl=["role:finance"],
+            )
+
+            self.assertEqual(metadata_filter, {"source": "finance.md", "acl": ["role:finance"]})
+        finally:
+            Config.ACL_ENABLED = original_enabled
 
     def test_build_rag_pipeline_from_path_with_fake_client(self):
         chat_client = FakeChatClient()
@@ -247,6 +279,47 @@ class RAGCLITests(unittest.TestCase):
         self.assertEqual(response.answer, "CLI answer with citation [1].")
         self.assertEqual(provider.embed_documents_calls, 1)
         self.assertEqual(provider.embed_text_calls, 1)
+
+    def test_ingest_documents_denormalizes_acl_metadata(self):
+        provider = HashEmbeddingProvider(dimension=64)
+        store = InMemoryVectorStore(dimension=64)
+
+        result = ingest_documents(
+            str(FIXTURES_DIR),
+            clean=True,
+            recursive=True,
+            chunk_size=100,
+            chunk_overlap=10,
+            embedding_provider=provider,
+            vector_store=store,
+            parent_child_enabled=False,
+            acl=["role:finance", "role:admin"],
+        )
+
+        self.assertGreater(len(result.records), 0)
+        for record in result.records:
+            self.assertEqual(record.metadata["acl"], ["role:admin", "role:finance"])
+
+    def test_apply_acl_metadata_from_bindings_uses_document_source(self):
+        class FakeBindingResolver:
+            def __init__(self):
+                self.calls = []
+
+            def acl_for_source(self, source):
+                self.calls.append(source)
+                return ["role:finance", "role:admin"]
+
+        chunks = [
+            Document(content="a", metadata={"source": "finance.md", "chunk_index": 0}),
+            Document(content="b", metadata={"source": "finance.md", "chunk_index": 1}),
+        ]
+        resolver = FakeBindingResolver()
+
+        apply_acl_metadata_from_bindings(chunks, resolver)
+
+        self.assertEqual(resolver.calls, ["finance.md"])
+        for chunk in chunks:
+            self.assertEqual(chunk.metadata["acl"], ["role:admin", "role:finance"])
 
     def test_double_ingest_is_idempotent_and_keeps_top_k(self):
         provider = HashEmbeddingProvider(dimension=64)

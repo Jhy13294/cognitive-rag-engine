@@ -16,6 +16,7 @@ class QueryRequest(BaseModel):
     """HTTP request body for a complete RAG query."""
 
     question: str = Field(..., min_length=1)
+    principal: Optional[str] = None
     top_k: Optional[int] = Field(default=None, gt=0)
     metadata_filter: Optional[Dict[str, Any]] = None
     max_context_chars: int = Field(default=4000, gt=0)
@@ -60,6 +61,7 @@ class IngestRequest(BaseModel):
     """HTTP request body for synchronous-offloaded ingestion."""
 
     path: str = Field(..., min_length=1)
+    acl: Optional[List[str]] = None
     clean: bool = True
     recursive: bool = True
     chunk_size: int = Field(default=800, gt=0)

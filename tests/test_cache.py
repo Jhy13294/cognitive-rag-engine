@@ -157,7 +157,12 @@ def build_cached_pipeline(cache_store=None):
                 id=f"record-{index}",
                 content=content,
                 embedding=provider.embed_text(content),
-                metadata={"id": f"record-{index}", "source": f"doc-{index}.md", "group": f"g{index}"},
+                metadata={
+                    "id": f"record-{index}",
+                    "source": f"doc-{index}.md",
+                    "group": f"g{index}",
+                    "acl": [f"role:{index}"],
+                },
             )
         )
     provider.embed_text_calls = 0
@@ -212,6 +217,19 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
         pipeline.retrieve("alpha", top_k=1, metadata_filter={"group": "g1"})
 
         self.assertEqual(vector_store.search_calls, 3)
+
+    async def test_l2_l3_keys_include_allowed_acl_metadata_filter(self):
+        pipeline, _provider, vector_store, chat = build_cached_pipeline()
+
+        first = pipeline.answer("alpha", top_k=1, metadata_filter={"acl": ["role:1"]})
+        second = pipeline.answer("alpha", top_k=1, metadata_filter={"acl": ["role:2"]})
+        hot_first = pipeline.answer("alpha", top_k=1, metadata_filter={"acl": ["role:1"]})
+
+        self.assertEqual(first.answer, hot_first.answer)
+        self.assertNotEqual(first.sources[0].metadata["acl"], second.sources[0].metadata["acl"])
+        self.assertEqual(vector_store.search_calls, 2)
+        self.assertEqual(chat.chat_calls, 2)
+        self.assertGreaterEqual(pipeline.cache_stats()["hits"]["l3"], 1)
 
     async def test_l3_answer_hit_short_circuits_chat_and_retrieval(self):
         pipeline, provider, vector_store, chat = build_cached_pipeline()

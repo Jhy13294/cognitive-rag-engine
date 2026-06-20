@@ -1,5 +1,6 @@
 from typing import Dict, Iterable, List, Optional, Set
 
+from access import metadata_matches
 from lexical import bm25_score, build_bm25_index, tokenize
 from vector_store import VectorRecord
 
@@ -91,8 +92,3 @@ class BM25Retriever:
         for token in set(query_tokens):
             candidate_ids.update(self.index.postings.get(token, set()))
         return candidate_ids
-
-
-def metadata_matches(metadata: Dict, metadata_filter: Dict) -> bool:
-    """Return whether metadata matches an exact-match filter."""
-    return all(metadata.get(key) == value for key, value in metadata_filter.items())

@@ -7,10 +7,11 @@ from dataclasses import dataclass
 import httpx
 
 from api_client import APIError
+from access import ACLAccessError, StaticACLResolver
 from config import Config
 from rag import EmbeddingSpaceMismatchError, IndexNotReadyError
 from rag import RAGResponse, RetrievedSource
-from service.app import ServiceState, create_app, stream_query_events
+from service.app import ServiceState, create_app, resolve_request_metadata_filter, stream_query_events
 from service.models import QueryRequest
 
 
@@ -51,8 +52,11 @@ class FakePipeline:
         self.answer_delay = answer_delay
         self.error = error
         self.chat_client = chat_client or FakeChatClient(answer=answer)
+        self.answer_filters = []
+        self.retrieve_filters = []
 
     def answer(self, question, top_k=None, metadata_filter=None):
+        self.answer_filters.append(metadata_filter)
         if self.answer_delay:
             time.sleep(self.answer_delay)
         if self.error:
@@ -67,6 +71,7 @@ class FakePipeline:
         )
 
     def retrieve(self, question, top_k=None, metadata_filter=None):
+        self.retrieve_filters.append(metadata_filter)
         if self.error:
             raise self.error
         return [make_source()]
@@ -214,6 +219,149 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(body["detail"]["error"]["code"], expected_code)
                 self.assertNotIn("sk-secret", json.dumps(body))
                 self.assertNotIn("traceback", json.dumps(body).lower())
+
+    async def test_query_injects_server_acl_filter_and_intersects_client_acl(self):
+        original_enabled = Config.ACL_ENABLED
+        original_key = Config.ACL_METADATA_KEY
+        original_default_deny = Config.ACL_DEFAULT_DENY
+        original_header = Config.ACL_PRINCIPAL_HEADER
+        original_allow_body = Config.ACL_ALLOW_BODY_PRINCIPAL
+        pipeline = FakePipeline()
+        try:
+            Config.ACL_ENABLED = True
+            Config.ACL_METADATA_KEY = "acl"
+            Config.ACL_DEFAULT_DENY = True
+            Config.ACL_PRINCIPAL_HEADER = "X-Principal"
+            Config.ACL_ALLOW_BODY_PRINCIPAL = False
+            state = ServiceState(
+                pipeline_builder=lambda **kwargs: pipeline,
+                chat_client_factory=lambda: FakeChatClient(),
+                acl_resolver=StaticACLResolver({"alice": ["role:finance", "role:admin"]}),
+            )
+            app = create_app(state)
+            async with await self.open_client(app) as client:
+                response = await client.post(
+                    "/query",
+                    headers={"X-Principal": "alice"},
+                    json={
+                        "question": "what",
+                        "metadata_filter": {
+                            "source": "finance.md",
+                            "acl": ["role:finance", "role:public"],
+                        },
+                    },
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                pipeline.answer_filters[0],
+                {"source": "finance.md", "acl": ["role:finance"]},
+            )
+        finally:
+            Config.ACL_ENABLED = original_enabled
+            Config.ACL_METADATA_KEY = original_key
+            Config.ACL_DEFAULT_DENY = original_default_deny
+            Config.ACL_PRINCIPAL_HEADER = original_header
+            Config.ACL_ALLOW_BODY_PRINCIPAL = original_allow_body
+
+    async def test_query_missing_principal_fails_closed_before_pipeline_build(self):
+        original_enabled = Config.ACL_ENABLED
+        original_allow_body = Config.ACL_ALLOW_BODY_PRINCIPAL
+        try:
+            Config.ACL_ENABLED = True
+            Config.ACL_ALLOW_BODY_PRINCIPAL = False
+            build_count = {"value": 0}
+
+            def build_pipeline(**kwargs):
+                build_count["value"] += 1
+                return FakePipeline()
+
+            state = ServiceState(
+                pipeline_builder=build_pipeline,
+                chat_client_factory=lambda: FakeChatClient(),
+                acl_resolver=StaticACLResolver({"alice": ["role:finance"]}),
+            )
+            app = create_app(state)
+            async with await self.open_client(app) as client:
+                response = await client.post("/query", json={"question": "what"})
+
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.json()["detail"]["error"]["code"], "acl_forbidden")
+            self.assertEqual(build_count["value"], 0)
+        finally:
+            Config.ACL_ENABLED = original_enabled
+            Config.ACL_ALLOW_BODY_PRINCIPAL = original_allow_body
+
+    async def test_query_client_acl_widening_is_rejected(self):
+        original_enabled = Config.ACL_ENABLED
+        original_allow_body = Config.ACL_ALLOW_BODY_PRINCIPAL
+        try:
+            Config.ACL_ENABLED = True
+            Config.ACL_ALLOW_BODY_PRINCIPAL = False
+            pipeline = FakePipeline()
+            state = ServiceState(
+                pipeline_builder=lambda **kwargs: pipeline,
+                chat_client_factory=lambda: FakeChatClient(),
+                acl_resolver=StaticACLResolver({"alice": ["role:secret"]}),
+            )
+            app = create_app(state)
+            async with await self.open_client(app) as client:
+                response = await client.post(
+                    "/query",
+                    headers={"X-Principal": "alice"},
+                    json={
+                        "question": "what",
+                        "metadata_filter": {"acl": ["role:public"]},
+                    },
+                )
+
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(pipeline.answer_filters, [])
+        finally:
+            Config.ACL_ENABLED = original_enabled
+            Config.ACL_ALLOW_BODY_PRINCIPAL = original_allow_body
+
+    async def test_query_rejects_body_principal_without_trusted_header(self):
+        original_enabled = Config.ACL_ENABLED
+        original_allow_body = Config.ACL_ALLOW_BODY_PRINCIPAL
+        pipeline = FakePipeline()
+        try:
+            Config.ACL_ENABLED = True
+            Config.ACL_ALLOW_BODY_PRINCIPAL = False
+            state = ServiceState(
+                pipeline_builder=lambda **kwargs: pipeline,
+                chat_client_factory=lambda: FakeChatClient(),
+                acl_resolver=StaticACLResolver({"alice": ["role:finance"]}),
+            )
+            app = create_app(state)
+            async with await self.open_client(app) as client:
+                response = await client.post(
+                    "/query",
+                    json={"question": "what", "principal": "alice"},
+                )
+
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.json()["detail"]["error"]["code"], "acl_forbidden")
+            self.assertEqual(pipeline.answer_filters, [])
+        finally:
+            Config.ACL_ENABLED = original_enabled
+            Config.ACL_ALLOW_BODY_PRINCIPAL = original_allow_body
+
+    def test_acl_filter_resolution_never_falls_back_to_body_principal(self):
+        original_enabled = Config.ACL_ENABLED
+        try:
+            Config.ACL_ENABLED = True
+            state = ServiceState(
+                chat_client_factory=lambda: FakeChatClient(),
+                acl_resolver=StaticACLResolver({"alice": ["role:finance"]}),
+            )
+            app = create_app(state)
+            request = QueryRequest(question="what", principal="alice")
+
+            with self.assertRaisesRegex(ACLAccessError, "Trusted principal is required"):
+                resolve_request_metadata_filter(app, request)
+        finally:
+            Config.ACL_ENABLED = original_enabled
 
     async def test_stream_query_maps_pipeline_build_errors_before_sse_starts(self):
         state = ServiceState(

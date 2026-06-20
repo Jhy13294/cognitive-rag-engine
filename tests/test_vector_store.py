@@ -95,6 +95,50 @@ class InMemoryVectorStoreTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].record.id, "private")
 
+    def test_similarity_search_applies_acl_filter_before_top_k(self):
+        store = InMemoryVectorStore(dimension=2)
+        store.add_records(
+            [
+                VectorRecord(
+                    id="unauthorized-nearest",
+                    content="nearest but forbidden",
+                    embedding=[1.0, 0.0],
+                    metadata={"acl": ["role:secret"]},
+                ),
+                VectorRecord(
+                    id="authorized-farther",
+                    content="farther but allowed",
+                    embedding=[0.0, 1.0],
+                    metadata={"acl": ["role:finance"]},
+                ),
+            ]
+        )
+
+        results = store.similarity_search(
+            [1.0, 0.0],
+            top_k=1,
+            metadata_filter={"acl": ["role:finance"]},
+        )
+
+        self.assertEqual([result.record.id for result in results], ["authorized-farther"])
+
+    def test_similarity_search_denies_missing_acl_when_acl_filter_is_present(self):
+        store = InMemoryVectorStore(dimension=2)
+        store.add_records(
+            [
+                VectorRecord(
+                    id="no-acl",
+                    content="unlabeled",
+                    embedding=[1.0, 0.0],
+                    metadata={},
+                )
+            ]
+        )
+
+        results = store.similarity_search([1.0, 0.0], top_k=1, metadata_filter={"acl": ["role:finance"]})
+
+        self.assertEqual(results, [])
+
     def test_similarity_search_rejects_invalid_top_k(self):
         store = InMemoryVectorStore(dimension=2)
 

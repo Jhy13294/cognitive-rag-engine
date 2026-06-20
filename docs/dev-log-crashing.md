@@ -286,10 +286,44 @@ FakeRedis 单测可以证明装饰器、key 和 fail-open 逻辑，但不能证�
 
 配置校验必须接入启动路径。否则它只是漂亮摆设。
 
+## 15. Body Principal Is Not Authentication
+
+**现象**
+
+ACL 过滤可以在 dense、BM25、多查询和缓存键里全部正确，但如果服务直接信任请求体中的 `principal`，调用方仍然可以自报身份。
+
+**修复**
+
+- 服务入口默认只接受受信上游 header 中的 principal。
+- 请求体 principal fallback 默认关闭，只能通过显式配置用于本地或测试。
+- 缺少受信 header 且 ACL 开启时 fail-closed，返回 403。
+- ACL filter resolver 只消费入口显式传入的可信 principal；参数缺失时直接拒绝，不回读请求体字段。
+- 增加内部函数级回归测试，证明即使请求对象携带 body principal，也不能绕开可信身份提取步骤。
+
+**经验**
+
+授权过滤不是认证。没有 JWT/session 验签的服务必须放在可信网关后，由网关剥离外部同名 header 并写入内部 principal。可信身份还应沿内部调用链显式传递；任何下游“缺参时再读原始请求”的便利回退，都是会被未来重构重新激活的潜在旁路。
+
+## 16. ACL Schema Without Ingest Wiring Is Only Half Done
+
+**现象**
+
+MySQL 中建好了 document、chunk 和 `acl_binding` 表，但如果入库仍只使用调用方传入的 `acl`，文档 ACL 并没有真正由 metadata store 驱动。
+
+**修复**
+
+- resolver 增加 source 到 ACL subject 的解析。
+- 入库路径可在配置开启时从 MySQL binding 读取 ACL，并写入向量 payload。
+- live MySQL 测试覆盖真实 `acl_binding` 行到 ingest ACL subjects 的解析。
+
+**经验**
+
+MySQL 是权限真相源，Qdrant payload 是执行快照。binding 变更要通过 re-ingest 或 re-sync 进入 payload，不能把 schema 存在误说成查询时实时强制。
+
 ## 后续仍需重点盯住
 
 - negative query 的 threshold/abstain。
-- ACL/RBAC 必须做检索前过滤。
+- ACL/RBAC 必须继续保持检索前过滤，并在生产部署中核验 trusted principal header。
 - context packing 的生成质量收益要用 Ragas 测。
 - Redis corpus version 当前是全局单键，安全但粗，会过度失效；后续可按 collection 细化。
 - `/query/stream` L3 回填的 `raw_response` 是合成形，answer/sources 正确，但 raw 溯源语义不同。

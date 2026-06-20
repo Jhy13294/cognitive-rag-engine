@@ -149,6 +149,12 @@ Redis cache layer 使用 L1/L2/L3 三层设计：
 ## 为什么暂未引入的组件
 
 - **Redis 队列 / 后台任务队列**：`/ingest` 当前同步 offload，后台队列留到后续运维卡。
-- **ACL/RBAC**：权限控制要在检索前过滤，不应混进缓存层。
 - **Prometheus / OpenTelemetry**：审计与指标属于可观测性能力，当前只保留足够的统计入口。
 - **Ragas**：生成质量评估属于后续质量评估能力；parent expansion 和 context packing 只能证明结构正确，不能提前宣称答案质量提升。
+
+## 为什么 ACL/RBAC 放在检索前过滤层
+
+- 权限判断必须发生在 candidate scoring 之前，避免无权文档占据 top-k 或泄露存在性。
+- MySQL 负责 principal membership 与 document/chunk binding 的真相记录，Qdrant payload 承担高性能执行快照。
+- 服务只信任上游认证网关写入的 principal header，并把 principal 作为显式参数贯穿 ACL 解析链；客户端请求体和 metadata filter 只能收窄，不能提权。
+- ACL 不混入缓存策略本身，但有效 ACL filter 必须进入 retrieval/answer cache key，避免高权结果被低权用户复用。

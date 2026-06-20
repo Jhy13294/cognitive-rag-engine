@@ -235,11 +235,12 @@ flowchart TD
 - 本地开发：CLI + unittest + memory store。
 - 持久化验证：Qdrant `localhost:6333`。
 - 缓存验证：Redis `localhost:6379`，通过 `REDIS_URL=redis://localhost:6379/0` gated live smoke、跨事件循环回归和 fail-open 探针。
+- 权限预过滤：MySQL metadata resolver 可解析 principal membership，也可在入库时按 document/chunk binding 写入 payload ACL；服务默认只信任上游 header principal，并将其显式传入 ACL filter resolver，内部不回读请求体身份。
 - 服务化：FastAPI app factory，可接 uvicorn。
 
 ## 后续演进
 
-1. MySQL metadata + ACL/RBAC 检索前过滤。
-2. 结构化审计和 Prometheus 风格指标。
-3. Ragas 四维质量评估。
-4. 入库增强：OCR、表格抽取优化、权限字段 fixture。
+1. 结构化审计和 Prometheus 风格指标。
+2. Ragas 四维质量评估。
+3. 入库增强：OCR、表格抽取优化、权限字段 fixture。
+4. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。

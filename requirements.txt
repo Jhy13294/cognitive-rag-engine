@@ -9,6 +9,9 @@ redis>=5.0.0
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 
+# Metadata / ACL
+mysql-connector-python>=8.4.0
+
 # Document processing
 PyMuPDF>=1.23.0          # PDF processing, import name: fitz
 pdfplumber>=0.10.0       # PDF table extraction

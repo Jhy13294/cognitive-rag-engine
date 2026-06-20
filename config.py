@@ -138,6 +138,19 @@ class Config:
     CACHE_ANSWER_TTL = _env_int("CACHE_ANSWER_TTL", 300)
     CACHE_TIMEOUT = _env_float("CACHE_TIMEOUT", 0.25)
 
+    ACL_ENABLED = _env_bool("ACL_ENABLED", False)
+    ACL_METADATA_KEY = os.getenv("ACL_METADATA_KEY", "acl")
+    ACL_DEFAULT_DENY = _env_bool("ACL_DEFAULT_DENY", True)
+    ACL_PRINCIPAL_HEADER = os.getenv("ACL_PRINCIPAL_HEADER", "X-Principal")
+    ACL_ALLOW_BODY_PRINCIPAL = _env_bool("ACL_ALLOW_BODY_PRINCIPAL", False)
+    ACL_INGEST_BINDINGS_ENABLED = _env_bool("ACL_INGEST_BINDINGS_ENABLED", False)
+    METADATA_DB_URL = os.getenv("METADATA_DB_URL")
+    MYSQL_HOST = os.getenv("MYSQL_HOST")
+    MYSQL_PORT = _env_int("MYSQL_PORT", 3306)
+    MYSQL_USER = os.getenv("MYSQL_USER")
+    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
+
     @classmethod
     def validate(cls):
         """Validate required configuration values."""
@@ -332,4 +345,30 @@ class Config:
         logger.debug("Cache embedding enabled: %s", cls.CACHE_EMBEDDING_ENABLED)
         logger.debug("Cache retrieval enabled: %s", cls.CACHE_RETRIEVAL_ENABLED)
         logger.debug("Cache answer enabled: %s", cls.CACHE_ANSWER_ENABLED)
+        return True
+
+    @classmethod
+    def validate_acl(cls, resolver_provided: bool = False):
+        """Validate ACL/RBAC configuration."""
+        if not cls.ACL_METADATA_KEY or not cls.ACL_METADATA_KEY.strip():
+            raise ValueError("ACL_METADATA_KEY must not be empty.")
+        if not cls.ACL_PRINCIPAL_HEADER or not cls.ACL_PRINCIPAL_HEADER.strip():
+            raise ValueError("ACL_PRINCIPAL_HEADER must not be empty.")
+        if cls.MYSQL_PORT is None or cls.MYSQL_PORT <= 0:
+            raise ValueError("MYSQL_PORT must be greater than 0.")
+
+        if (cls.ACL_ENABLED or cls.ACL_INGEST_BINDINGS_ENABLED) and not resolver_provided:
+            has_mysql_url = bool(cls.METADATA_DB_URL)
+            has_mysql_parts = bool(cls.MYSQL_HOST and cls.MYSQL_USER and cls.MYSQL_DATABASE)
+            if not has_mysql_url and not has_mysql_parts:
+                raise ValueError(
+                    "ACL metadata configuration requires METADATA_DB_URL or MYSQL_HOST/MYSQL_USER/MYSQL_DATABASE."
+                )
+
+        logger.debug("ACL enabled: %s", cls.ACL_ENABLED)
+        logger.debug("ACL metadata key: %s", cls.ACL_METADATA_KEY)
+        logger.debug("ACL default deny: %s", cls.ACL_DEFAULT_DENY)
+        logger.debug("ACL principal header: %s", cls.ACL_PRINCIPAL_HEADER)
+        logger.debug("ACL allow body principal: %s", cls.ACL_ALLOW_BODY_PRINCIPAL)
+        logger.debug("ACL ingest bindings enabled: %s", cls.ACL_INGEST_BINDINGS_ENABLED)
         return True

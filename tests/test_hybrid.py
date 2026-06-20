@@ -48,6 +48,31 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertEqual(results[0].id, "record-finance")
         self.assertEqual(results[0].metadata["id"], "record-finance")
 
+    def test_bm25_retriever_applies_acl_filter_before_top_k(self):
+        records = [
+            VectorRecord(
+                id="unauthorized-best",
+                content="mileage reimbursement reimbursement reimbursement fuel receipts",
+                embedding=[1.0, 0.0],
+                metadata={"source": "secret.md", "acl": ["role:secret"]},
+            ),
+            VectorRecord(
+                id="authorized-weaker",
+                content="mileage reimbursement policy",
+                embedding=[0.0, 1.0],
+                metadata={"source": "finance.md", "acl": ["role:finance"]},
+            ),
+        ]
+        retriever = BM25Retriever(records)
+
+        results = retriever.retrieve(
+            "mileage reimbursement fuel",
+            top_k=1,
+            metadata_filter={"acl": ["role:finance"]},
+        )
+
+        self.assertEqual([result.id for result in results], ["authorized-weaker"])
+
     def test_rrf_merges_dense_and_sparse_by_record_id(self):
         dense = [
             RankedRecord(id="shared", score=0.9, content="dense shared", metadata={"source": "a.md"}),

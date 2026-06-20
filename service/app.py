@@ -4,10 +4,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api_client import APIClient
+from access import ACLAccessError, build_effective_metadata_filter, create_acl_resolver_from_config
 from cache import get_default_cache_store
 from config import Config
 from logger import setup_logger
@@ -35,6 +36,7 @@ class ServiceState:
     pipeline_builder: Any = build_rag_pipeline_from_index
     chat_client_factory: Any = None
     cache_store: Any = None
+    acl_resolver: Any = None
     pipeline_cache: Dict[Tuple, RAGPipeline] = field(default_factory=dict)
     cache_generation: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -57,8 +59,11 @@ class ServiceState:
 
 def create_app(state: Optional[ServiceState] = None) -> FastAPI:
     """Create the FastAPI application."""
-    Config.validate_cache()
     service_state = state or ServiceState()
+    Config.validate_cache()
+    Config.validate_acl(resolver_provided=service_state.acl_resolver is not None)
+    if Config.ACL_ENABLED and service_state.acl_resolver is None:
+        service_state.acl_resolver = create_acl_resolver_from_config(Config)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -114,6 +119,7 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
                 parent_chunk_overlap=request.parent_chunk_overlap,
                 child_chunk_size=request.child_chunk_size,
                 child_chunk_overlap=request.child_chunk_overlap,
+                acl=request.acl,
             )
             await service_state.invalidate()
             return IngestResponse(
@@ -127,15 +133,17 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
             raise to_http_exception(e) from e
 
     @app.post("/query", response_model=QueryResponse)
-    async def query(request: QueryRequest) -> QueryResponse:
+    async def query(request: QueryRequest, http_request: Request) -> QueryResponse:
         """Run a complete RAG query without blocking the event loop."""
         try:
+            principal = extract_trusted_principal(http_request, request.principal)
+            metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request, principal)
             pipeline = await get_or_build_pipeline(app, request)
             response = await asyncio.to_thread(
                 pipeline.answer,
                 request.question,
                 top_k=request.top_k,
-                metadata_filter=request.metadata_filter,
+                metadata_filter=metadata_filter,
             )
             return response_to_model(response)
         except HTTPException:
@@ -144,9 +152,11 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
             raise to_http_exception(e) from e
 
     @app.post("/query/stream")
-    async def query_stream(request: QueryRequest) -> StreamingResponse:
+    async def query_stream(request: QueryRequest, http_request: Request) -> StreamingResponse:
         """Run a streaming RAG query as server-sent events."""
         try:
+            principal = extract_trusted_principal(http_request, request.principal)
+            metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request, principal)
             pipeline = await get_or_build_pipeline(app, request)
         except HTTPException:
             raise
@@ -154,7 +164,7 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
             raise to_http_exception(e) from e
 
         return StreamingResponse(
-            stream_query_events(app, request, pipeline=pipeline),
+            stream_query_events(app, request, pipeline=pipeline, metadata_filter=metadata_filter),
             media_type="text/event-stream",
         )
 
@@ -212,11 +222,18 @@ async def get_or_build_pipeline(app: FastAPI, request: QueryRequest) -> RAGPipel
     return pipeline
 
 
-async def stream_query_events(app: FastAPI, request: QueryRequest, pipeline: Optional[RAGPipeline] = None):
+async def stream_query_events(
+    app: FastAPI,
+    request: QueryRequest,
+    pipeline: Optional[RAGPipeline] = None,
+    metadata_filter: Optional[Dict] = None,
+):
     """Yield SSE events for a streaming RAG query."""
     try:
         if pipeline is None:
             pipeline = await get_or_build_pipeline(app, request)
+        if metadata_filter is None:
+            metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request)
 
         cached_getter = getattr(pipeline, "get_cached_answer", None)
         if cached_getter is not None:
@@ -224,7 +241,7 @@ async def stream_query_events(app: FastAPI, request: QueryRequest, pipeline: Opt
                 cached_getter,
                 request.question,
                 request.top_k,
-                request.metadata_filter,
+                metadata_filter,
             )
             if cached_response is not None:
                 yield sse_event(
@@ -243,7 +260,7 @@ async def stream_query_events(app: FastAPI, request: QueryRequest, pipeline: Opt
             pipeline.retrieve,
             request.question,
             request.top_k,
-            request.metadata_filter,
+            metadata_filter,
         )
         prompt, used_sources = await asyncio.to_thread(
             pipeline._build_prompt_and_sources,
@@ -270,7 +287,7 @@ async def stream_query_events(app: FastAPI, request: QueryRequest, pipeline: Opt
                 prompt=prompt,
                 raw_response={"choices": [{"message": {"content": answer}}], "streamed": True},
             )
-            await asyncio.to_thread(store_answer, streamed_response, request.top_k, request.metadata_filter)
+            await asyncio.to_thread(store_answer, streamed_response, request.top_k, metadata_filter)
 
         yield sse_event("done", {"answer": answer})
     except Exception as e:
@@ -307,8 +324,44 @@ def sse_event(event_name: str, payload: Dict) -> str:
 
 def query_cache_key(request: QueryRequest) -> Tuple:
     """Build a cache key from query options that affect pipeline construction."""
-    payload = request.model_dump(exclude={"question", "metadata_filter"})
+    payload = request.model_dump(exclude={"question", "metadata_filter", "principal"})
     return tuple(sorted(payload.items()))
+
+
+def resolve_request_metadata_filter(app: FastAPI, request: QueryRequest, principal: Optional[str] = None) -> Optional[Dict]:
+    """Return the effective server-enforced metadata filter for a query."""
+    if not Config.ACL_ENABLED:
+        return request.metadata_filter
+
+    if principal is None or not str(principal).strip():
+        raise ACLAccessError("Trusted principal is required when ACL is enabled.")
+
+    service_state = get_state(app)
+    if service_state.acl_resolver is None:
+        raise ACLAccessError("ACL resolver is not configured.")
+
+    allowed_acl = service_state.acl_resolver.allowed_acl_for_principal(str(principal).strip())
+    return build_effective_metadata_filter(
+        request.metadata_filter,
+        allowed_acl,
+        metadata_key=Config.ACL_METADATA_KEY,
+        default_deny=Config.ACL_DEFAULT_DENY,
+    )
+
+
+def extract_trusted_principal(http_request: Request, body_principal: Optional[str] = None) -> Optional[str]:
+    """Extract principal from the trusted upstream header, with explicit local fallback only."""
+    if not Config.ACL_ENABLED:
+        return body_principal
+
+    header_principal = http_request.headers.get(Config.ACL_PRINCIPAL_HEADER)
+    if header_principal and header_principal.strip():
+        return header_principal.strip()
+    if Config.ACL_ALLOW_BODY_PRINCIPAL and body_principal and body_principal.strip():
+        return body_principal.strip()
+    if body_principal and body_principal.strip():
+        raise ACLAccessError("Principal must come from the trusted upstream header.")
+    return None
 
 
 def default_chat_client_factory() -> APIClient:

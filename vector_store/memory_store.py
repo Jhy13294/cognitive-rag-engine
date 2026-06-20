@@ -1,5 +1,6 @@
 from typing import Dict, Iterable, List, Optional
 
+from access import metadata_matches
 from embeddings import cosine_similarity
 from embeddings.base import Vector
 from logger import setup_logger
@@ -100,5 +101,5 @@ class InMemoryVectorStore(VectorStore):
             raise ValueError(f"Expected vector dimension {self.dimension}, got {len(vector)}")
 
     def _metadata_matches(self, metadata: Dict, metadata_filter: Dict) -> bool:
-        """Return whether metadata matches an exact-match filter."""
-        return all(metadata.get(key) == value for key, value in metadata_filter.items())
+        """Return whether metadata matches exact scalar and list-intersection filters."""
+        return metadata_matches(metadata, metadata_filter)
