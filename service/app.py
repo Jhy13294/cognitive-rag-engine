@@ -1,17 +1,19 @@
 import asyncio
 import json
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from api_client import APIClient
 from access import ACLAccessError, build_effective_metadata_filter, create_acl_resolver_from_config
 from cache import get_default_cache_store
 from config import Config
 from logger import setup_logger
+from observability import QueryObservation, RequestIDMiddleware, create_observability_manager
 from rag import RAGPipeline, RAGResponse, RetrievedSource
 from rag_cli import build_rag_pipeline_from_index, ingest_documents
 
@@ -37,6 +39,7 @@ class ServiceState:
     chat_client_factory: Any = None
     cache_store: Any = None
     acl_resolver: Any = None
+    observability: Any = None
     pipeline_cache: Dict[Tuple, RAGPipeline] = field(default_factory=dict)
     cache_generation: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -62,8 +65,14 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
     service_state = state or ServiceState()
     Config.validate_cache()
     Config.validate_acl(resolver_provided=service_state.acl_resolver is not None)
+    Config.validate_observability()
     if Config.ACL_ENABLED and service_state.acl_resolver is None:
         service_state.acl_resolver = create_acl_resolver_from_config(Config)
+    if Config.OBSERVABILITY_ENABLED and service_state.observability is None:
+        service_state.observability = create_observability_manager(
+            Config,
+            cache_store=service_state.cache_store,
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -71,6 +80,9 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         try:
             yield
         finally:
+            observability = service_state.observability
+            if observability is not None and hasattr(observability, "close"):
+                await asyncio.to_thread(observability.close)
             cache_store = service_state.cache_store
             if cache_store is not None and hasattr(cache_store, "aclose"):
                 await cache_store.aclose()
@@ -82,6 +94,8 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.service_state = service_state
+    if Config.OBSERVABILITY_ENABLED:
+        app.add_middleware(RequestIDMiddleware)
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -98,6 +112,18 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         if service_state.cache_store is None:
             return {"enabled": False}
         return service_state.cache_store.stats()
+
+    if Config.OBSERVABILITY_ENABLED and Config.METRICS_ENABLED:
+
+        @app.get(Config.METRICS_PATH, response_class=PlainTextResponse)
+        async def metrics() -> PlainTextResponse:
+            """Expose bounded-label metrics in Prometheus text format."""
+            observability = get_state(app).observability
+            payload = observability.render_metrics() if observability is not None else "# metrics unavailable\n"
+            return PlainTextResponse(
+                payload,
+                media_type="text/plain; version=0.0.4",
+            )
 
     @app.post("/ingest", response_model=IngestResponse)
     async def ingest(request: IngestRequest) -> IngestResponse:
@@ -135,36 +161,62 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
     @app.post("/query", response_model=QueryResponse)
     async def query(request: QueryRequest, http_request: Request) -> QueryResponse:
         """Run a complete RAG query without blocking the event loop."""
+        observation = start_query_observation(app, http_request, request, route="query")
         try:
             principal = extract_trusted_principal(http_request, request.principal)
             metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request, principal)
             pipeline = await get_or_build_pipeline(app, request)
+            bind_query_observation(app, observation, pipeline)
             response = await asyncio.to_thread(
                 pipeline.answer,
                 request.question,
                 top_k=request.top_k,
                 metadata_filter=metadata_filter,
             )
-            return response_to_model(response)
-        except HTTPException:
+            response_model = response_to_model(response)
+            finish_query_observation(
+                app,
+                observation,
+                sources=response.sources,
+                status_code=200,
+                raw_response=response.raw_response,
+                prompt=response.prompt,
+                answer=response.answer,
+            )
+            return response_model
+        except HTTPException as error:
+            finish_query_observation(app, observation, status_code=error.status_code)
             raise
         except Exception as e:
-            raise to_http_exception(e) from e
+            http_error = to_http_exception(e)
+            finish_query_observation(app, observation, status_code=http_error.status_code)
+            raise http_error from e
 
     @app.post("/query/stream")
     async def query_stream(request: QueryRequest, http_request: Request) -> StreamingResponse:
         """Run a streaming RAG query as server-sent events."""
+        observation = start_query_observation(app, http_request, request, route="query_stream")
         try:
             principal = extract_trusted_principal(http_request, request.principal)
             metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request, principal)
             pipeline = await get_or_build_pipeline(app, request)
-        except HTTPException:
+            bind_query_observation(app, observation, pipeline)
+        except HTTPException as error:
+            finish_query_observation(app, observation, status_code=error.status_code)
             raise
         except Exception as e:
-            raise to_http_exception(e) from e
+            http_error = to_http_exception(e)
+            finish_query_observation(app, observation, status_code=http_error.status_code)
+            raise http_error from e
 
         return StreamingResponse(
-            stream_query_events(app, request, pipeline=pipeline, metadata_filter=metadata_filter),
+            stream_query_events(
+                app,
+                request,
+                pipeline=pipeline,
+                metadata_filter=metadata_filter,
+                observation=observation,
+            ),
             media_type="text/event-stream",
         )
 
@@ -227,11 +279,18 @@ async def stream_query_events(
     request: QueryRequest,
     pipeline: Optional[RAGPipeline] = None,
     metadata_filter: Optional[Dict] = None,
+    observation: Optional[QueryObservation] = None,
 ):
     """Yield SSE events for a streaming RAG query."""
+    final_sources = []
+    final_raw_response = {}
+    final_prompt = ""
+    final_answer = ""
+    final_status_code = 200
     try:
         if pipeline is None:
             pipeline = await get_or_build_pipeline(app, request)
+            bind_query_observation(app, observation, pipeline)
         if metadata_filter is None:
             metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request)
 
@@ -244,6 +303,10 @@ async def stream_query_events(
                 metadata_filter,
             )
             if cached_response is not None:
+                final_sources = cached_response.sources
+                final_raw_response = cached_response.raw_response
+                final_prompt = cached_response.prompt
+                final_answer = cached_response.answer
                 yield sse_event(
                     "sources",
                     {
@@ -267,6 +330,8 @@ async def stream_query_events(
             request.question,
             sources,
         )
+        final_sources = used_sources
+        final_prompt = prompt
         yield sse_event("sources", {"sources": sources_to_models(used_sources)})
 
         if not hasattr(pipeline.chat_client, "stream_chat"):
@@ -278,6 +343,8 @@ async def stream_query_events(
             yield sse_event("token", {"delta": token})
 
         answer = "".join(answer_parts)
+        final_answer = answer
+        final_raw_response = {"choices": [{"message": {"content": answer}}], "streamed": True}
         store_answer = getattr(pipeline, "store_answer", None)
         if store_answer is not None:
             streamed_response = RAGResponse(
@@ -285,14 +352,111 @@ async def stream_query_events(
                 answer=answer,
                 sources=used_sources,
                 prompt=prompt,
-                raw_response={"choices": [{"message": {"content": answer}}], "streamed": True},
+                raw_response=final_raw_response,
             )
             await asyncio.to_thread(store_answer, streamed_response, request.top_k, metadata_filter)
 
         yield sse_event("done", {"answer": answer})
+    except (asyncio.CancelledError, GeneratorExit):
+        final_status_code = 499
+        raise
     except Exception as e:
         http_error = to_http_exception(e)
+        final_status_code = http_error.status_code
         yield sse_event("error", http_error.detail)
+    finally:
+        finish_query_observation(
+            app,
+            observation,
+            sources=final_sources,
+            status_code=final_status_code,
+            raw_response=final_raw_response,
+            prompt=final_prompt,
+            answer=final_answer,
+        )
+
+
+def start_query_observation(
+    app: FastAPI,
+    http_request: Request,
+    request: QueryRequest,
+    *,
+    route: str,
+) -> Optional[QueryObservation]:
+    """Start fail-open observation state for one query request."""
+    observability = get_state(app).observability
+    if observability is None:
+        return None
+
+    request_id = getattr(http_request.state, "request_id", None) or uuid.uuid4().hex
+    principal = http_request.headers.get(Config.ACL_PRINCIPAL_HEADER) or request.principal
+    retrieval_mode = "multi_query" if request.multi_query else "hybrid" if request.hybrid else "dense"
+    try:
+        return observability.start_query(
+            request_id=request_id,
+            route=route,
+            principal=principal,
+            question=request.question,
+            top_k=request.top_k or 5,
+            retrieval_mode=retrieval_mode,
+        )
+    except Exception as error:
+        logger.warning(
+            "Observability start failed open | alert_code=observability_start_failed | request_id=%s | error_type=%s",
+            request_id,
+            type(error).__name__,
+        )
+        return None
+
+
+def bind_query_observation(app: FastAPI, observation: Optional[QueryObservation], pipeline: Any) -> None:
+    """Bind an existing pipeline to observation state fail-open."""
+    if observation is None:
+        return
+    observability = get_state(app).observability
+    if observability is None:
+        return
+    try:
+        observability.bind_pipeline(observation, pipeline)
+    except Exception as error:
+        logger.warning(
+            "Observability pipeline bind failed open | alert_code=observability_bind_failed | request_id=%s | error_type=%s",
+            observation.request_id,
+            type(error).__name__,
+        )
+
+
+def finish_query_observation(
+    app: FastAPI,
+    observation: Optional[QueryObservation],
+    *,
+    sources: Optional[List[Any]] = None,
+    status_code: int,
+    raw_response: Optional[Dict] = None,
+    prompt: str = "",
+    answer: str = "",
+) -> None:
+    """Finalize one observation without allowing failures into the response path."""
+    if observation is None:
+        return
+    observability = get_state(app).observability
+    if observability is None:
+        return
+    try:
+        observability.complete_query(
+            observation,
+            sources=sources,
+            status_code=status_code,
+            raw_response=raw_response,
+            prompt=prompt,
+            answer=answer,
+        )
+    except Exception as error:
+        logger.warning(
+            "Observability completion failed open | alert_code=observability_complete_failed | request_id=%s | error_type=%s",
+            observation.request_id,
+            type(error).__name__,
+        )
 
 
 def response_to_model(response: RAGResponse) -> QueryResponse:

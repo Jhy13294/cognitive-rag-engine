@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -150,6 +151,20 @@ class Config:
     MYSQL_USER = os.getenv("MYSQL_USER")
     MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
     MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
+
+    OBSERVABILITY_ENABLED = _env_bool("OBSERVABILITY_ENABLED", False)
+    AUDIT_ENABLED = _env_bool("AUDIT_ENABLED", False)
+    METRICS_ENABLED = _env_bool("METRICS_ENABLED", False)
+    AUDIT_LOG_PATH = os.getenv("AUDIT_LOG_PATH", "logs/audit.jsonl")
+    AUDIT_LOG_QUERY_TEXT = _env_bool("AUDIT_LOG_QUERY_TEXT", False)
+    AUDIT_QUERY_TEXT_MAX_LENGTH = _env_int("AUDIT_QUERY_TEXT_MAX_LENGTH", 128)
+    AUDIT_PRINCIPAL_MODE = os.getenv("AUDIT_PRINCIPAL_MODE", "hash")
+    AUDIT_HASH_SALT = os.getenv("AUDIT_HASH_SALT")
+    AUDIT_LOG_MAX_BYTES = _env_int("AUDIT_LOG_MAX_BYTES", 10 * 1024 * 1024)
+    AUDIT_LOG_BACKUP_COUNT = _env_int("AUDIT_LOG_BACKUP_COUNT", 5)
+    AUDIT_QUEUE_SIZE = _env_int("AUDIT_QUEUE_SIZE", 10000)
+    METRICS_NAMESPACE = os.getenv("METRICS_NAMESPACE", "rag")
+    METRICS_PATH = os.getenv("METRICS_PATH", "/metrics")
 
     @classmethod
     def validate(cls):
@@ -371,4 +386,46 @@ class Config:
         logger.debug("ACL principal header: %s", cls.ACL_PRINCIPAL_HEADER)
         logger.debug("ACL allow body principal: %s", cls.ACL_ALLOW_BODY_PRINCIPAL)
         logger.debug("ACL ingest bindings enabled: %s", cls.ACL_INGEST_BINDINGS_ENABLED)
+        return True
+
+    @classmethod
+    def validate_observability(cls):
+        """Validate audit and metrics configuration."""
+        if not cls.OBSERVABILITY_ENABLED:
+            if cls.AUDIT_ENABLED or cls.METRICS_ENABLED:
+                raise ValueError("AUDIT_ENABLED and METRICS_ENABLED require OBSERVABILITY_ENABLED=true.")
+            return True
+
+        if not cls.AUDIT_ENABLED and not cls.METRICS_ENABLED:
+            raise ValueError("At least one of AUDIT_ENABLED or METRICS_ENABLED must be true.")
+
+        if cls.AUDIT_ENABLED:
+            if not cls.AUDIT_LOG_PATH or not cls.AUDIT_LOG_PATH.strip():
+                raise ValueError("AUDIT_LOG_PATH is required when audit logging is enabled.")
+            if cls.AUDIT_PRINCIPAL_MODE not in {"hash", "mask", "raw"}:
+                raise ValueError("AUDIT_PRINCIPAL_MODE must be one of: hash, mask, raw.")
+            if not cls.AUDIT_HASH_SALT:
+                raise ValueError("AUDIT_HASH_SALT is required when audit logging is enabled.")
+            if cls.AUDIT_QUERY_TEXT_MAX_LENGTH <= 0:
+                raise ValueError("AUDIT_QUERY_TEXT_MAX_LENGTH must be greater than 0.")
+            if cls.AUDIT_LOG_MAX_BYTES <= 0:
+                raise ValueError("AUDIT_LOG_MAX_BYTES must be greater than 0.")
+            if cls.AUDIT_LOG_BACKUP_COUNT < 0:
+                raise ValueError("AUDIT_LOG_BACKUP_COUNT cannot be negative.")
+            if cls.AUDIT_QUEUE_SIZE <= 0:
+                raise ValueError("AUDIT_QUEUE_SIZE must be greater than 0.")
+
+        if cls.METRICS_ENABLED:
+            if not cls.METRICS_NAMESPACE or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cls.METRICS_NAMESPACE) is None:
+                raise ValueError("METRICS_NAMESPACE must contain only letters, numbers, and underscores.")
+            if not cls.METRICS_PATH or not cls.METRICS_PATH.startswith("/"):
+                raise ValueError("METRICS_PATH must start with '/'.")
+
+        logger.debug("Observability enabled: %s", cls.OBSERVABILITY_ENABLED)
+        logger.debug("Audit enabled: %s", cls.AUDIT_ENABLED)
+        logger.debug("Metrics enabled: %s", cls.METRICS_ENABLED)
+        logger.debug("Audit principal mode: %s", cls.AUDIT_PRINCIPAL_MODE)
+        logger.debug("Audit query text enabled: %s", cls.AUDIT_LOG_QUERY_TEXT)
+        logger.debug("Metrics namespace: %s", cls.METRICS_NAMESPACE)
+        logger.debug("Metrics path: %s", cls.METRICS_PATH)
         return True

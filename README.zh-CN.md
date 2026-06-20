@@ -20,12 +20,13 @@
 - FastAPI 异步服务层：ingest/query HTTP 接口和 SSE 流式返回
 - 可选 Redis 三层缓存：query embedding、检索结果和生成答案
 - 可选 MySQL ACL/RBAC 检索前过滤：权限异常 fail-closed
+- 可选结构化审计与有限标签 Prometheus 指标：运行时观测故障 fail-open
 
-监控和内置认证等企业级能力尚未实现。
+内置认证等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存层，以及可选 ACL/RBAC 检索前过滤。
+当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存、ACL/RBAC 检索前过滤，以及 fail-open 可观测性。
 
 已完成：
 
@@ -78,19 +79,23 @@
   - ingest 可将受信 ACL subjects 或 MySQL `acl_binding` subjects 写入向量 payload metadata。
   - FastAPI query 端点默认从受信上游 header 读取 principal，身份缺失或 ACL 解析失败时 fail-closed。
   - dense memory、Qdrant payload filter、BM25 稀疏检索、multi-query 各变体和 L2/L3 缓存 key 使用同一个有效 ACL filter。
+- 可观测性：
+  - 纯 ASGI request-id 中间件通过 `X-Request-ID` 回写关联 ID，不缓冲 SSE。
+  - 成功、空召回和 ACL 拒绝查询各产生一条脱敏 JSON-line 审计；principal/query 默认使用带密钥 hash，绝不记录 source 正文、ACL subjects 或 API key。
+  - `GET /metrics` 暴露请求耗时、reported/estimated token、top-k 分数 histogram、空召回，以及真实 L1/L2/L3 缓存计数。
+  - audit sink、metric registry 和 alert hook 故障全部 fail-open，不能把正常查询变成 HTTP 失败。
 
 尚未完成：
 
-- 监控
 - 内置认证、JWT 校验或 session 管理
 
 ## 高级学习笔记
 
 想理解项目背后的工程取舍时，可以从这里开始：
 
-- **[技术选型思考](docs/tech-selection.md)**：为什么选择当前 embedding provider、向量库、检索栈、服务协议和 Redis 缓存设计。
-- **[系统架构](docs/architecture.md)**：系统架构、ingest/query 数据流、检索漏斗、父块展开、Redis 缓存布局和评估边界。
-- **[核心踩坑记录](docs/dev-log-crashing.md)**：关于指标污染、假流式、异步陷阱、缓存失效、Redis 事件循环归属和 ACL 边界等问题的调试记录。
+- **[技术选型思考](docs/tech-selection.md)**：为什么选择当前 embedding provider、向量库、检索栈、服务协议、访问过滤、缓存和可观测性设计。
+- **[系统架构](docs/architecture.md)**：系统架构、ingest/query 数据流、检索漏斗、访问控制、缓存布局、可观测性和评估边界。
+- **[核心踩坑记录](docs/dev-log-crashing.md)**：关于指标污染、假流式、异步陷阱、缓存失效、访问边界、审计泄漏和 token 账目等问题的调试记录。
 
 ## 目录结构
 
@@ -104,6 +109,7 @@
 ├── service/                   # FastAPI HTTP 适配层
 ├── cache/                     # Redis 缓存装饰器和序列化
 ├── access/                    # ACL/RBAC filter、resolver 和 MySQL metadata 适配器
+├── observability/             # 结构化审计、指标 registry、request ID 和告警钩子
 ├── requirements.txt           # Python 依赖
 ├── document_loader/
 │   ├── base.py                # Document 模型和加载器接口
@@ -176,6 +182,7 @@
 │   ├── test_vector_store.py
 │   ├── test_rag_pipeline.py
 │   ├── test_service.py
+│   ├── test_observability.py
 │   └── test_rag_cli.py
 └── docs/
     ├── tech-selection.md      # 技术选型思考
@@ -258,6 +265,16 @@ ACL_PRINCIPAL_HEADER=X-Principal
 ACL_ALLOW_BODY_PRINCIPAL=false
 ACL_INGEST_BINDINGS_ENABLED=false
 METADATA_DB_URL=mysql://user:password@localhost:3306/rag_metadata
+
+OBSERVABILITY_ENABLED=false
+AUDIT_ENABLED=false
+METRICS_ENABLED=false
+AUDIT_LOG_PATH=logs/audit.jsonl
+AUDIT_LOG_QUERY_TEXT=false
+AUDIT_PRINCIPAL_MODE=hash
+AUDIT_HASH_SALT=replace-with-a-long-random-secret
+METRICS_NAMESPACE=rag
+METRICS_PATH=/metrics
 ```
 
 ## 使用
@@ -302,11 +319,13 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats` 和 `GET /health`。当前尚未内置鉴权，不能在没有受信网关的情况下直接暴露到公网。
+服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats` 和 `GET /health`；启用指标后还会提供 `GET /metrics`。当前尚未内置鉴权，不能在没有受信网关的情况下直接暴露到公网。
 
 Redis 缓存默认关闭。启用时需要运行 Redis，设置 `CACHE_ENABLED=true` 并配置 `REDIS_URL`。`/query/stream` 在 L3 命中时会重放缓存答案，并在 SSE payload 中标记 `cached=true`；未命中时保持真实 provider 流式输出，并在完成后回填 L3。
 
 ACL/RBAC 过滤默认关闭。启用时设置 `ACL_ENABLED=true`，配置 metadata 数据库，并把服务放在认证网关后，由网关写入 `ACL_PRINCIPAL_HEADER` 指定的受信 principal header（默认 `X-Principal`）。请求体中的 principal 默认拒绝，只有本地测试显式设置 `ACL_ALLOW_BODY_PRINCIPAL=true` 时才允许 fallback。设置 `ACL_INGEST_BINDINGS_ENABLED=true` 后，ingest 可把 MySQL ACL binding 写入向量 payload；Qdrant payload 仍是检索执行快照，因此 MySQL binding 变更需要 re-ingest 或 re-sync 后才会影响检索。
+
+可观测性默认关闭。启用时需要设置总闸 `OBSERVABILITY_ENABLED=true`，并至少开启 `AUDIT_ENABLED` 或 `METRICS_ENABLED`；审计 hash 还必须提供部署侧秘密 `AUDIT_HASH_SALT`。运行时 audit/metric 故障 fail-open，但开启后的非法配置会在应用创建时早失败。query 默认只落 hash，只有显式设置 `AUDIT_LOG_QUERY_TEXT=true` 才记录定长原文。token 指标优先使用 provider reported 计数；上游没有 usage 时明确标为 `estimated`，provider watermark 会防止并发请求或缓存 raw response 重复累计 token。embedding 估算只覆盖服务边界可见的 query 文本，provider 侧 rewrite 扩展仍是估算，不能当作计费真账。
 
 常用 RAG CLI 参数：
 
@@ -579,6 +598,8 @@ python -m eval.run --no-cache
 
 当前 ACL/RBAC 支持的是 fail-closed 检索前过滤，不是检索后过滤。有效 ACL filter 由服务端根据受信 principal 构造，再与客户端 metadata filter 做 AND，因此客户端只能收窄结果，不能放宽权限。记录授权条件为 `record.acl` 与解析出的 allowed ACL subjects 有交集；缺失或空 ACL 的记录对普通用户视为受限。同一个 filter 会在 dense scoring、BM25 sparse scoring、multi-query 每个变体和缓存 key 构造前生效。MySQL 作为 principal membership 和可选 document/chunk ACL binding 的 metadata 真相源，Qdrant payload 作为高性能检索执行快照；修改 MySQL binding 后需要 re-ingest 或 re-sync 才会进入向量库 payload。FastAPI 服务本身不验证 JWT 或 session，生产部署必须由受信认证网关持有 principal header。
 
+当前可观测性是服务接缝外层能力，不参与检索或授权决策。结构化审计只记录生成的 request ID、opaque principal/query 标识、有限请求元数据和稳定 record ID，不记录 source 正文或 ACL subjects。Prometheus label 仅限 route、outcome、retrieval mode、token source 和 cache layer；request ID、principal、query 原文和 source ID 都不得成为 label。空召回、ACL 拒绝和服务错误提供稳定 alert code 与可插拔 hook。所有观测故障都 fail-open，这与 ACL 安全边界的 fail-closed 是刻意相反的语义。
+
 ## 代码规范
 
 - 代码命名使用英文。
@@ -592,6 +613,6 @@ python -m eval.run --no-cache
 
 1. 增加更多文档入库边界样例。
 2. 增加分数阈值或拒答逻辑，改善 negative query。
-3. 增加可观测性、审计日志和服务健康门禁。
+3. 为现有观测钩子增加部署健康门禁与外部告警路由。
 4. 增加 Qdrant 版本兼容与健康检查等生产部署门禁。
 5. 增加内置认证或生产网关集成检查。

@@ -144,6 +144,32 @@ class APIClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tokens, ["Hel", "lo"])
         self.assertEqual(FakeAPIAsyncClient.stream_requests[0]["method"], "POST")
         self.assertTrue(FakeAPIAsyncClient.stream_requests[0]["json"]["stream"])
+        self.assertEqual(client.usage_stats()["request_count"], 1)
+        self.assertEqual(client.usage_stats()["total_tokens"], 0)
+
+    @patch("api_client.httpx.AsyncClient", new=FakeAPIAsyncClient)
+    async def test_async_chat_accumulates_reported_usage(self):
+        reset_fake_api_client(
+            FakeAPIResponse(
+                data={
+                    "choices": [{"message": {"content": "done"}}],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                }
+            )
+        )
+        client = self.build_client(max_retries=0)
+
+        await client.async_chat("hello")
+
+        self.assertEqual(
+            client.usage_stats(),
+            {
+                "request_count": 1,
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "total_tokens": 10,
+            },
+        )
 
     def test_parse_chat_stream_line_handles_done_and_malformed_events(self):
         self.assertEqual(

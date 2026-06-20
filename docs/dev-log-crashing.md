@@ -320,6 +320,40 @@ MySQL 中建好了 document、chunk 和 `acl_binding` 表，但如果入库仍�
 
 MySQL 是权限真相源，Qdrant payload 是执行快照。binding 变更要通过 re-ingest 或 re-sync 进入 payload，不能把 schema 存在误说成查询时实时强制。
 
+## 17. Observability Failure Must Not Become Query Failure
+
+**现象**
+
+审计 sink、指标 registry 或 alert hook 如果直接在请求处理器里调用且异常向外冒泡，一个本来可以成功的查询会因为“记录失败”变成 500。ACL 刚建立的 fail-closed 习惯很容易被错误复制到观测层。
+
+**修复**
+
+- audit、metric、alert 三类 emit 分别包住异常，记录稳定 `alert_code` 后放行。
+- ACL 拒绝的审计写入失败仍留 WARN，但不改变原本的 403。
+- JSON-line sink 走有界后台队列，避免同步文件 I/O 占住事件循环。
+- 测试注入同时会抛异常的 sink、registry 和 hook，断言查询仍返回正确的 200 答案。
+
+**经验**
+
+fail-open 或 fail-closed 取决于组件是否属于安全边界，不能按最近一次实现形成条件反射。观测失败影响的是诊断能力，不应改变业务结果；观测配置缺失则应在启动时早失败，避免带着虚假的启用状态运行。
+
+## 18. Cumulative Token Counters Need Atomic Watermarks
+
+**现象**
+
+若每个并发请求都用 `after_total - before_total` 读取同一个 provider 累计 token，重叠请求会重复认领同一段增量。缓存回放还可能携带首次请求的 raw `usage`，再次把旧 token 当成新消耗。
+
+**修复**
+
+- chat 与 embedding provider 暴露累计 request/token 计数。
+- observability manager 按 provider identity 保存进程级 watermark，并在锁内原子认领新增区间。
+- provider request count 未增加时，不因 cached raw response 中仍有 `usage` 而重复累计。
+- 上游 request 已发生但没有 usage 时，才用 TokenCounter 估算并标记 `estimated`。
+
+**经验**
+
+“reported”描述的是来源，不自动保证聚合正确。累计计数跨并发请求消费时必须有单一认领点；缓存对象携带的历史 provider 元数据也不能被当成本次请求的新账。
+
 ## 后续仍需重点盯住
 
 - negative query 的 threshold/abstain。
@@ -327,3 +361,4 @@ MySQL 是权限真相源，Qdrant payload 是执行快照。binding 变更要通
 - context packing 的生成质量收益要用 Ragas 测。
 - Redis corpus version 当前是全局单键，安全但粗，会过度失效；后续可按 collection 细化。
 - `/query/stream` L3 回填的 `raw_response` 是合成形，answer/sources 正确，但 raw 溯源语义不同。
+- 多进程部署需要由 Prometheus 汇聚各 worker registry；单进程 `/metrics` 不等于全局聚合视图。

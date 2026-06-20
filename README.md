@@ -20,12 +20,13 @@ The current codebase focuses on the foundation:
 - Async FastAPI service layer for ingest/query and SSE streaming
 - Optional Redis cache wrappers for query embeddings, retrieval results, and generated answers
 - Optional MySQL-backed ACL/RBAC pre-filtering with fail-closed access checks
+- Optional structured audit logging and bounded-label Prometheus metrics with fail-open runtime emission
 
-Monitoring and built-in authentication are planned but not implemented yet.
+Built-in authentication is planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, and optional ACL/RBAC pre-filtering.
+Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, ACL/RBAC pre-filtering, and fail-open observability.
 
 Implemented:
 
@@ -78,19 +79,23 @@ Implemented:
   - Ingest can denormalize trusted ACL subjects or MySQL `acl_binding` subjects into vector payload metadata.
   - FastAPI query endpoints read principal from a trusted upstream header by default and fail closed when identity or ACL resolution is missing.
   - Dense memory search, Qdrant payload filters, BM25 sparse retrieval, multi-query variants, and L2/L3 cache keys all use the same effective ACL filter.
+- Observability:
+  - Pure-ASGI request IDs are returned through `X-Request-ID` without buffering SSE responses.
+  - One sanitized JSON-line audit record is emitted for successful, empty, and ACL-denied queries; principal and query values are keyed hashes by default, and source content/ACL/API keys are never recorded.
+  - `GET /metrics` exposes request latency, reported or estimated token usage, top-k score histograms, empty retrievals, and true L1/L2/L3 cache counters with bounded labels.
+  - Audit, metric, and alert-hook failures are contained fail-open and cannot turn a valid query into an HTTP failure.
 
 Not implemented yet:
 
-- Monitoring
 - Built-in authentication, JWT validation, or session management
 
 ## Advanced Learning Notes
 
 Start here when you want to understand the engineering choices behind the project:
 
-- **[Technology Selection](docs/tech-selection.md)**: why the project uses the current embedding providers, vector stores, retrieval stack, service protocol, and Redis cache design.
-- **[Architecture](docs/architecture.md)**: system architecture, ingest/query data flow, retrieval funnel, parent-child expansion, Redis cache layout, and evaluation boundaries.
-- **[Crash / Pitfall Log](docs/dev-log-crashing.md)**: hard-earned debugging notes about metric pollution, fake streaming, async traps, cache invalidation, Redis event-loop ownership, and other issues.
+- **[Technology Selection](docs/tech-selection.md)**: why the project uses the current embedding providers, vector stores, retrieval stack, service protocol, access filters, caching, and observability design.
+- **[Architecture](docs/architecture.md)**: system architecture, ingest/query data flow, retrieval funnel, access control, cache layout, observability, and evaluation boundaries.
+- **[Crash / Pitfall Log](docs/dev-log-crashing.md)**: hard-earned debugging notes about metric pollution, fake streaming, async traps, cache invalidation, access boundaries, audit leakage, and token accounting.
 
 ## Directory Structure
 
@@ -104,6 +109,7 @@ Start here when you want to understand the engineering choices behind the projec
 ├── service/                   # FastAPI HTTP adapter
 ├── cache/                     # Redis cache decorators and serialization
 ├── access/                    # ACL/RBAC filters, resolvers, and MySQL metadata adapter
+├── observability/             # Structured audit, metrics registry, request IDs, and alert hooks
 ├── requirements.txt           # Python dependencies
 ├── document_loader/
 │   ├── base.py                # Document model and loader interface
@@ -176,6 +182,7 @@ Start here when you want to understand the engineering choices behind the projec
 │   ├── test_vector_store.py
 │   ├── test_rag_pipeline.py
 │   ├── test_service.py
+│   ├── test_observability.py
 │   └── test_rag_cli.py
 └── docs/
     ├── tech-selection.md      # Technology selection notes
@@ -258,6 +265,16 @@ ACL_PRINCIPAL_HEADER=X-Principal
 ACL_ALLOW_BODY_PRINCIPAL=false
 ACL_INGEST_BINDINGS_ENABLED=false
 METADATA_DB_URL=mysql://user:password@localhost:3306/rag_metadata
+
+OBSERVABILITY_ENABLED=false
+AUDIT_ENABLED=false
+METRICS_ENABLED=false
+AUDIT_LOG_PATH=logs/audit.jsonl
+AUDIT_LOG_QUERY_TEXT=false
+AUDIT_PRINCIPAL_MODE=hash
+AUDIT_HASH_SALT=replace-with-a-long-random-secret
+METRICS_NAMESPACE=rag
+METRICS_PATH=/metrics
 ```
 
 ## Usage
@@ -302,11 +319,13 @@ Run the HTTP service locally:
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, and `GET /health`. Authentication is intentionally not implemented yet, so do not expose it publicly without a trusted gateway.
+The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, and `GET /health`. When metrics are enabled it also exposes `GET /metrics`. Authentication is intentionally not implemented yet, so do not expose it publicly without a trusted gateway.
 
 Redis caching is disabled by default. To enable it, run Redis, set `CACHE_ENABLED=true`, and configure `REDIS_URL`. `/query/stream` replays a cached L3 answer when present and marks the SSE payload with `cached=true`; otherwise it keeps the live provider stream and backfills L3 after completion.
 
 ACL/RBAC filtering is disabled by default. To enable it, set `ACL_ENABLED=true`, configure the metadata database, and place the service behind an authentication gateway that writes the trusted principal header named by `ACL_PRINCIPAL_HEADER` (`X-Principal` by default). Body-provided principals are rejected unless `ACL_ALLOW_BODY_PRINCIPAL=true` is explicitly enabled for local testing. MySQL ACL bindings can be denormalized into vector payloads during ingest with `ACL_INGEST_BINDINGS_ENABLED=true`; Qdrant payloads remain execution snapshots, so binding changes require re-ingest or re-sync before they affect retrieval.
+
+Observability is disabled by default. Set `OBSERVABILITY_ENABLED=true` and enable at least one of `AUDIT_ENABLED` or `METRICS_ENABLED`; audit hashing additionally requires a deployment secret in `AUDIT_HASH_SALT`. Runtime audit/metric failures fail open, while invalid enabled configuration fails during application creation. Query text is hashed unless `AUDIT_LOG_QUERY_TEXT=true` is explicitly selected. Token metrics prefer provider-reported counters; when upstream usage is unavailable they are labeled `estimated`, and provider watermarks prevent concurrent requests or cached raw responses from double-counting cumulative usage. Embedding estimates only cover query text visible at the service boundary, so provider-side rewrite expansion remains an estimate rather than billing truth.
 
 Useful RAG CLI options:
 
@@ -579,6 +598,8 @@ The live Redis path has passed the production-shape regression: repeated synchro
 
 Current ACL/RBAC support is fail-closed pre-filtering, not post-filtering. The effective ACL filter is built on the server side from a trusted principal, then ANDed with any client metadata filter so clients can narrow results but cannot widen access. Records are authorized when `record.acl` intersects the resolved allowed ACL subjects; records with missing or empty ACL are restricted for ordinary users. The same filter is applied before dense scoring, BM25 sparse scoring, each multi-query variant, and cache key construction. MySQL is the metadata source for principal membership and optional document/chunk ACL bindings, while Qdrant payloads are execution snapshots used for fast retrieval. Updating bindings in MySQL requires re-ingest or re-sync before the vector-store payload changes. The FastAPI service does not validate JWTs or sessions; production deployments must put it behind a trusted authentication gateway that owns the principal header.
 
+Current observability is an outer service adapter, not part of retrieval or authorization decisions. Structured audit records contain a generated request ID, opaque principal/query identifiers, bounded request metadata, and stable record IDs, but never source content or ACL subjects. Prometheus labels are restricted to route, outcome, retrieval mode, token source, and cache layer; request IDs, principals, query text, and source IDs remain out of metric labels. Empty retrieval, ACL denial, and server failures expose stable alert codes and optional hooks. All observer failures are fail-open, which deliberately differs from ACL's fail-closed security boundary.
+
 ## Development Conventions
 
 - Code identifiers use English.
@@ -592,6 +613,6 @@ Current ACL/RBAC support is fail-closed pre-filtering, not post-filtering. The e
 
 1. Add more ingestion edge-case fixtures.
 2. Add score thresholding or abstain logic for negative queries.
-3. Add observability, audit logs, and service health gates.
+3. Add deployment health gates and external alert routing for the existing observability hooks.
 4. Add production deployment checks around Qdrant version compatibility and health probes.
 5. Add built-in authentication or gateway integration checks for production deployments.

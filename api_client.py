@@ -38,6 +38,11 @@ class APIClient:
             "Authorization": f"Bearer {api_key}",
         }
         self.max_retries = max_retries
+        self.request_count = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
+        self._usage_lock = threading.Lock()
 
         masked_key = mask_sensitive_info(api_key)
         logger.info("APIClient initialized | api_key=%s | max_retries=%s", masked_key, max_retries)
@@ -49,13 +54,51 @@ class APIClient:
     async def async_chat(self, message: str, system_prompt: Optional[str] = None) -> Dict:
         """Send a chat request without blocking the event loop."""
         payload = self._build_payload(message, system_prompt=system_prompt, stream=False)
-        return await self._post_json_with_retries(payload)
+        response = await self._post_json_with_retries(payload)
+        self._record_usage(response)
+        return response
 
     async def stream_chat(self, message: str, system_prompt: Optional[str] = None) -> AsyncIterator[str]:
         """Stream chat-completion deltas from the upstream provider."""
         payload = self._build_payload(message, system_prompt=system_prompt, stream=True)
+        request_recorded = False
         async for token in self._stream_with_retries(payload):
+            if not request_recorded:
+                self._record_stream_request()
+                request_recorded = True
             yield token
+        if not request_recorded:
+            self._record_stream_request()
+
+    def usage_stats(self) -> Dict[str, int]:
+        """Return a thread-safe copy of cumulative provider-reported token usage."""
+        with self._usage_lock:
+            return {
+                "request_count": self.request_count,
+                "prompt_tokens": self.total_prompt_tokens,
+                "completion_tokens": self.total_completion_tokens,
+                "total_tokens": self.total_tokens,
+            }
+
+    def _record_usage(self, response: Dict) -> None:
+        """Accumulate provider-reported usage for service-level observability."""
+        usage = response.get("usage") if isinstance(response, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", 0) or 0)
+        if total_tokens <= 0:
+            total_tokens = prompt_tokens + completion_tokens
+        with self._usage_lock:
+            self.request_count += 1
+            self.total_prompt_tokens += prompt_tokens
+            self.total_completion_tokens += completion_tokens
+            self.total_tokens += total_tokens
+
+    def _record_stream_request(self) -> None:
+        """Count a streaming request whose provider token usage is unavailable."""
+        with self._usage_lock:
+            self.request_count += 1
 
     def _build_payload(self, message: str, system_prompt: Optional[str], stream: bool) -> Dict:
         """Build a chat-completion compatible request payload."""

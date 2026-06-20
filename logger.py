@@ -1,11 +1,25 @@
 import logging
 import os
+from contextvars import ContextVar, Token
 from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(funcName)s | %(message)s"
+_REQUEST_ID: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
+
+
+class _RequestContextFilter(logging.Filter):
+    """Add the active request ID to existing log messages without changing formatters."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Prefix a log message when request context is active."""
+        request_id = _REQUEST_ID.get()
+        if request_id and not str(record.msg).startswith("request_id="):
+            record.msg = f"request_id={request_id} | {record.msg}"
+        return True
 
 
 def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
@@ -20,6 +34,9 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
+
+    if not any(isinstance(item, _RequestContextFilter) for item in logger.filters):
+        logger.addFilter(_RequestContextFilter())
 
     if logger.handlers:
         return logger
@@ -40,6 +57,21 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     logger.addHandler(file_handler)
 
     return logger
+
+
+def set_request_id(request_id: str) -> Token:
+    """Set request context and return a token used to restore it."""
+    return _REQUEST_ID.set(request_id)
+
+
+def reset_request_id(token: Token) -> None:
+    """Restore request context using a token returned by set_request_id."""
+    _REQUEST_ID.reset(token)
+
+
+def get_request_id() -> Optional[str]:
+    """Return the active request ID when one is set."""
+    return _REQUEST_ID.get()
 
 
 def mask_sensitive_info(text: str, mask_char: str = "*", visible_length: int = 4) -> str:

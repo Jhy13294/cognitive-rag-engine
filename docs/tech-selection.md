@@ -158,3 +158,11 @@ Redis cache layer 使用 L1/L2/L3 三层设计：
 - MySQL 负责 principal membership 与 document/chunk binding 的真相记录，Qdrant payload 承担高性能执行快照。
 - 服务只信任上游认证网关写入的 principal header，并把 principal 作为显式参数贯穿 ACL 解析链；客户端请求体和 metadata filter 只能收窄，不能提权。
 - ACL 不混入缓存策略本身，但有效 ACL filter 必须进入 retrieval/answer cache key，避免高权结果被低权用户复用。
+
+## 为什么审计与指标使用独立 fail-open 旁路
+
+- 审计和指标不是安全决策输入。sink、registry 或 alert hook 故障不能改变查询结果，因此运行时语义必须与 ACL 的 fail-closed 刻意相反。
+- JSON-line 审计使用有界后台队列和滚动文件，把文件 I/O 移出请求热路径；队列满或写入失败只留下稳定告警码。
+- 指标 registry 只提供项目所需的 counter/histogram 与 Prometheus 文本导出，不把 principal、request ID、query 或 source ID 放入 label，避免无界时序数量。
+- token usage 优先读取 chat/embedding provider 的累计 reported 计数，并用进程级 watermark 原子认领增量；上游不回 usage 时才使用 TokenCounter 并标记 `estimated`。
+- request ID 使用纯 ASGI 中间件写入响应头，并通过 ContextVar 注入现有 logger；`asyncio.to_thread` 会传播该上下文，同时避免通用 HTTP middleware 对 SSE 产生缓冲或时序干扰。

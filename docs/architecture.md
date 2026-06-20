@@ -200,15 +200,33 @@ flowchart LR
 - SSE streaming。
 - exception mapping。
 - cache invalidation。
+- 受信 principal 到 ACL filter 的服务端注入。
+- query 完成后的审计与指标旁路。
 
 服务层不做：
 
 - 第二套检索管线。
-- 权限控制。
+- JWT/session 认证。
 - 后台任务队列。
-- 指标系统。
 
-这些分别留给访问控制、后台任务队列和可观测性能力。
+认证仍由受信网关承担，后台任务队列属于后续部署能力。
+
+## 审计与指标数据流
+
+```mermaid
+flowchart LR
+    REQ["HTTP query"] --> RID["Generate request ID"]
+    RID --> ACL["Resolve trusted principal and ACL"]
+    ACL --> PIPE["Existing RAG pipeline"]
+    PIPE --> RESP["RAGResponse / SSE events"]
+    RESP --> OBS["Fail-open observability manager"]
+    OBS --> AUDIT["Bounded queue -> rotating JSON-line audit"]
+    OBS --> METRICS["Bounded-label in-process registry"]
+    CACHE["Existing Redis cache stats"] --> METRICS
+    METRICS --> EXPORT["Prometheus text endpoint"]
+```
+
+观测层只读取已有返回对象、provider 累计 usage 和 cache stats，不参与召回、排序、权限判断或生成。纯 ASGI middleware 生成 request ID，通过 ContextVar 进入现有 logger 并随 `asyncio.to_thread` 传播，同时回写响应头。审计和指标运行时失败均 fail-open；只有启用后的配置错误会在应用创建时早失败。审计中的 principal/query 默认使用带部署密钥的 HMAC，source 只落稳定 record ID。指标 label 固定为有限枚举，无 request ID、principal、query 或 source ID。
 
 ## 评估架构
 
@@ -236,11 +254,12 @@ flowchart TD
 - 持久化验证：Qdrant `localhost:6333`。
 - 缓存验证：Redis `localhost:6379`，通过 `REDIS_URL=redis://localhost:6379/0` gated live smoke、跨事件循环回归和 fail-open 探针。
 - 权限预过滤：MySQL metadata resolver 可解析 principal membership，也可在入库时按 document/chunk binding 写入 payload ACL；服务默认只信任上游 header principal，并将其显式传入 ACL filter resolver，内部不回读请求体身份。
+- 可观测性：可选 JSON-line 审计、`X-Request-ID`、Prometheus 文本指标和 fail-open 告警钩子；默认关闭。
 - 服务化：FastAPI app factory，可接 uvicorn。
 
 ## 后续演进
 
-1. 结构化审计和 Prometheus 风格指标。
-2. Ragas 四维质量评估。
-3. 入库增强：OCR、表格抽取优化、权限字段 fixture。
-4. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。
+1. Ragas 四维质量评估。
+2. 入库增强：OCR、表格抽取优化、权限字段 fixture。
+3. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。
+4. 外部告警路由、指标聚合和部署健康门禁。
