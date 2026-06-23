@@ -600,6 +600,38 @@ python -m eval.run --no-cache
 
 当前可观测性是服务接缝外层能力，不参与检索或授权决策。结构化审计只记录生成的 request ID、opaque principal/query 标识、有限请求元数据和稳定 record ID，不记录 source 正文或 ACL subjects。Prometheus label 仅限 route、outcome、retrieval mode、token source 和 cache layer；request ID、principal、query 原文和 source ID 都不得成为 label。空召回、ACL 拒绝和服务错误提供稳定 alert code 与可插拔 hook。所有观测故障都 fail-open，这与 ACL 安全边界的 fail-closed 是刻意相反的语义。
 
+## 生成质量评估
+
+生成质量采用 Ragas 四维：Faithfulness、Answer Relevance、Context Precision、Context Recall。它与确定性检索评估严格隔离：`python -m eval.run` 继续保持离线、逐字节可复现；Ragas 只把 JSON 报告写入 `eval/reports/ragas/`。
+
+live 判官复用项目的 DeepSeek OpenAI-compatible API 配置；Answer Relevance 使用 Gemini `gemini-embedding-001`，通过原生 `batchEmbedContents` + `RETRIEVAL_QUERY` 调用，并具备有界批处理、维度校验和异步重试。
+
+质量门禁分成两条轨道：
+
+- `replay` 读取已提交的 live 判官 fixture，不联网、不需要 API key，适合每次 push 的 CI。
+- `live` 对每条 golden 问题只调用一次既有 `RAGPipeline.answer()`，固定生成答案和上下文，再让外部判官至少重复评估两次以测量 spread；必须同时显式开启 `RAGAS_ENABLED=true` 与 `RUN_RAGAS_EVAL=true`。
+
+已有 live fixture 后运行离线门禁：
+
+```bash
+python -m eval.ragas_run replay
+```
+
+显式录制或刷新 live 基线：
+
+```bash
+python -m eval.ragas_run live --profile baseline --repetitions 3 --refresh-fixture
+```
+
+可分别录制能力 profile，并在保留判官方差的前提下比较：
+
+```bash
+python -m eval.ragas_run live --profile context_packing --repetitions 3 --fixture eval/fixtures/ragas-context-packing.jsonl --refresh-fixture
+python -m eval.ragas_run compare --before eval/fixtures/ragas-verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
+```
+
+live 评估是受控数据出境面：正样本会把 question、生成 answer、检索 context 正文和人工 ground truth 发给外部判官；Answer Relevance 还会把文本发给配置的 embedding endpoint。fixture 只保存哈希和裁决，不保存评估正文。约 20 条人工样本上的四维分数只是带方差的判官估计，不是确定性事实、production 真值或质量保底；`temperature=0` 也不会消除供应商和模型漂移。
+
 ## 代码规范
 
 - 代码命名使用英文。

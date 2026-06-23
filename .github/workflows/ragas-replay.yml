@@ -1,0 +1,42 @@
+name: Ragas Offline Replay Gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    env:
+      RAGAS_ENABLED: "true"
+      RUN_RAGAS_EVAL: "false"
+      RAGAS_JUDGE_MODEL: "deepseek-v4-pro"
+      RAGAS_DO_NOT_TRACK: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run deterministic Ragas tests
+        run: python -m unittest tests.test_ragas_eval -v
+      - name: Require a live-recorded gate fixture
+        run: test -f eval/fixtures/ragas_verdicts.jsonl
+      - name: Replay recorded verdicts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m eval.ragas_run replay --quiet 2>&1 | tee ragas-replay.log
+          status=${PIPESTATUS[0]}
+          exit "$status"
+      - name: Upload replay report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-replay-report
+          path: |
+            eval/reports/ragas/*.json
+            ragas-replay.log
+          if-no-files-found: warn

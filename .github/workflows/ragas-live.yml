@@ -1,0 +1,64 @@
+name: Ragas Gated Live Recording
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Existing pipeline profile to record
+        required: true
+        default: baseline
+        type: choice
+        options:
+          - baseline
+          - rerank
+          - hybrid
+          - parent_child
+          - context_packing
+          - multi_query
+      repetitions:
+        description: Judge repetitions on each fixed answer/context input
+        required: true
+        default: "3"
+      judge_model:
+        description: Pinned judge model ID
+        required: true
+        default: deepseek-v4-pro
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    env:
+      RAGAS_ENABLED: "true"
+      RUN_RAGAS_EVAL: "true"
+      RAGAS_DO_NOT_TRACK: "true"
+      RAGAS_JUDGE_MODEL: ${{ inputs.judge_model }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Record candidate verdicts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m eval.ragas_run live \
+            --profile "${{ inputs.profile }}" \
+            --repetitions "${{ inputs.repetitions }}" \
+            --candidate-fixture "eval/reports/ragas/${{ inputs.profile }}-candidate.jsonl" \
+            --quiet 2>&1 | tee ragas-live.log
+          status=${PIPESTATUS[0]}
+          exit "$status"
+      - name: Upload candidate fixture and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-${{ inputs.profile }}-candidate
+          path: |
+            eval/reports/ragas/*
+            ragas-live.log
+          if-no-files-found: error

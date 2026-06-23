@@ -259,7 +259,39 @@ flowchart TD
 
 ## 后续演进
 
-1. Ragas 四维质量评估。
+1. 按生成敏感门禁范围执行全套付费 capture，并冻结首份正式 verdict fixture。
 2. 入库增强：OCR、表格抽取优化、权限字段 fixture。
 3. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。
 4. 外部告警路由、指标聚合和部署健康门禁。
+
+## 双轨生成质量评估
+
+生成质量评估位于检索评估旁路，不进入线上请求漏斗，也不写入确定性检索报告。
+
+```mermaid
+flowchart TD
+    G["Golden questions + references"] --> P["Existing RAGPipeline.answer()"]
+    P --> S["Fixed answer + response.sources"]
+    S --> C1["Content-only contexts"]
+    S --> C2["Faithfulness contexts\n[n] filename: content"]
+    C1 --> CP["Context Precision / Recall\nreported only"]
+    C2 --> FAI["Faithfulness gate\nversioned statement prompt"]
+    S --> AR["Answer Relevance gate\nGemini embedding"]
+    CP --> J["DeepSeek judge\n5 repetitions"]
+    FAI --> J
+    AR --> J
+    J --> V["v4 verdict fixture\nhashes + provenance + runs"]
+    V --> R["Offline replay\ngeneration-sensitive gate"]
+```
+
+live 轨先通过既有 `RAGPipeline.answer()` 生成一次答案，再固定 answer/context 重复判官五次。Faithfulness 与 Answer Relevance 按 case 使用 median 过阈值，MAD 衡量中心估计附近的稳健离散度；negative 样本单独 gate abstention/fabrication。Context Precision/Recall 的 median、MAD、mean/stddev/min/max 仍完整输出，但不产生 gate failure。
+
+Answer Relevance 的 Gemini vectors 在 Ragas adapter 边界统一做 L2 归一化。live 判官原始分进入 fixture 前经过紧容差数值守卫：只将 `[-1e-6, 0)` 和 `(1, 1+1e-6]` clamp 回边界；NaN、inf 和更大越界立即失败。该容差只属于 capture，fixture 中的值必须已经严格位于 `[0,1]`，offline replay 的校验不放宽。
+
+Faithfulness 与另外两类 context 指标使用不同输入：Faithfulness 需要验证答案中的来源声明，因此按 `RetrievedSource.index` 构造 `[n] filename: content`；Context Precision/Recall 继续使用 content-only。文件名从 metadata path 取 basename，绝对路径不外发。Answer Relevance 不消费 retrieved contexts，只使用问题、答案和 Gemini embedding。
+
+Context Precision/Recall 不消费 generated answer，当前量到的是冻结 hash 检索 profile，而不是生成质量。检索列表变化由 `contexts_sha256` 与 `faithfulness_contexts_sha256` 确定性暴露，因此无需再用噪声判官阈值重复把守。reported-only 是门禁作用域收敛，不是删分或降低阈值。
+
+replay 轨不导入 Ragas runtime、不联网，fixture 只保存 hash、分数和 provenance。当前 schema 为 `ragas-verdicts-v4`，会拒绝 stale golden、qid 集不完整、synthetic recording，以及 judge model、Ragas 版本、重复次数、statement prompt、Faithfulness context format 或 gating scope 漂移。
+
+live 数据出境包括正样本 question、generated answer、检索正文、来源文件名和 ground truth；Answer Relevance 还会向 embedding endpoint 发送文本。该路径默认关闭，ACL 敏感生产语料未经审批不得运行。当前装置已通过离线测试，但首份正式 fixture 仍需 gated 付费复测后才能冻结。

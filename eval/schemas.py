@@ -44,6 +44,7 @@ class GoldenExample:
     relevant: List[RelevantItem]
     capability: str
     note: str
+    ground_truth: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict) -> "GoldenExample":
@@ -53,6 +54,7 @@ class GoldenExample:
 
         qid = str(data.get("qid", "")).strip()
         question = str(data.get("question", "")).strip()
+        ground_truth = str(data.get("ground_truth", "")).strip()
         capability = str(data.get("capability", "")).strip()
         note = str(data.get("note", "")).strip()
         relevant_raw = data.get("relevant")
@@ -61,6 +63,8 @@ class GoldenExample:
             raise ValueError("Golden example qid is required")
         if not question:
             raise ValueError(f"Golden example {qid} question is required")
+        if not ground_truth:
+            raise ValueError(f"Golden example {qid} ground_truth is required")
         if capability not in ALLOWED_CAPABILITIES:
             raise ValueError(f"Golden example {qid} has unsupported capability: {capability}")
         if not isinstance(relevant_raw, list):
@@ -78,6 +82,7 @@ class GoldenExample:
             qid=qid,
             question=question,
             relevant=relevant,
+            ground_truth=ground_truth,
             capability=capability,
             note=note,
         )
@@ -88,7 +93,7 @@ class GoldenExample:
             "qid": self.qid,
             "question": self.question,
             "relevant": [item.to_dict() for item in self.relevant],
+            "ground_truth": self.ground_truth,
             "capability": self.capability,
             "note": self.note,
         }
-

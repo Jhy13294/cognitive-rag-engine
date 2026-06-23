@@ -9,3 +9,8 @@ memory/
 eval/reports/*.json
 eval/reports/*.md
 !eval/reports/.gitkeep
+
+# Unfrozen / below-bar Ragas candidate baseline + captured real outputs — never upload
+eval/fixtures/ragas_candidate.jsonl
+eval/fixtures/*-candidate.jsonl
+eval/reports_candidate/

@@ -23,13 +23,20 @@ class APIClient:
     BASE_DELAY: float = 1.0
     MAX_DELAY: float = 60.0
 
-    def __init__(self, api_key: str, api_url: str, max_retries: int = MAX_RETRIES):
+    def __init__(
+        self,
+        api_key: str,
+        api_url: str,
+        max_retries: int = MAX_RETRIES,
+        temperature: Optional[float] = None,
+    ):
         """Initialize the API client.
 
         Args:
             api_key: Provider API key.
             api_url: Chat completion endpoint.
             max_retries: Maximum retry attempts for retryable failures.
+            temperature: Optional per-client generation temperature override.
         """
         self.api_key = api_key
         self.api_url = api_url
@@ -38,6 +45,7 @@ class APIClient:
             "Authorization": f"Bearer {api_key}",
         }
         self.max_retries = max_retries
+        self.temperature = temperature
         self.request_count = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
@@ -110,7 +118,11 @@ class APIClient:
         payload = {
             "model": Config.MODEL_NAME,
             "messages": messages,
-            "temperature": Config.TEMPERATURE,
+            "temperature": (
+                self.temperature
+                if self.temperature is not None
+                else Config.TEMPERATURE
+            ),
             "max_tokens": Config.MAX_TOKENS,
         }
         if stream:

@@ -600,6 +600,38 @@ Current ACL/RBAC support is fail-closed pre-filtering, not post-filtering. The e
 
 Current observability is an outer service adapter, not part of retrieval or authorization decisions. Structured audit records contain a generated request ID, opaque principal/query identifiers, bounded request metadata, and stable record IDs, but never source content or ACL subjects. Prometheus labels are restricted to route, outcome, retrieval mode, token source, and cache layer; request IDs, principals, query text, and source IDs remain out of metric labels. Empty retrieval, ACL denial, and server failures expose stable alert codes and optional hooks. All observer failures are fail-open, which deliberately differs from ACL's fail-closed security boundary.
 
+## Generation Quality Evaluation
+
+Generation quality uses four Ragas dimensions: Faithfulness, Answer Relevance, Context Precision, and Context Recall. It is deliberately isolated from deterministic retrieval evaluation: `python -m eval.run` remains offline and byte-reproducible, while Ragas writes JSON only under `eval/reports/ragas/`.
+
+The live judge uses the project's DeepSeek OpenAI-compatible API configuration. Answer Relevance uses Gemini `gemini-embedding-001` through the native `batchEmbedContents` API with `RETRIEVAL_QUERY`, bounded batches, dimension validation, and asynchronous retry handling.
+
+The quality gate has two tracks:
+
+- `replay` reads a committed live verdict fixture, performs no network calls, needs no API key, and is suitable for every-push CI.
+- `live` calls the existing `RAGPipeline.answer()` path once per golden question, fixes the generated answer and contexts, then repeats the external judge at least twice to measure spread. It requires both `RAGAS_ENABLED=true` and `RUN_RAGAS_EVAL=true`.
+
+Run the offline gate after a live fixture has been recorded:
+
+```bash
+python -m eval.ragas_run replay
+```
+
+Record or refresh a live baseline explicitly:
+
+```bash
+python -m eval.ragas_run live --profile baseline --repetitions 3 --refresh-fixture
+```
+
+Record feature profiles separately and compare their means together with judge spread:
+
+```bash
+python -m eval.ragas_run live --profile context_packing --repetitions 3 --fixture eval/fixtures/ragas-context-packing.jsonl --refresh-fixture
+python -m eval.ragas_run compare --before eval/fixtures/ragas-verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
+```
+
+Live evaluation is a controlled data-egress path. Positive samples send the question, generated answer, retrieved context text, and hand-written ground truth to the configured judge; Answer Relevance also sends text to the configured embedding endpoint. Fixtures store hashes and verdicts rather than raw evaluation text. Scores on this small hand-labeled set are noisy judge estimates, not deterministic facts or a production quality floor. `temperature=0` does not remove provider or model variance.
+
 ## Development Conventions
 
 - Code identifiers use English.

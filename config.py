@@ -42,7 +42,7 @@ class Config:
     API_KEY = os.getenv("DEEPSEEK_API_KEY")
     API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions")
 
-    MODEL_NAME = "deepseek-v4-flash"
+    MODEL_NAME = "deepseek-v4-pro"
     TEMPERATURE = 0.7
     MAX_TOKENS = 2000
 
@@ -165,6 +165,51 @@ class Config:
     AUDIT_QUEUE_SIZE = _env_int("AUDIT_QUEUE_SIZE", 10000)
     METRICS_NAMESPACE = os.getenv("METRICS_NAMESPACE", "rag")
     METRICS_PATH = os.getenv("METRICS_PATH", "/metrics")
+
+    RAGAS_ENABLED = _env_bool("RAGAS_ENABLED", False)
+    RUN_RAGAS_EVAL = _env_bool("RUN_RAGAS_EVAL", False)
+    RAGAS_JUDGE_API_KEY = os.getenv("RAGAS_JUDGE_API_KEY") or API_KEY
+    RAGAS_JUDGE_BASE_URL = os.getenv("RAGAS_JUDGE_BASE_URL", "https://api.deepseek.com/v1")
+    RAGAS_JUDGE_MODEL = os.getenv("RAGAS_JUDGE_MODEL", MODEL_NAME)
+    RAGAS_JUDGE_TEMPERATURE = _env_float("RAGAS_JUDGE_TEMPERATURE", 0.0)
+    RAGAS_JUDGE_TIMEOUT = _env_float("RAGAS_JUDGE_TIMEOUT", 60.0)
+    RAGAS_JUDGE_MAX_RETRIES = _env_int("RAGAS_JUDGE_MAX_RETRIES", 3)
+    RAGAS_JUDGE_MAX_TOKENS = _env_int("RAGAS_JUDGE_MAX_TOKENS", 4096)
+    RAGAS_LIVE_REPETITIONS = _env_int("RAGAS_LIVE_REPETITIONS", 5)
+    RAGAS_LIVE_GENERATION_TEMPERATURE = _env_float(
+        "RAGAS_LIVE_GENERATION_TEMPERATURE",
+        0.0,
+    )
+    RAGAS_EMBEDDING_PROVIDER = os.getenv("RAGAS_EMBEDDING_PROVIDER", "gemini")
+    RAGAS_EMBEDDING_API_KEY = (
+        os.getenv("RAGAS_EMBEDDING_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    )
+    RAGAS_EMBEDDING_BASE_URL = os.getenv(
+        "RAGAS_EMBEDDING_BASE_URL",
+        "https://generativelanguage.googleapis.com/v1beta",
+    )
+    RAGAS_EMBEDDING_MODEL = os.getenv("RAGAS_EMBEDDING_MODEL", "gemini-embedding-001")
+    RAGAS_EMBEDDING_DIMENSION = _env_int("RAGAS_EMBEDDING_DIMENSION", 3072)
+    RAGAS_EMBEDDING_BATCH_SIZE = _env_int("RAGAS_EMBEDDING_BATCH_SIZE", 100)
+    RAGAS_EMBEDDING_TIMEOUT = _env_float("RAGAS_EMBEDDING_TIMEOUT", 30.0)
+    RAGAS_EMBEDDING_MAX_RETRIES = _env_int("RAGAS_EMBEDDING_MAX_RETRIES", 3)
+    RAGAS_EMBEDDING_BASE_DELAY = _env_float("RAGAS_EMBEDDING_BASE_DELAY", 0.5)
+    RAGAS_EMBEDDING_MAX_DELAY = _env_float("RAGAS_EMBEDDING_MAX_DELAY", 8.0)
+    RAGAS_FIXTURE_PATH = os.getenv("RAGAS_FIXTURE_PATH", "eval/fixtures/ragas_verdicts.jsonl")
+    RAGAS_REPORT_DIR = os.getenv("RAGAS_REPORT_DIR", "eval/reports/ragas")
+    RAGAS_TOP_K = _env_int("RAGAS_TOP_K", 5)
+    RAGAS_FAITHFULNESS_THRESHOLD = _env_float("RAGAS_FAITHFULNESS_THRESHOLD", 0.70)
+    RAGAS_ANSWER_RELEVANCE_THRESHOLD = _env_float("RAGAS_ANSWER_RELEVANCE_THRESHOLD", 0.70)
+    RAGAS_CONTEXT_PRECISION_THRESHOLD = _env_float("RAGAS_CONTEXT_PRECISION_THRESHOLD", 0.70)
+    RAGAS_CONTEXT_RECALL_THRESHOLD = _env_float("RAGAS_CONTEXT_RECALL_THRESHOLD", 0.70)
+    RAGAS_NEGATIVE_ABSTENTION_THRESHOLD = _env_float("RAGAS_NEGATIVE_ABSTENTION_THRESHOLD", 1.0)
+    RAGAS_FAITHFULNESS_MARGIN = _env_float("RAGAS_FAITHFULNESS_MARGIN", 0.10)
+    RAGAS_ANSWER_RELEVANCE_MARGIN = _env_float("RAGAS_ANSWER_RELEVANCE_MARGIN", 0.10)
+    RAGAS_CONTEXT_PRECISION_MARGIN = _env_float("RAGAS_CONTEXT_PRECISION_MARGIN", 0.10)
+    RAGAS_CONTEXT_RECALL_MARGIN = _env_float("RAGAS_CONTEXT_RECALL_MARGIN", 0.10)
+    RAGAS_SIGMA_MULTIPLIER = _env_float("RAGAS_SIGMA_MULTIPLIER", 1.0)
 
     @classmethod
     def validate(cls):
@@ -428,4 +473,82 @@ class Config:
         logger.debug("Audit query text enabled: %s", cls.AUDIT_LOG_QUERY_TEXT)
         logger.debug("Metrics namespace: %s", cls.METRICS_NAMESPACE)
         logger.debug("Metrics path: %s", cls.METRICS_PATH)
+        return True
+
+    @classmethod
+    def validate_ragas(cls):
+        """Validate deterministic replay and gated live Ragas settings."""
+        if cls.RUN_RAGAS_EVAL and not cls.RAGAS_ENABLED:
+            raise ValueError("RUN_RAGAS_EVAL requires RAGAS_ENABLED=true.")
+
+        bounded_values = {
+            "RAGAS_FAITHFULNESS_THRESHOLD": cls.RAGAS_FAITHFULNESS_THRESHOLD,
+            "RAGAS_ANSWER_RELEVANCE_THRESHOLD": cls.RAGAS_ANSWER_RELEVANCE_THRESHOLD,
+            "RAGAS_CONTEXT_PRECISION_THRESHOLD": cls.RAGAS_CONTEXT_PRECISION_THRESHOLD,
+            "RAGAS_CONTEXT_RECALL_THRESHOLD": cls.RAGAS_CONTEXT_RECALL_THRESHOLD,
+            "RAGAS_NEGATIVE_ABSTENTION_THRESHOLD": cls.RAGAS_NEGATIVE_ABSTENTION_THRESHOLD,
+            "RAGAS_FAITHFULNESS_MARGIN": cls.RAGAS_FAITHFULNESS_MARGIN,
+            "RAGAS_ANSWER_RELEVANCE_MARGIN": cls.RAGAS_ANSWER_RELEVANCE_MARGIN,
+            "RAGAS_CONTEXT_PRECISION_MARGIN": cls.RAGAS_CONTEXT_PRECISION_MARGIN,
+            "RAGAS_CONTEXT_RECALL_MARGIN": cls.RAGAS_CONTEXT_RECALL_MARGIN,
+        }
+        for name, value in bounded_values.items():
+            if value < 0 or value > 1:
+                raise ValueError(f"{name} must be between 0 and 1.")
+
+        if cls.RAGAS_TOP_K <= 0:
+            raise ValueError("RAGAS_TOP_K must be greater than 0.")
+        # Prefer an odd count so the robust median has one unambiguous center value.
+        if cls.RAGAS_LIVE_REPETITIONS < 2:
+            raise ValueError("RAGAS_LIVE_REPETITIONS must be at least 2.")
+        if cls.RAGAS_JUDGE_TEMPERATURE < 0:
+            raise ValueError("RAGAS_JUDGE_TEMPERATURE must be non-negative.")
+        if cls.RAGAS_LIVE_GENERATION_TEMPERATURE < 0:
+            raise ValueError("RAGAS_LIVE_GENERATION_TEMPERATURE must be non-negative.")
+        if cls.RAGAS_JUDGE_TIMEOUT <= 0:
+            raise ValueError("RAGAS_JUDGE_TIMEOUT must be greater than 0.")
+        if cls.RAGAS_JUDGE_MAX_RETRIES < 0:
+            raise ValueError("RAGAS_JUDGE_MAX_RETRIES cannot be negative.")
+        if cls.RAGAS_JUDGE_MAX_TOKENS <= 0:
+            raise ValueError("RAGAS_JUDGE_MAX_TOKENS must be greater than 0.")
+        if cls.RAGAS_EMBEDDING_DIMENSION <= 0:
+            raise ValueError("RAGAS_EMBEDDING_DIMENSION must be greater than 0.")
+        if cls.RAGAS_EMBEDDING_PROVIDER.lower() != "gemini":
+            raise ValueError("RAGAS_EMBEDDING_PROVIDER must be gemini.")
+        if cls.RAGAS_EMBEDDING_BATCH_SIZE <= 0:
+            raise ValueError("RAGAS_EMBEDDING_BATCH_SIZE must be greater than 0.")
+        if cls.RAGAS_EMBEDDING_TIMEOUT <= 0:
+            raise ValueError("RAGAS_EMBEDDING_TIMEOUT must be greater than 0.")
+        if cls.RAGAS_EMBEDDING_MAX_RETRIES < 0:
+            raise ValueError("RAGAS_EMBEDDING_MAX_RETRIES cannot be negative.")
+        if cls.RAGAS_EMBEDDING_BASE_DELAY < 0:
+            raise ValueError("RAGAS_EMBEDDING_BASE_DELAY cannot be negative.")
+        if cls.RAGAS_EMBEDDING_MAX_DELAY < cls.RAGAS_EMBEDDING_BASE_DELAY:
+            raise ValueError("RAGAS_EMBEDDING_MAX_DELAY must be greater than or equal to base delay.")
+        if cls.RAGAS_SIGMA_MULTIPLIER <= 0:
+            raise ValueError("RAGAS_SIGMA_MULTIPLIER must be greater than 0.")
+        if not cls.RAGAS_JUDGE_MODEL or not cls.RAGAS_JUDGE_MODEL.strip():
+            raise ValueError("RAGAS_JUDGE_MODEL is required.")
+        if not cls.RAGAS_FIXTURE_PATH or not cls.RAGAS_FIXTURE_PATH.strip():
+            raise ValueError("RAGAS_FIXTURE_PATH is required.")
+        if not cls.RAGAS_REPORT_DIR or not cls.RAGAS_REPORT_DIR.strip():
+            raise ValueError("RAGAS_REPORT_DIR is required.")
+
+        if cls.RUN_RAGAS_EVAL:
+            required = {
+                "RAGAS_JUDGE_API_KEY": cls.RAGAS_JUDGE_API_KEY,
+                "RAGAS_JUDGE_BASE_URL": cls.RAGAS_JUDGE_BASE_URL,
+                "RAGAS_EMBEDDING_API_KEY": cls.RAGAS_EMBEDDING_API_KEY,
+                "RAGAS_EMBEDDING_BASE_URL": cls.RAGAS_EMBEDDING_BASE_URL,
+                "RAGAS_EMBEDDING_MODEL": cls.RAGAS_EMBEDDING_MODEL,
+                "DEEPSEEK_API_KEY": cls.API_KEY,
+            }
+            missing = [name for name, value in required.items() if not value]
+            if missing:
+                raise ValueError("Live Ragas configuration is missing: " + ", ".join(missing))
+
+        logger.debug("Ragas enabled: %s", cls.RAGAS_ENABLED)
+        logger.debug("Run live Ragas evaluation: %s", cls.RUN_RAGAS_EVAL)
+        logger.debug("Ragas judge model: %s", cls.RAGAS_JUDGE_MODEL)
+        logger.debug("Ragas live repetitions: %s", cls.RAGAS_LIVE_REPETITIONS)
         return True

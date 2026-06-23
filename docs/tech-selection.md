@@ -149,8 +149,7 @@ Redis cache layer 使用 L1/L2/L3 三层设计：
 ## 为什么暂未引入的组件
 
 - **Redis 队列 / 后台任务队列**：`/ingest` 当前同步 offload，后台队列留到后续运维卡。
-- **Prometheus / OpenTelemetry**：审计与指标属于可观测性能力，当前只保留足够的统计入口。
-- **Ragas**：生成质量评估属于后续质量评估能力；parent expansion 和 context packing 只能证明结构正确，不能提前宣称答案质量提升。
+- **OpenTelemetry 与分布式指标汇聚**：当前已有有界标签 registry 与 Prometheus 文本端点，但多 worker 聚合、trace exporter 和外部告警路由仍属于部署增强。
 
 ## 为什么 ACL/RBAC 放在检索前过滤层
 
@@ -166,3 +165,21 @@ Redis cache layer 使用 L1/L2/L3 三层设计：
 - 指标 registry 只提供项目所需的 counter/histogram 与 Prometheus 文本导出，不把 principal、request ID、query 或 source ID 放入 label，避免无界时序数量。
 - token usage 优先读取 chat/embedding provider 的累计 reported 计数，并用进程级 watermark 原子认领增量；上游不回 usage 时才使用 TokenCounter 并标记 `estimated`。
 - request ID 使用纯 ASGI 中间件写入响应头，并通过 ContextVar 注入现有 logger；`asyncio.to_thread` 会传播该上下文，同时避免通用 HTTP middleware 对 SSE 产生缓冲或时序干扰。
+## 生成质量评估：Ragas 双轨判官
+
+Ragas 用来回答确定性检索指标回答不了的问题：答案是否有上下文支撑、是否回答了问题，以及供给上下文是否精确和完整。当前使用 Faithfulness、Answer Relevance、Context Precision、Context Recall 四维。
+
+选型约束：
+
+- Ragas 是外部 LLM 判官，不是真值。live 轨非确定、付费且涉及数据出境，只允许显式 gated 周期运行；每次 push 的 CI 只回放已审核 verdict。
+- `ragas==0.4.3` 与 LangChain pre-1.0 兼容族共同 pin，避免无上界依赖解析到已删除兼容模块的版本。
+- DeepSeek 通过 OpenAI-compatible endpoint 承担结构化判官；Answer Relevance 使用 Gemini `gemini-embedding-001` 原生 `batchEmbedContents`，两者的凭据、模型身份和失败域彼此隔离。
+- live capture 的答案生成温度单独固定为 0，不改产品默认温度 0.7；判官温度与生成温度分别进入 provenance。温度为 0 仍不等于确定性。
+- 每条正样本重复五次，case 中心估计使用 median，判官噪声 margin 使用 MAD。mean/stddev 保留用于诊断，不能再让单个伪零决定门禁。
+- Faithfulness 使用版本化 statement-generation prompt：独立 claim 继续拆分，只有共同构成单一要求、流程或定义的联合谓语保持为一条 statement。
+- Faithfulness 还需要验证引用归属，因此单独消费 `[n] filename: content`；Context Precision/Recall 保持 content-only，避免标签改变相关性判断。
+- 只有消费生成答案的 Faithfulness、Answer Relevance 和 negative 行为进入 gate。Context Precision/Recall 不消费答案，在当前确定性 hash 检索 profile 下只作为 reported-only 指标；检索输入漂移由 context hash 更确定地拦截。
+- Answer Relevance 使用 cosine，相似度可能因浮点尾差略超 1。Gemini adapter 先做 L2 归一化，live capture 再以 `1e-6` 紧容差 clamp；非有限值和真实越界仍失败。replay 不接受容差，保证 fixture 永远严格 in-band。
+- judge model、Ragas 版本、重复次数、statement prompt、Faithfulness context format 与 gating scope 都是基线协议。任一变化都要求重新校准，不能当作透明升级。
+
+reported-only 不等于删除或隐藏：Context Precision/Recall 仍输出全量分布，只是不再用一个与生成无关的 harness 常量阻断生成质量基线。稳健聚合和 prompt/context 修复也只提高评估装置的可信度，不会把错误答案“调成通过”。
