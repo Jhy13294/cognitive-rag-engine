@@ -14,7 +14,7 @@ from rag_cli import build_rag_pipeline_from_path
 
 from .faithfulness_prompt import (
     STATEMENT_PROMPT_VERSION,
-    build_statement_generator_prompt,
+    build_faithfulness_metric,
 )
 from .gemini_embedding import GeminiEmbeddingProvider
 from .ragas_evaluation import (
@@ -78,7 +78,6 @@ class LiveRagasJudge:
                 AnswerRelevancy,
                 ContextPrecision,
                 ContextRecall,
-                Faithfulness,
             )
         except (ImportError, ModuleNotFoundError) as error:
             raise RagasDependencyError(
@@ -141,8 +140,7 @@ class LiveRagasJudge:
                 return [normalize_embedding_l2(vector) for vector in vectors]
 
         embeddings = ProjectEmbeddingAdapter(embedding_provider)
-        faithfulness = Faithfulness(llm=judge_llm)
-        faithfulness.statement_generator_prompt = build_statement_generator_prompt()
+        faithfulness = build_faithfulness_metric(judge_llm)
         self.metrics = {
             "faithfulness": faithfulness,
             "answer_relevance": AnswerRelevancy(

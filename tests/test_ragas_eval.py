@@ -12,7 +12,9 @@ from api_client import APIClient
 from config import Config
 from eval.faithfulness_prompt import (
     STATEMENT_PROMPT_VERSION,
+    build_faithfulness_metric,
     build_statement_generator_prompt,
+    preserve_question_dependent_rationale,
 )
 from eval.golden import load_golden_set
 from eval.ragas_evaluation import (
@@ -562,9 +564,9 @@ class RagasEvaluationTests(unittest.TestCase):
 
         prompt = judge.metrics["faithfulness"].statement_generator_prompt
         self.assertEqual(prompt.prompt_version, STATEMENT_PROMPT_VERSION)
-        self.assertEqual(type(prompt).__name__, "JointRequirementStatementGeneratorPrompt")
+        self.assertEqual(type(prompt).__name__, "SemanticDependencyStatementGeneratorPrompt")
 
-    def test_joint_requirement_prompt_keeps_independent_and_conjunctive_examples(self):
+    def test_statement_prompt_preserves_joint_requirements_and_indispensable_rationales(self):
         prompt = build_statement_generator_prompt()
         rendered = prompt.to_string(
             prompt.input_model(
@@ -573,13 +575,89 @@ class RagasEvaluationTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(len(prompt.examples), 2)
+        self.assertEqual(len(prompt.examples), 3)
         self.assertIn("Albert Einstein", rendered)
         self.assertIn("joint requirement", rendered)
         self.assertIn("call the support hotline", rendered)
+        self.assertIn("indispensable rationale", rendered)
+        self.assertIn("Source [4] is relevant because", rendered)
         conjunctive_output = prompt.examples[1][1]
         self.assertEqual(len(conjunctive_output.statements), 1)
         self.assertIn(" and ", conjunctive_output.statements[0])
+        rationale_output = prompt.examples[2][1]
+        self.assertEqual(len(rationale_output.statements), 1)
+        self.assertIn("relevant because", rationale_output.statements[0])
+        self.assertIn("notify security", rationale_output.statements[0])
+
+    def test_question_dependent_rationale_guard_is_narrow(self):
+        answer = (
+            "Source [4] is relevant because it directly addresses token recovery: "
+            "the employee should notify security."
+        )
+        extracted = [
+            "Source [4] is relevant because it directly addresses token recovery.",
+            "The employee should notify security.",
+        ]
+
+        self.assertEqual(
+            preserve_question_dependent_rationale(answer, extracted),
+            [answer],
+        )
+        self.assertEqual(
+            preserve_question_dependent_rationale(
+                "Source [4] is relevant. The employee should notify security.",
+                extracted,
+            ),
+            extracted,
+        )
+
+    def test_rationale_guard_does_not_force_an_unfaithful_nli_verdict(self):
+        from ragas.llms.base import InstructorBaseRagasLLM
+        from ragas.metrics.collections.faithfulness.util import (
+            NLIStatementOutput,
+            StatementFaithfulnessAnswer,
+            StatementGeneratorOutput,
+        )
+
+        answer = (
+            "Source [4] is relevant because it states that employees receive "
+            "ten pet vacation days."
+        )
+
+        class UnfaithfulClaimLLM(InstructorBaseRagasLLM):
+            def generate(self, prompt, response_model):
+                raise AssertionError("Only the async path should be used.")
+
+            async def agenerate(self, prompt, output_model):
+                if output_model is StatementGeneratorOutput:
+                    return output_model(
+                        statements=[
+                            "Source [4] is relevant.",
+                            "Employees receive ten pet vacation days.",
+                        ]
+                    )
+                if output_model is NLIStatementOutput:
+                    return output_model(
+                        statements=[
+                            StatementFaithfulnessAnswer(
+                                statement=answer,
+                                reason="The context contains no pet vacation policy.",
+                                verdict=0,
+                            )
+                        ]
+                    )
+                raise AssertionError(f"Unexpected output model: {output_model}")
+
+        metric = build_faithfulness_metric(UnfaithfulClaimLLM())
+        result = asyncio.run(
+            metric.ascore(
+                user_input="Which source defines pet vacation?",
+                response=answer,
+                retrieved_contexts=["[4] handbook.md: No pet policy is defined."],
+            )
+        )
+
+        self.assertEqual(result.value, 0.0)
 
     def test_statement_creation_sends_custom_prompt_to_fake_llm(self):
         from ragas.llms.base import InstructorBaseRagasLLM
