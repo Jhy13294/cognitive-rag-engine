@@ -9,6 +9,7 @@ from typing import Dict, List, Sequence
 
 from api_client import APIClient
 from config import Config
+from rag.pipeline import CANONICAL_ABSTENTION_RESPONSE
 from rag_cli import build_rag_pipeline_from_path
 
 from .faithfulness_prompt import (
@@ -35,7 +36,7 @@ LIVE_PROFILES = (
     "multi_query",
 )
 ABSTENTION_MARKERS = (
-    "not available in the knowledge base",
+    CANONICAL_ABSTENTION_RESPONSE.lower().rstrip("."),
     "not provided in the knowledge base",
     "knowledge base does not contain",
     "knowledge base does not provide",

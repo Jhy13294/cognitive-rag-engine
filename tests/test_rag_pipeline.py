@@ -5,7 +5,7 @@ from document_loader import load_and_split_document
 from embeddings import HashEmbeddingProvider
 from rag import RAGPipeline
 from rerank import RerankConfig, RerankResult, Reranker
-from rag.pipeline import extract_chat_content
+from rag.pipeline import CANONICAL_ABSTENTION_RESPONSE, extract_chat_content
 from tests.test_document_ingestion import FIXTURES_DIR
 from vector_store import InMemoryVectorStore
 
@@ -112,6 +112,16 @@ class RAGPipelineTests(unittest.TestCase):
         self.assertEqual(len(chat_client.calls), 1)
         self.assertIn("Use the context below", chat_client.calls[0]["message"])
         self.assertIn("enterprise knowledge-base assistant", chat_client.calls[0]["system_prompt"])
+
+    def test_default_prompt_pins_canonical_abstention_response(self):
+        pipeline, chat_client = build_test_pipeline()
+
+        pipeline.answer("What is not covered by the knowledge base?")
+
+        system_prompt = chat_client.calls[0]["system_prompt"]
+        self.assertIn(f'begin with exactly this sentence: "{CANONICAL_ABSTENTION_RESPONSE}"', system_prompt)
+        self.assertIn("directly supported", system_prompt)
+        self.assertIn("do not supply an unsupported answer", system_prompt)
 
     def test_answer_supports_metadata_filter(self):
         pipeline, _ = build_test_pipeline()

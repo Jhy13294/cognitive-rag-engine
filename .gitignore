@@ -8,6 +8,7 @@ memory/
 # Generated evaluation reports
 eval/reports/*.json
 eval/reports/*.md
+eval/reports/ragas/
 !eval/reports/.gitkeep
 
 # Unfrozen / below-bar Ragas candidate baseline + captured real outputs — never upload

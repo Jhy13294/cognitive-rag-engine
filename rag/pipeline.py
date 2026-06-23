@@ -44,13 +44,19 @@ class RAGResponse:
     raw_response: Dict
 
 
+CANONICAL_ABSTENTION_RESPONSE = "The answer is not available in the knowledge base."
+
+
 class RAGPipeline:
     """Minimal retrieval-augmented generation pipeline."""
 
     DEFAULT_SYSTEM_PROMPT = (
         "You are an enterprise knowledge-base assistant. "
-        "Answer using only the provided context. "
-        "If the context is insufficient, say that the answer is not available in the knowledge base. "
+        "Answer only with claims directly supported by the provided context. "
+        "Do not infer a policy, procedure, value, or current fact from merely related context. "
+        "If the context does not directly support an answer, begin with exactly this sentence: "
+        f'"{CANONICAL_ABSTENTION_RESPONSE}" '
+        "You may briefly explain what information is missing, but do not supply an unsupported answer. "
         "Cite sources with bracketed numbers like [1], [2]."
     )
 

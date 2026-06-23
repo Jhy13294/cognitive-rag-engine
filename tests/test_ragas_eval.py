@@ -528,7 +528,17 @@ class RagasEvaluationTests(unittest.TestCase):
 
     def test_abstention_classifier_is_conservative(self):
         self.assertTrue(answer_is_abstention("The answer is not available in the knowledge base."))
+        self.assertFalse(
+            answer_is_abstention(
+                "The finance policy does not provide a payroll tax table for the current quarter."
+            )
+        )
         self.assertFalse(answer_is_abstention("The cafeteria serves noodles today."))
+        self.assertFalse(
+            answer_is_abstention(
+                "The knowledge base mentions leave, so employees may take five pet vacation days."
+            )
+        )
 
     def test_live_ragas_components_construct_without_network_calls(self):
         with (
