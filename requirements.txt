@@ -35,5 +35,8 @@ langchain-openai>=0.3.28,<1.0.0
 # Vector storage
 qdrant-client>=1.18,<1.19   # Qdrant SDK (import name: qdrant_client); pin to 1.18.x to match server; 1.17+ requires Python>=3.10
 
+# Local embeddings for gated answer-relevance evaluation (offline, no API quota)
+fastembed>=0.4,<0.8         # ONNX runtime embeddings (no torch); model BAAI/bge-small-en-v1.5 (384-dim)
+
 # Optional dependency: YAML parsing for Markdown Front Matter
 PyYAML>=6.0

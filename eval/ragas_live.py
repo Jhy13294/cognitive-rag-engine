@@ -99,17 +99,26 @@ class LiveRagasJudge:
             temperature=Config.RAGAS_JUDGE_TEMPERATURE,
             max_tokens=Config.RAGAS_JUDGE_MAX_TOKENS,
         )
-        embedding_provider = GeminiEmbeddingProvider(
-            api_key=Config.RAGAS_EMBEDDING_API_KEY,
-            base_url=Config.RAGAS_EMBEDDING_BASE_URL,
-            model_name=Config.RAGAS_EMBEDDING_MODEL,
-            dimension=Config.RAGAS_EMBEDDING_DIMENSION,
-            batch_size=Config.RAGAS_EMBEDDING_BATCH_SIZE,
-            timeout=Config.RAGAS_EMBEDDING_TIMEOUT,
-            max_retries=Config.RAGAS_EMBEDDING_MAX_RETRIES,
-            base_delay=Config.RAGAS_EMBEDDING_BASE_DELAY,
-            max_delay=Config.RAGAS_EMBEDDING_MAX_DELAY,
-        )
+        if Config.RAGAS_EMBEDDING_PROVIDER.strip().lower() == "bge":
+            from .bge_embedding import BGEEmbeddingProvider
+
+            embedding_provider = BGEEmbeddingProvider(
+                model_name=Config.RAGAS_EMBEDDING_MODEL,
+                dimension=Config.RAGAS_EMBEDDING_DIMENSION,
+                cache_dir=Config.RAGAS_EMBEDDING_CACHE_DIR,
+            )
+        else:
+            embedding_provider = GeminiEmbeddingProvider(
+                api_key=Config.RAGAS_EMBEDDING_API_KEY,
+                base_url=Config.RAGAS_EMBEDDING_BASE_URL,
+                model_name=Config.RAGAS_EMBEDDING_MODEL,
+                dimension=Config.RAGAS_EMBEDDING_DIMENSION,
+                batch_size=Config.RAGAS_EMBEDDING_BATCH_SIZE,
+                timeout=Config.RAGAS_EMBEDDING_TIMEOUT,
+                max_retries=Config.RAGAS_EMBEDDING_MAX_RETRIES,
+                base_delay=Config.RAGAS_EMBEDDING_BASE_DELAY,
+                max_delay=Config.RAGAS_EMBEDDING_MAX_DELAY,
+            )
 
         class ProjectEmbeddingAdapter(BaseRagasEmbedding):
             """Expose the project embedding provider through the Ragas interface."""

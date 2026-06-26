@@ -180,7 +180,12 @@ class Config:
         "RAGAS_LIVE_GENERATION_TEMPERATURE",
         0.0,
     )
-    RAGAS_EMBEDDING_PROVIDER = os.getenv("RAGAS_EMBEDDING_PROVIDER", "gemini")
+    RAGAS_EMBEDDING_PROVIDER = os.getenv("RAGAS_EMBEDDING_PROVIDER", "bge")
+    # Local fastembed (ONNX, no torch) mode skips remote key/url and defaults to an
+    # English model tuned for the English golden set so answer relevance runs offline
+    # without API quota. (Bilingual jina-v2-base-zh was evaluated and rejected: it
+    # collapses cosine on English paraphrases with low lexical overlap.)
+    _RAGAS_EMBEDDING_IS_LOCAL = RAGAS_EMBEDDING_PROVIDER.strip().lower() == "bge"
     RAGAS_EMBEDDING_API_KEY = (
         os.getenv("RAGAS_EMBEDDING_API_KEY")
         or os.getenv("GEMINI_API_KEY")
@@ -190,8 +195,15 @@ class Config:
         "RAGAS_EMBEDDING_BASE_URL",
         "https://generativelanguage.googleapis.com/v1beta",
     )
-    RAGAS_EMBEDDING_MODEL = os.getenv("RAGAS_EMBEDDING_MODEL", "gemini-embedding-001")
-    RAGAS_EMBEDDING_DIMENSION = _env_int("RAGAS_EMBEDDING_DIMENSION", 3072)
+    RAGAS_EMBEDDING_MODEL = os.getenv(
+        "RAGAS_EMBEDDING_MODEL",
+        "BAAI/bge-small-en-v1.5" if _RAGAS_EMBEDDING_IS_LOCAL else "gemini-embedding-001",
+    )
+    RAGAS_EMBEDDING_DIMENSION = _env_int(
+        "RAGAS_EMBEDDING_DIMENSION",
+        384 if _RAGAS_EMBEDDING_IS_LOCAL else 3072,
+    )
+    RAGAS_EMBEDDING_CACHE_DIR = os.getenv("RAGAS_EMBEDDING_CACHE_DIR") or None
     RAGAS_EMBEDDING_BATCH_SIZE = _env_int("RAGAS_EMBEDDING_BATCH_SIZE", 100)
     RAGAS_EMBEDDING_TIMEOUT = _env_float("RAGAS_EMBEDDING_TIMEOUT", 30.0)
     RAGAS_EMBEDDING_MAX_RETRIES = _env_int("RAGAS_EMBEDDING_MAX_RETRIES", 3)
@@ -513,8 +525,8 @@ class Config:
             raise ValueError("RAGAS_JUDGE_MAX_TOKENS must be greater than 0.")
         if cls.RAGAS_EMBEDDING_DIMENSION <= 0:
             raise ValueError("RAGAS_EMBEDDING_DIMENSION must be greater than 0.")
-        if cls.RAGAS_EMBEDDING_PROVIDER.lower() != "gemini":
-            raise ValueError("RAGAS_EMBEDDING_PROVIDER must be gemini.")
+        if cls.RAGAS_EMBEDDING_PROVIDER.strip().lower() not in {"gemini", "bge"}:
+            raise ValueError("RAGAS_EMBEDDING_PROVIDER must be one of: gemini, bge.")
         if cls.RAGAS_EMBEDDING_BATCH_SIZE <= 0:
             raise ValueError("RAGAS_EMBEDDING_BATCH_SIZE must be greater than 0.")
         if cls.RAGAS_EMBEDDING_TIMEOUT <= 0:
@@ -538,11 +550,13 @@ class Config:
             required = {
                 "RAGAS_JUDGE_API_KEY": cls.RAGAS_JUDGE_API_KEY,
                 "RAGAS_JUDGE_BASE_URL": cls.RAGAS_JUDGE_BASE_URL,
-                "RAGAS_EMBEDDING_API_KEY": cls.RAGAS_EMBEDDING_API_KEY,
-                "RAGAS_EMBEDDING_BASE_URL": cls.RAGAS_EMBEDDING_BASE_URL,
                 "RAGAS_EMBEDDING_MODEL": cls.RAGAS_EMBEDDING_MODEL,
                 "DEEPSEEK_API_KEY": cls.API_KEY,
             }
+            # Remote embedding providers need a key/url; local BGE runs offline.
+            if cls.RAGAS_EMBEDDING_PROVIDER.strip().lower() != "bge":
+                required["RAGAS_EMBEDDING_API_KEY"] = cls.RAGAS_EMBEDDING_API_KEY
+                required["RAGAS_EMBEDDING_BASE_URL"] = cls.RAGAS_EMBEDDING_BASE_URL
             missing = [name for name, value in required.items() if not value]
             if missing:
                 raise ValueError("Live Ragas configuration is missing: " + ", ".join(missing))
