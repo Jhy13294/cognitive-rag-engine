@@ -9,7 +9,7 @@ from typing import Dict, List, Sequence
 
 from api_client import APIClient
 from config import Config
-from rag.pipeline import CANONICAL_ABSTENTION_RESPONSE
+from rag.pipeline import CANONICAL_ABSTENTION_RESPONSE, RAG_SYSTEM_PROMPT_VERSION
 from rag_cli import build_rag_pipeline_from_path
 
 from .faithfulness_prompt import (
@@ -397,6 +397,8 @@ def build_live_fixture_metadata(
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "recording_mode": "live_gated",
         "generator_model_id": Config.MODEL_NAME,
+        "generation_prompt_version": RAG_SYSTEM_PROMPT_VERSION,
+        "generation_prompt_change_invalidates_baseline": True,
         "statement_prompt_version": STATEMENT_PROMPT_VERSION,
         "statement_prompt_change_invalidates_baseline": True,
         "faithfulness_context_format": FAITHFULNESS_CONTEXT_FORMAT,

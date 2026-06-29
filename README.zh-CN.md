@@ -604,7 +604,7 @@ python -m eval.run --no-cache
 
 生成质量采用 Ragas 四维：Faithfulness、Answer Relevance、Context Precision、Context Recall。它与确定性检索评估严格隔离：`python -m eval.run` 继续保持离线、逐字节可复现；Ragas 只把 JSON 报告写入 `eval/reports/ragas/`。
 
-live 判官复用项目的 DeepSeek OpenAI-compatible API 配置；Answer Relevance 使用 Gemini `gemini-embedding-001`，通过原生 `batchEmbedContents` + `RETRIEVAL_QUERY` 调用，并具备有界批处理、维度校验和异步重试。
+live 判官复用项目的 DeepSeek OpenAI-compatible API 配置；Answer Relevance 的 embedding 走可选 provider（`RAGAS_EMBEDDING_PROVIDER`）。`bge` 走本地 fastembed/ONNX 模型（`BAAI/bge-small-en-v1.5`，384 维，不引 torch），无 API key、无成本、无限流，门禁可完全离线跑；`gemini` 则用 Gemini `gemini-embedding-001`，通过原生 `batchEmbedContents` + `RETRIEVAL_QUERY` 调用，具备有界批处理、维度校验和异步重试。两条路都会对向量做 L2 归一化，改 provider/模型/维度都会让已录基线失效。这条 embedding 只给离线 answer-relevance 门禁打分；产品检索用的是另一条 embedding，不受影响。
 
 质量门禁分成两条轨道：
 
@@ -630,7 +630,9 @@ python -m eval.ragas_run live --profile context_packing --repetitions 3 --fixtur
 python -m eval.ragas_run compare --before eval/fixtures/ragas-verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
 ```
 
-live 评估是受控数据出境面：正样本会把 question、生成 answer、检索 context 正文和人工 ground truth 发给外部判官；Answer Relevance 还会把文本发给配置的 embedding endpoint。fixture 只保存哈希和裁决，不保存评估正文。约 20 条人工样本上的四维分数只是带方差的判官估计，不是确定性事实、production 真值或质量保底；`temperature=0` 也不会消除供应商和模型漂移。
+门禁只覆盖消费生成答案的维度：Faithfulness、Answer Relevance 和负样本弃答/虚构进入 gate，Context Precision/Recall 不消费答案、只作为 reported-only 完整输出。生成提示按问题形状校准到“答案 + 最小支撑短语”的中间量——裸答案会让判官反推问题信息不足、过度脚手架又会漂离原问——配合版本化 statement 抽取，使 16 条正样本的 Faithfulness 与 Answer Relevance median 全部达标、负样本全部弃答。这份通过门禁的 capture 已提升为正式冻结 verdict fixture（schema `ragas-verdicts-v5`，pin 生成与抽取 prompt 版本、judge model、embedding 与 gating scope），`python -m eval.ragas_run replay` 离线自证门禁通过。
+
+live 评估是受控数据出境面：正样本会把 question、生成 answer、检索 context 正文和人工 ground truth 发给外部判官；用 `gemini` provider 时 Answer Relevance 还会把文本发给 embedding endpoint，而本地 `bge` provider 不发起任何网络调用。fixture 只保存哈希和裁决，不保存评估正文。约 20 条人工样本上的四维分数只是带方差的判官估计，不是确定性事实、production 真值或质量保底；`temperature=0` 也不会消除供应商和模型漂移。
 
 ## 代码规范
 

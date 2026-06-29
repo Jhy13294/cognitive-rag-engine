@@ -275,12 +275,12 @@ flowchart TD
     S --> C1["Content-only contexts"]
     S --> C2["Faithfulness contexts\n[n] filename: content"]
     C1 --> CP["Context Precision / Recall\nreported only"]
-    C2 --> FAI["Faithfulness gate\nversioned statement prompt"]
+    C2 --> FAI["Faithfulness gate\nversioned prompt + narrow statement guard"]
     S --> AR["Answer Relevance gate\nGemini embedding"]
     CP --> J["DeepSeek judge\n5 repetitions"]
     FAI --> J
     AR --> J
-    J --> V["v4 verdict fixture\nhashes + provenance + runs"]
+    J --> V["v5 verdict fixture\nhashes + provenance + runs"]
     V --> R["Offline replay\ngeneration-sensitive gate"]
 ```
 
@@ -290,8 +290,10 @@ Answer Relevance 的 Gemini vectors 在 Ragas adapter 边界统一做 L2 归一�
 
 Faithfulness 与另外两类 context 指标使用不同输入：Faithfulness 需要验证答案中的来源声明，因此按 `RetrievedSource.index` 构造 `[n] filename: content`；Context Precision/Recall 继续使用 content-only。文件名从 metadata path 取 basename，绝对路径不外发。Answer Relevance 不消费 retrieved contexts，只使用问题、答案和 Gemini embedding。
 
+Faithfulness 的 statement extraction 是概率步骤，而后续 NLI 只接收 context 与 statement，不接收原始 question。版本化 prompt 负责保留联合要求和不可缺失的理由；窄确定性 guard 只处理单句 `is relevant because`，防止关系 claim 与证明它的具体事实被拆开。该 guard 只修正 statement 边界，不修改 NLI verdict，未被 context 支持的完整 claim 仍应判 0。
+
 Context Precision/Recall 不消费 generated answer，当前量到的是冻结 hash 检索 profile，而不是生成质量。检索列表变化由 `contexts_sha256` 与 `faithfulness_contexts_sha256` 确定性暴露，因此无需再用噪声判官阈值重复把守。reported-only 是门禁作用域收敛，不是删分或降低阈值。
 
-replay 轨不导入 Ragas runtime、不联网，fixture 只保存 hash、分数和 provenance。当前 schema 为 `ragas-verdicts-v4`，会拒绝 stale golden、qid 集不完整、synthetic recording，以及 judge model、Ragas 版本、重复次数、statement prompt、Faithfulness context format 或 gating scope 漂移。
+replay 轨不导入 Ragas runtime、不联网，fixture 只保存 hash、分数和 provenance。当前 schema 为 `ragas-verdicts-v5`，会拒绝 stale golden、qid 集不完整、synthetic recording，以及 judge model、Ragas 版本、重复次数、生成 prompt、statement prompt、Faithfulness context format 或 gating scope 漂移。
 
 live 数据出境包括正样本 question、generated answer、检索正文、来源文件名和 ground truth；Answer Relevance 还会向 embedding endpoint 发送文本。该路径默认关闭，ACL 敏感生产语料未经审批不得运行。当前装置已通过离线测试，但首份正式 fixture 仍需 gated 付费复测后才能冻结。

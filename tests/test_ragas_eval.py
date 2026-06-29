@@ -10,10 +10,20 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from api_client import APIClient
 from config import Config
+from eval.answer_relevance_diagnostic import (
+    classify_qid_role,
+    cosine_similarity,
+    parse_qids,
+    trace_answer_relevance_once,
+    trace_answer_relevance_repetitions,
+    trace_semantic_baselines,
+)
+from eval.faithfulness_diagnostic import trace_faithfulness_once
 from eval.faithfulness_prompt import (
     STATEMENT_PROMPT_VERSION,
     build_faithfulness_metric,
     build_statement_generator_prompt,
+    preserve_clause_scoped_qualifier,
     preserve_question_dependent_rationale,
 )
 from eval.golden import load_golden_set
@@ -43,6 +53,7 @@ from eval.ragas_live import (
 )
 from eval.ragas_run import main as ragas_main
 from eval.schemas import GoldenExample, RelevantItem
+from rag.pipeline import RAG_SYSTEM_PROMPT_VERSION
 
 
 METRICS = (
@@ -178,6 +189,7 @@ class RagasEvaluationTests(unittest.TestCase):
                 negative_abstention_threshold=1.0,
                 expected_judge_model="judge-model-pinned",
                 installed_ragas_version=installed_ragas_version(),
+                expected_generation_prompt_version=RAG_SYSTEM_PROMPT_VERSION,
                 expected_statement_prompt_version=STATEMENT_PROMPT_VERSION,
                 expected_faithfulness_context_format=FAITHFULNESS_CONTEXT_FORMAT,
             )
@@ -316,6 +328,7 @@ class RagasEvaluationTests(unittest.TestCase):
                 negative_abstention_threshold=1.0,
                 expected_judge_model="different-model",
                 installed_ragas_version=installed_ragas_version(),
+                expected_generation_prompt_version=RAG_SYSTEM_PROMPT_VERSION,
                 expected_statement_prompt_version=STATEMENT_PROMPT_VERSION,
                 expected_faithfulness_context_format=FAITHFULNESS_CONTEXT_FORMAT,
             )
@@ -466,6 +479,235 @@ class RagasEvaluationTests(unittest.TestCase):
         self.assertEqual(scores["answer_relevance"], 1.0)
         self.assertEqual(scores["faithfulness"], 0.9)
 
+    def test_faithfulness_diagnostic_traces_statement_verdicts(self):
+        class FakeFaithfulnessMetric:
+            async def _create_statements(self, question, response):
+                return ["The answer is supported.", "The answer adds an unsupported detail."]
+
+            async def _create_verdicts(self, statements, context):
+                return SimpleNamespace(
+                    statements=[
+                        SimpleNamespace(
+                            statement=statements[0],
+                            reason="The context states this directly.",
+                            verdict=1,
+                        ),
+                        SimpleNamespace(
+                            statement=statements[1],
+                            reason="The context does not mention the extra detail.",
+                            verdict=0,
+                        ),
+                    ]
+                )
+
+            def _compute_score(self, verdicts):
+                return sum(int(item.verdict) for item in verdicts.statements) / len(verdicts.statements)
+
+        trace = asyncio.run(
+            trace_faithfulness_once(
+                FakeFaithfulnessMetric(),
+                user_input="Question?",
+                response="Answer.",
+                retrieved_contexts=["Context."],
+                run_index=1,
+            )
+        )
+
+        self.assertEqual(trace.value, 0.5)
+        self.assertEqual(
+            trace.statements,
+            ["The answer is supported.", "The answer adds an unsupported detail."],
+        )
+        self.assertEqual(trace.verdicts[0].verdict, 1)
+        self.assertEqual(trace.verdicts[1].verdict, 0)
+        self.assertIn("extra detail", trace.verdicts[1].reason)
+
+    def test_answer_relevance_diagnostic_traces_reverse_question_cosines(self):
+        class FakePrompt:
+            def to_string(self, input_data):
+                return f"prompt: {input_data.response}"
+
+        class FakeLLM:
+            def __init__(self):
+                self.outputs = [
+                    SimpleNamespace(question="same question", noncommittal=0),
+                    SimpleNamespace(question="orthogonal question", noncommittal=0),
+                    SimpleNamespace(question="partial question", noncommittal=0),
+                ]
+
+            async def agenerate(self, *args, **kwargs):
+                return self.outputs.pop(0)
+
+        class FakeEmbeddings:
+            async def aembed_text(self, text):
+                self.seen_original = text
+                return [1.0, 0.0]
+
+            async def aembed_texts(self, texts):
+                self.seen_generated = list(texts)
+                return [[1.0, 0.0], [0.0, 1.0], [0.6, 0.8]]
+
+        embeddings = FakeEmbeddings()
+        metric = SimpleNamespace(
+            strictness=3,
+            prompt=FakePrompt(),
+            llm=FakeLLM(),
+            embeddings=embeddings,
+        )
+
+        trace = asyncio.run(
+            trace_answer_relevance_once(
+                metric,
+                user_input="original question",
+                response="diagnostic answer",
+                run_index=1,
+            )
+        )
+
+        self.assertEqual(embeddings.seen_original, "original question")
+        self.assertEqual(
+            embeddings.seen_generated,
+            ["same question", "orthogonal question", "partial question"],
+        )
+        self.assertFalse(trace.all_noncommittal)
+        self.assertAlmostEqual(trace.reverse_questions[0].cosine_to_original, 1.0)
+        self.assertAlmostEqual(trace.reverse_questions[1].cosine_to_original, 0.0)
+        self.assertAlmostEqual(trace.reverse_questions[2].cosine_to_original, 0.6)
+        self.assertAlmostEqual(trace.value, 0.5333333333333333)
+
+    def test_answer_relevance_diagnostic_all_noncommittal_zeroes_value(self):
+        class FakePrompt:
+            def to_string(self, input_data):
+                return input_data.response
+
+        class FakeLLM:
+            async def agenerate(self, *args, **kwargs):
+                return SimpleNamespace(question="generated question", noncommittal=1)
+
+        class FakeEmbeddings:
+            async def aembed_text(self, text):
+                return [1.0, 0.0]
+
+            async def aembed_texts(self, texts):
+                return [[1.0, 0.0] for _ in texts]
+
+        metric = SimpleNamespace(
+            strictness=3,
+            prompt=FakePrompt(),
+            llm=FakeLLM(),
+            embeddings=FakeEmbeddings(),
+        )
+
+        trace = asyncio.run(
+            trace_answer_relevance_once(
+                metric,
+                user_input="original question",
+                response="noncommittal answer",
+                run_index=1,
+            )
+        )
+
+        self.assertTrue(trace.all_noncommittal)
+        self.assertEqual(trace.value, 0.0)
+
+    def test_answer_relevance_repetition_trace_batches_embeddings(self):
+        class FakePrompt:
+            def to_string(self, input_data):
+                return input_data.response
+
+        class FakeLLM:
+            def __init__(self):
+                self.count = 0
+
+            async def agenerate(self, *args, **kwargs):
+                self.count += 1
+                return SimpleNamespace(
+                    question=f"generated {self.count}",
+                    noncommittal=0,
+                )
+
+        class FakeEmbeddings:
+            def __init__(self):
+                self.single_calls = 0
+                self.batch_calls = 0
+
+            async def aembed_text(self, text):
+                self.single_calls += 1
+                return [1.0, 0.0]
+
+            async def aembed_texts(self, texts):
+                self.batch_calls += 1
+                self.batch_texts = list(texts)
+                return [[1.0, 0.0] for _ in texts]
+
+        embeddings = FakeEmbeddings()
+        metric = SimpleNamespace(
+            strictness=3,
+            prompt=FakePrompt(),
+            llm=FakeLLM(),
+            embeddings=embeddings,
+        )
+
+        traces = asyncio.run(
+            trace_answer_relevance_repetitions(
+                metric,
+                user_input="original",
+                response="answer",
+                repetitions=2,
+            )
+        )
+
+        self.assertEqual(len(traces), 2)
+        self.assertEqual(embeddings.single_calls, 1)
+        self.assertEqual(embeddings.batch_calls, 1)
+        self.assertEqual(
+            embeddings.batch_texts,
+            [
+                "generated 1",
+                "generated 2",
+                "generated 3",
+                "generated 4",
+                "generated 5",
+                "generated 6",
+            ],
+        )
+        self.assertEqual(parse_qids("q010, q015"), ["q010", "q015"])
+
+    def test_answer_relevance_semantic_baselines_use_embedding_cosine(self):
+        class FakeEmbeddings:
+            async def aembed_text(self, text):
+                return [1.0, 0.0]
+
+            async def aembed_texts(self, texts):
+                return [[1.0, 0.0], [0.0, 1.0]]
+
+        example = GoldenExample(
+            qid="q015",
+            question="Which service routes telemetry?",
+            relevant=[RelevantItem(source="product-glossary.md")],
+            capability="long_tail",
+            note="Manual reference.",
+            ground_truth="Nimbus Gateway routes telemetry.",
+        )
+
+        traces = asyncio.run(
+            trace_semantic_baselines(
+                FakeEmbeddings(),
+                example,
+                {
+                    "equivalent": ["What service routes telemetry?"],
+                    "off_topic": ["Who approves invoices?"],
+                },
+            )
+        )
+
+        self.assertEqual([trace.kind for trace in traces], ["equivalent", "off_topic"])
+        self.assertAlmostEqual(traces[0].cosine_to_original, 1.0)
+        self.assertAlmostEqual(traces[1].cosine_to_original, 0.0)
+        self.assertEqual(classify_qid_role("q010"), "target_stable_low")
+        self.assertEqual(classify_qid_role("q014"), "high_score_control")
+        self.assertAlmostEqual(cosine_similarity([3.0, 4.0], [3.0, 4.0]), 1.0)
+
     def test_embedding_adapter_normalizes_sync_and_async_vectors(self):
         with (
             patch.object(Config, "RAGAS_JUDGE_API_KEY", "judge-test-key"),
@@ -575,12 +817,14 @@ class RagasEvaluationTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(len(prompt.examples), 3)
+        self.assertEqual(len(prompt.examples), 4)
         self.assertIn("Albert Einstein", rendered)
         self.assertIn("joint requirement", rendered)
         self.assertIn("call the support hotline", rendered)
         self.assertIn("indispensable rationale", rendered)
         self.assertIn("Source [4] is relevant because", rendered)
+        self.assertIn("Vendor records must be encrypted", rendered)
+        self.assertIn("Do not move it to an earlier conjunct", rendered)
         conjunctive_output = prompt.examples[1][1]
         self.assertEqual(len(conjunctive_output.statements), 1)
         self.assertIn(" and ", conjunctive_output.statements[0])
@@ -588,6 +832,9 @@ class RagasEvaluationTests(unittest.TestCase):
         self.assertEqual(len(rationale_output.statements), 1)
         self.assertIn("relevant because", rationale_output.statements[0])
         self.assertIn("notify security", rationale_output.statements[0])
+        scope_output = prompt.examples[3][1]
+        self.assertEqual(len(scope_output.statements), 1)
+        self.assertIn("before the vendor release", scope_output.statements[0])
 
     def test_question_dependent_rationale_guard_is_narrow(self):
         answer = (
@@ -608,6 +855,36 @@ class RagasEvaluationTests(unittest.TestCase):
                 "Source [4] is relevant. The employee should notify security.",
                 extracted,
             ),
+            extracted,
+        )
+
+    def test_scope_guard_preserves_the_original_clause_attachment(self):
+        answer = (
+            "Customer PII must be redacted, and the export owner must record the "
+            "approval ticket before any transfer begins. [1]"
+        )
+        extracted = [
+            "Customer PII must be redacted before any transfer begins.",
+            "The export owner must record the approval ticket before any transfer begins.",
+        ]
+
+        self.assertEqual(
+            preserve_clause_scoped_qualifier(answer, extracted),
+            [answer],
+        )
+
+    def test_scope_guard_keeps_independent_clauses_when_no_scope_moves(self):
+        answer = (
+            "Customer PII must be redacted, and the export owner must record the "
+            "approval ticket before any transfer begins. [1]"
+        )
+        extracted = [
+            "Customer PII must be redacted.",
+            "The export owner must record the approval ticket before any transfer begins.",
+        ]
+
+        self.assertEqual(
+            preserve_clause_scoped_qualifier(answer, extracted),
             extracted,
         )
 
@@ -726,6 +1003,8 @@ class RagasEvaluationTests(unittest.TestCase):
         self.assertEqual(metadata["temperature"], 0.1)
         self.assertEqual(metadata["judge_temperature"], 0.1)
         self.assertEqual(metadata["generator_temperature"], 0.0)
+        self.assertEqual(metadata["generation_prompt_version"], RAG_SYSTEM_PROMPT_VERSION)
+        self.assertTrue(metadata["generation_prompt_change_invalidates_baseline"])
         self.assertEqual(metadata["statement_prompt_version"], STATEMENT_PROMPT_VERSION)
         self.assertTrue(metadata["statement_prompt_change_invalidates_baseline"])
         self.assertEqual(
@@ -814,6 +1093,11 @@ class RagasEvaluationTests(unittest.TestCase):
     def test_verdict_input_protocol_drift_invalidates_replay_baseline(self):
         with self.fixture_workspace() as workspace:
             fixture = load_verdict_fixture(str(workspace.fixture_path))
+            generation_report = self.build_report(
+                fixture,
+                workspace,
+                expected_generation_prompt_version="different-generation-prompt",
+            )
             prompt_report = self.build_report(
                 fixture,
                 workspace,
@@ -825,6 +1109,11 @@ class RagasEvaluationTests(unittest.TestCase):
                 expected_faithfulness_context_format="different-context-format",
             )
 
+        generation_failure = next(
+            failure
+            for failure in generation_report["gate"]["failures"]
+            if failure.get("field") == "generation_prompt_version"
+        )
         prompt_failure = next(
             failure
             for failure in prompt_report["gate"]["failures"]
@@ -835,6 +1124,7 @@ class RagasEvaluationTests(unittest.TestCase):
             for failure in context_report["gate"]["failures"]
             if failure.get("field") == "faithfulness_context_format"
         )
+        self.assertEqual(generation_failure["kind"], "baseline_invalidated")
         self.assertEqual(prompt_failure["kind"], "baseline_invalidated")
         self.assertEqual(context_failure["kind"], "baseline_invalidated")
 
@@ -871,6 +1161,7 @@ class RagasEvaluationTests(unittest.TestCase):
         self,
         fixture,
         workspace,
+        expected_generation_prompt_version=RAG_SYSTEM_PROMPT_VERSION,
         expected_statement_prompt_version=STATEMENT_PROMPT_VERSION,
         expected_faithfulness_context_format=FAITHFULNESS_CONTEXT_FORMAT,
     ):
@@ -884,6 +1175,7 @@ class RagasEvaluationTests(unittest.TestCase):
             negative_abstention_threshold=1.0,
             expected_judge_model="judge-model-pinned",
             installed_ragas_version=installed_ragas_version(),
+            expected_generation_prompt_version=expected_generation_prompt_version,
             expected_statement_prompt_version=expected_statement_prompt_version,
             expected_faithfulness_context_format=expected_faithfulness_context_format,
         )
@@ -954,6 +1246,7 @@ class RagasEvaluationTests(unittest.TestCase):
                 "golden_version": file_sha256(str(golden_path)),
                 "recorded_at": "2026-06-21T00:00:00+00:00",
                 "recording_mode": "live_gated",
+                "generation_prompt_version": RAG_SYSTEM_PROMPT_VERSION,
                 "statement_prompt_version": STATEMENT_PROMPT_VERSION,
                 "faithfulness_context_format": FAITHFULNESS_CONTEXT_FORMAT,
                 "gated_metrics": list(GATED_METRICS),

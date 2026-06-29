@@ -45,6 +45,93 @@ class RAGResponse:
 
 
 CANONICAL_ABSTENTION_RESPONSE = "The answer is not available in the knowledge base."
+RAG_SYSTEM_PROMPT_VERSION = "supporting-relation-and-workaround-answer-v9"
+
+SCENARIO_PROCEDURE_KEYWORDS = (
+    "workaround",
+    "which checks should",
+    "what checks should",
+    "which steps should",
+    "what steps should",
+)
+
+SCENARIO_SITUATION_MARKERS = (
+    " when ",
+    " if ",
+    " after ",
+    " while ",
+    " not ready",
+    " delayed",
+    " stale",
+    " fails",
+    " failure",
+    " loses ",
+    " lost ",
+)
+
+NAME_ONLY_LOOKUP_MARKERS = (
+    "where is",
+    "what source",
+    "which source",
+    "which document",
+    "what document",
+    "which runbook",
+    "what runbook",
+    "what policy",
+    "which policy",
+)
+
+NAME_ONLY_LOOKUP_TARGETS = (
+    "defines",
+    "defined",
+    "described",
+    "contains",
+    "mentions",
+    "explains",
+)
+
+SOURCE_RELEVANCE_MARKERS = (
+    "which sources",
+    "what sources",
+    "which documents",
+    "what documents",
+    "which policies",
+    "what policies",
+    "which runbooks",
+    "what runbooks",
+)
+
+SOURCE_RELEVANCE_TARGETS = (
+    " relevant",
+    " apply",
+    " applies",
+    " needed",
+    " should be used",
+    " should i use",
+)
+
+RELATIONSHIP_ENTITY_TARGETS = (
+    "tool",
+    "service",
+    "workflow",
+)
+
+RELATIONSHIP_ENTITY_MARKERS = (
+    " helps ",
+    " routes ",
+    " sends ",
+    " forwards ",
+    " used to ",
+    " responsible for ",
+)
+
+ACTION_LIST_MARKERS = (
+    " what should ",
+    " which checks should ",
+    " what checks should ",
+    " what has to happen ",
+    " who must approve ",
+)
 
 
 class RAGPipeline:
@@ -54,6 +141,17 @@ class RAGPipeline:
         "You are an enterprise knowledge-base assistant. "
         "Answer only with claims directly supported by the provided context. "
         "Do not infer a policy, procedure, value, or current fact from merely related context. "
+        "Match the scope and wording of the user's question. "
+        "Use the source's action verbs for procedures and checks; do not replace 'check X' with 'run X' "
+        "unless the source uses that verb. "
+        "For source, document, runbook, or policy lookup questions, preserve the lookup relation in one "
+        "short sentence, such as 'The document that contains this topic is Name [1]'; never answer with "
+        "only a bare name or citation. "
+        "For questions asking which sources or documents are relevant, name each source and give a brief "
+        "source-supported reason tied to the scenario. "
+        "For tool, service, or workflow selection questions, preserve the requested responsibility in one "
+        "short sentence, such as 'The service that performs the requested responsibility is Name [1]'; "
+        "do not list adjacent responsibilities. "
         "If the context does not directly support an answer, begin with exactly this sentence: "
         f'"{CANONICAL_ABSTENTION_RESPONSE}" '
         "You may briefly explain what information is missing, but do not supply an unsupported answer. "
@@ -350,9 +448,67 @@ class RAGPipeline:
             "Use the context below to answer the question.\n\n"
             f"Context:\n{context}\n\n"
             f"Question:\n{question}\n\n"
-            "Answer with source citations."
+            "Answer with source citations. "
+            f"{self._entity_scope_instruction(question)}"
+            f"{self._answer_scope_instruction(question)}"
         )
         return prompt, used_sources
+
+    def _entity_scope_instruction(self, question: str) -> str:
+        """Return an entity-answer instruction scoped to the question shape."""
+        if is_source_relevance_question(question):
+            return (
+                "This asks which sources or documents are relevant; source names may be the main answer. "
+                "Name each relevant source and give a brief source-supported reason tied to the question. "
+                "Do not answer with only citation numbers. "
+            )
+        if is_name_only_lookup_question(question):
+            return (
+                "This is a source/document/runbook/policy lookup; answer in one short sentence that preserves "
+                "the lookup relation and topic, for example 'The document/source that contains or defines "
+                "the requested topic is Name [n].' Do not answer with only the name or citation. "
+                "Do not list workflow steps or unrelated details. "
+            )
+        if is_relationship_entity_question(question):
+            return (
+                "This asks which tool, service, or workflow satisfies a described responsibility; answer in "
+                "one short sentence that preserves the requested responsibility, for example 'The tool/service "
+                "that does the requested thing is Name [n].' Do not answer with only the entity name, and do "
+                "not list adjacent responsibilities. "
+            )
+        return (
+            "When the question does not ask for source or document names, do not make a source, checklist, "
+            "workflow, or policy name the main answer. "
+        )
+
+    def _answer_scope_instruction(self, question: str) -> str:
+        """Return a generation instruction scoped to the user's question shape."""
+        if is_workaround_question(question):
+            return (
+                "This is a workaround question; include the source-listed workaround actions and the "
+                "source-supported condition that identifies when the workaround applies, while keeping the "
+                "wording close to the source."
+            )
+
+        if is_scenario_procedure_question(question):
+            return (
+                "This is a scenario-based procedure/checks question; answer with the source-listed actions "
+                "or checks using the source's verbs, and avoid adding or rephrasing scenario conditions unless "
+                "they are the answer."
+            )
+
+        if is_action_list_question(question):
+            return (
+                "This asks for actions, tasks, or approvers; answer with the requested actions/items first, "
+                "using the source's verbs, and do not frame the answer around a checklist or workflow name."
+            )
+
+        return (
+            "This is not a scenario-based procedure or workaround request; do not broaden the answer with "
+            "extra triggers, preconditions, or workflow details. For timing, threshold, approval, or "
+            "requirement questions, include the requested value or action plus the source-supported condition "
+            "that makes it apply."
+        )
 
     def _to_sources(self, search_results: List[SearchResult]) -> List[RetrievedSource]:
         """Convert vector search results to RAG sources."""
@@ -614,3 +770,59 @@ def child_id_for(source: RetrievedSource) -> str:
     """Return the stable child id for a retrieved source."""
     metadata = source.metadata or {}
     return str(metadata.get("child_id") or metadata.get("id") or "")
+
+
+def is_scenario_procedure_question(question: str) -> bool:
+    """Return whether a question asks for a scenario-specific procedure or workaround."""
+    normalized = f" {' '.join(question.lower().split())} "
+    if any(keyword in normalized for keyword in SCENARIO_PROCEDURE_KEYWORDS):
+        return True
+
+    has_procedural_intent = any(
+        phrase in normalized
+        for phrase in (
+            " what should ",
+            " how should ",
+            " what do ",
+            " how do ",
+            " how can ",
+        )
+    )
+    has_situation = any(marker in normalized for marker in SCENARIO_SITUATION_MARKERS)
+    return has_procedural_intent and has_situation
+
+
+def is_workaround_question(question: str) -> bool:
+    """Return whether the user is asking specifically for a workaround."""
+    normalized = f" {' '.join(question.lower().split())} "
+    return "workaround" in normalized
+
+
+def is_name_only_lookup_question(question: str) -> bool:
+    """Return whether a question asks for a source/document name rather than details."""
+    normalized = f" {' '.join(question.lower().split())} "
+    has_lookup_marker = any(marker in normalized for marker in NAME_ONLY_LOOKUP_MARKERS)
+    has_lookup_target = any(target in normalized for target in NAME_ONLY_LOOKUP_TARGETS)
+    return has_lookup_marker and has_lookup_target
+
+
+def is_source_relevance_question(question: str) -> bool:
+    """Return whether the user asks which sources or documents are relevant."""
+    normalized = f" {' '.join(question.lower().split())} "
+    has_source_marker = any(marker in normalized for marker in SOURCE_RELEVANCE_MARKERS)
+    has_relevance_target = any(target in normalized for target in SOURCE_RELEVANCE_TARGETS)
+    return has_source_marker and has_relevance_target
+
+
+def is_relationship_entity_question(question: str) -> bool:
+    """Return whether an entity must be tied to a responsibility to answer."""
+    normalized = f" {' '.join(question.lower().split())} "
+    has_entity_target = any(target in normalized for target in RELATIONSHIP_ENTITY_TARGETS)
+    has_relationship_marker = any(marker in normalized for marker in RELATIONSHIP_ENTITY_MARKERS)
+    return has_entity_target and has_relationship_marker
+
+
+def is_action_list_question(question: str) -> bool:
+    """Return whether a question asks for direct actions, tasks, or approvers."""
+    normalized = f" {' '.join(question.lower().split())} "
+    return any(marker in normalized for marker in ACTION_LIST_MARKERS)

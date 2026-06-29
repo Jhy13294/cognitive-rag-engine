@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from config import Config
+from rag.pipeline import RAG_SYSTEM_PROMPT_VERSION
 
 from .faithfulness_prompt import STATEMENT_PROMPT_VERSION
 from .golden import load_golden_set
@@ -116,6 +117,7 @@ def replay_report(fixture: Dict, golden_path: str) -> Dict:
         negative_abstention_threshold=Config.RAGAS_NEGATIVE_ABSTENTION_THRESHOLD,
         expected_judge_model=Config.RAGAS_JUDGE_MODEL,
         installed_ragas_version=installed_ragas_version(),
+        expected_generation_prompt_version=RAG_SYSTEM_PROMPT_VERSION,
         expected_statement_prompt_version=STATEMENT_PROMPT_VERSION,
         expected_faithfulness_context_format=FAITHFULNESS_CONTEXT_FORMAT,
     )

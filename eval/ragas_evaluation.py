@@ -18,7 +18,7 @@ REPORTED_METRICS: Tuple[str, ...] = (
     "context_recall",
 )
 RAGAS_METRICS: Tuple[str, ...] = GATED_METRICS + REPORTED_METRICS
-FIXTURE_SCHEMA_VERSION = "ragas-verdicts-v4"
+FIXTURE_SCHEMA_VERSION = "ragas-verdicts-v5"
 REPORT_SCHEMA_VERSION = "ragas-report-v1"
 
 
@@ -84,6 +84,7 @@ def validate_fixture(metadata: Dict, cases: Sequence[Dict]) -> None:
         "golden_version",
         "recorded_at",
         "recording_mode",
+        "generation_prompt_version",
         "statement_prompt_version",
         "faithfulness_context_format",
         "gated_metrics",
@@ -217,6 +218,7 @@ def build_replay_report(
     negative_abstention_threshold: float,
     expected_judge_model: str,
     installed_ragas_version: Optional[str],
+    expected_generation_prompt_version: str,
     expected_statement_prompt_version: str,
     expected_faithfulness_context_format: str,
 ) -> Dict:
@@ -253,6 +255,7 @@ def build_replay_report(
             }
         )
     for field, expected in (
+        ("generation_prompt_version", expected_generation_prompt_version),
         ("statement_prompt_version", expected_statement_prompt_version),
         ("faithfulness_context_format", expected_faithfulness_context_format),
     ):
@@ -438,6 +441,7 @@ def build_replay_report(
             "aggregation_method_change_invalidates_baseline": True,
             "spread_method_change_invalidates_baseline": True,
             "repetitions_change_invalidates_baseline": True,
+            "generation_prompt_change_invalidates_baseline": True,
             "statement_prompt_change_invalidates_baseline": True,
             "faithfulness_context_format_change_invalidates_baseline": True,
             "gating_scope_change_invalidates_baseline": True,

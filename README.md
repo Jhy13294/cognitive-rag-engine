@@ -604,7 +604,7 @@ Current observability is an outer service adapter, not part of retrieval or auth
 
 Generation quality uses four Ragas dimensions: Faithfulness, Answer Relevance, Context Precision, and Context Recall. It is deliberately isolated from deterministic retrieval evaluation: `python -m eval.run` remains offline and byte-reproducible, while Ragas writes JSON only under `eval/reports/ragas/`.
 
-The live judge uses the project's DeepSeek OpenAI-compatible API configuration. Answer Relevance uses Gemini `gemini-embedding-001` through the native `batchEmbedContents` API with `RETRIEVAL_QUERY`, bounded batches, dimension validation, and asynchronous retry handling.
+The live judge uses the project's DeepSeek OpenAI-compatible API configuration. Answer Relevance embeds text through a selectable provider (`RAGAS_EMBEDDING_PROVIDER`). The `bge` provider runs a local fastembed/ONNX model (`BAAI/bge-small-en-v1.5`, 384-dim, no torch) with no API key, cost, or rate limit, so the live gate can run fully offline. The `gemini` provider calls Gemini `gemini-embedding-001` through the native `batchEmbedContents` API with `RETRIEVAL_QUERY`, bounded batches, dimension validation, and asynchronous retry. Both paths L2-normalize vectors, and changing the provider, model, or dimension invalidates the recorded baseline. This embedding scores only the offline answer-relevance gate; product retrieval uses its own embedding and is unaffected.
 
 The quality gate has two tracks:
 
@@ -630,7 +630,9 @@ python -m eval.ragas_run live --profile context_packing --repetitions 3 --fixtur
 python -m eval.ragas_run compare --before eval/fixtures/ragas-verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
 ```
 
-Live evaluation is a controlled data-egress path. Positive samples send the question, generated answer, retrieved context text, and hand-written ground truth to the configured judge; Answer Relevance also sends text to the configured embedding endpoint. Fixtures store hashes and verdicts rather than raw evaluation text. Scores on this small hand-labeled set are noisy judge estimates, not deterministic facts or a production quality floor. `temperature=0` does not remove provider or model variance.
+The gate covers only answer-consuming dimensions: Faithfulness, Answer Relevance, and negative abstention/fabrication are gated, while Context Precision/Recall are reported-only and still emitted in full because they do not consume the generated answer. Generation prompts are calibrated per question shape toward an "answer plus minimal supporting phrase" middle ground — a bare answer leaves the judge's reverse-questions under-informed, while over-scaffolding drifts them away from the original question — and together with versioned statement extraction this brings all 16 positive samples to passing Faithfulness and Answer Relevance medians with every negative abstaining. That passing capture has been promoted to the committed verdict fixture (schema `ragas-verdicts-v5`, pinning the generation/extraction prompt versions, judge model, embedding, and gating scope), and `python -m eval.ragas_run replay` verifies the offline gate passes.
+
+Live evaluation is a controlled data-egress path. Positive samples send the question, generated answer, retrieved context text, and hand-written ground truth to the configured judge; with the `gemini` provider, Answer Relevance also sends text to the embedding endpoint, while the local `bge` provider performs no network calls. Fixtures store hashes and verdicts rather than raw evaluation text. Scores on this small hand-labeled set are noisy judge estimates, not deterministic facts or a production quality floor. `temperature=0` does not remove provider or model variance.
 
 ## Development Conventions
 

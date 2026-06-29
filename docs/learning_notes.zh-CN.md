@@ -14,14 +14,15 @@
 
 ## 最近更新重点
 
-- 生成质量评估已形成双轨：live 轨使用 DeepSeek `deepseek-v4-pro` 判官和 Gemini `gemini-embedding-001@3072`，CI 轨只回放冻结 verdict，不联网、不发送原文。
-- live capture 将答案生成温度与判官温度分别钉住并分别记录；每条正样本重复五次，case 门禁使用 median，噪声 margin 使用 MAD。mean/stddev 继续作为诊断信息，不再决定门禁。
-- Faithfulness 的排障已深入到 `生成答案 -> statement 抽取 -> NLI verdict -> 聚合` 中间态。当前同时防两类伪零：联合要求被过度拆分，以及答案中的“文件名 + [n]”引用声明在 content-only context 中无法验证。
-- Faithfulness 单独消费 `[n] filename: content` 格式的上下文；Context Precision/Recall 继续消费纯正文。付费定点验证中，6 条 exact-name 正样本 Faithfulness median 全为 1.0，构造的引错源反例仍被判低，证明该格式增强了引用验证而非放宽评分。
+- 生成质量评估已形成双轨：live 轨使用 DeepSeek `deepseek-v4-pro` 判官；Answer Relevance 的 embedding 默认走本地 fastembed `BAAI/bge-small-en-v1.5`（384 维，无 key、无配额、可完全离线），Gemini `gemini-embedding-001` 作为可选 provider。CI 轨只回放冻结 verdict，不联网、不发送原文。
+- live capture 将答案生成温度与判官温度分别钉 0 并分别记录；每条正样本重复五次，case 门禁使用 median，噪声 margin 使用 MAD。mean/stddev 继续作为诊断信息，不再决定门禁。
+- Faithfulness 的排障已深入到 `生成答案 -> statement 抽取 -> NLI verdict -> 聚合` 中间态。当前同时防两类伪零：联合要求被过度拆分，以及单句 `is relevant because` 被剥掉 NLI 所需的问题语境。
+- Faithfulness 单独消费 `[n] filename: content` 格式的上下文以验证引用归属；Context Precision/Recall 继续消费纯正文。付费定点验证中，6 条 exact-name 正样本 Faithfulness median 全为 1.0，构造的引错源反例仍被判低，证明该格式增强了引用验证而非放宽评分。
 - 生成质量 gate 只保留 Faithfulness、Answer Relevance 与 negative abstention/fabrication。Context Precision/Recall 仍完整计算并进入 case、capability 和总报告，但标记为 reported-only，因为它们不消费生成答案、只反映冻结的 hash 检索装置。
-- verdict fixture 已升级为 `ragas-verdicts-v4`，强制 pin judge model、Ragas 版本、statement prompt、Faithfulness context format 与 gating scope。协议漂移会使旧基线失效。
-- Answer Relevance 的 Gemini cosine 可能因单位向量浮点尾差产生 `1.0000001`。live capture 只在 `1e-6` 容差内 clamp，NaN/inf 和真实越界仍致命；fixture replay 继续严格要求 `[0,1]`。
-- Gemini Ragas adapter 四个同步/异步入口增加 L2 归一化作为纵深防御，但 clamp 才是最终数值边界。当前全量 250 项测试通过、8 项 gated skip；付费 candidate capture 与首份正式 fixture 仍待完成。
+- 生成提示按问题形状分桶校准到“答案 + 最小支撑短语”的中间量：裸答案会让判官反推问题信息不足、过度脚手架又会漂离原问，两端都会拉低 Answer Relevance。这一路用全量真打逐版收敛，过程中实测到两个 gated 维度可能在同一答案上对冲（场景条件 vs Faithfulness）。
+- verdict fixture 已升级为 `ragas-verdicts-v5`，强制 pin judge model、Ragas 版本、生成 prompt、statement prompt、Faithfulness context format 与 gating scope。协议漂移会使旧基线失效。
+- Answer Relevance 使用 cosine，相似度可能因单位向量浮点尾差略超 1。两条 embedding 路都先做 L2 归一化，live capture 再以 `1e-6` 容差 clamp，NaN/inf 和真实越界仍致命；fixture replay 继续严格要求 `[0,1]`。
+- 已冻结首份通过门禁的正式 verdict fixture：16 条正样本的 Faithfulness 与 Answer Relevance median 全部达标、负样本全部弃答，并由独立第二份 capture 确认稳定，离线 replay 自证门禁通过。约 20 条人工样本上的四维分数仍是带方差的判官估计，不是 production 真值。
 
 ## 维护约定
 

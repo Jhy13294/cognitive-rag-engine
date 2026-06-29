@@ -173,13 +173,15 @@ Ragas 用来回答确定性检索指标回答不了的问题：答案是否有�
 
 - Ragas 是外部 LLM 判官，不是真值。live 轨非确定、付费且涉及数据出境，只允许显式 gated 周期运行；每次 push 的 CI 只回放已审核 verdict。
 - `ragas==0.4.3` 与 LangChain pre-1.0 兼容族共同 pin，避免无上界依赖解析到已删除兼容模块的版本。
-- DeepSeek 通过 OpenAI-compatible endpoint 承担结构化判官；Answer Relevance 使用 Gemini `gemini-embedding-001` 原生 `batchEmbedContents`，两者的凭据、模型身份和失败域彼此隔离。
+- DeepSeek 通过 OpenAI-compatible endpoint 承担结构化判官；Answer Relevance 的 embedding 默认走本地 fastembed `BAAI/bge-small-en-v1.5`（384 维、不引 torch、无 key、无配额、可完全离线），Gemini `gemini-embedding-001` 原生 `batchEmbedContents` 作为可选 provider。判官与 embedding 的凭据、模型身份和失败域彼此隔离；这条 embedding 只给离线 answer-relevance 门禁打分，产品检索用的是另一条 embedding。
 - live capture 的答案生成温度单独固定为 0，不改产品默认温度 0.7；判官温度与生成温度分别进入 provenance。温度为 0 仍不等于确定性。
 - 每条正样本重复五次，case 中心估计使用 median，判官噪声 margin 使用 MAD。mean/stddev 保留用于诊断，不能再让单个伪零决定门禁。
-- Faithfulness 使用版本化 statement-generation prompt：独立 claim 继续拆分，只有共同构成单一要求、流程或定义的联合谓语保持为一条 statement。
+- Faithfulness 使用版本化 statement-generation prompt：独立 claim 继续拆分，共同构成单一要求的联合谓语保持为一条；依赖 `because` 理由才能判定的关系 claim 必须保留具体证据。针对单句 `is relevant because` 另加窄确定性边界保护，避免概率抽取剥掉 NLI 所需的问题语境，但不改 NLI verdict。
 - Faithfulness 还需要验证引用归属，因此单独消费 `[n] filename: content`；Context Precision/Recall 保持 content-only，避免标签改变相关性判断。
 - 只有消费生成答案的 Faithfulness、Answer Relevance 和 negative 行为进入 gate。Context Precision/Recall 不消费答案，在当前确定性 hash 检索 profile 下只作为 reported-only 指标；检索输入漂移由 context hash 更确定地拦截。
-- Answer Relevance 使用 cosine，相似度可能因浮点尾差略超 1。Gemini adapter 先做 L2 归一化，live capture 再以 `1e-6` 紧容差 clamp；非有限值和真实越界仍失败。replay 不接受容差，保证 fixture 永远严格 in-band。
-- judge model、Ragas 版本、重复次数、statement prompt、Faithfulness context format 与 gating scope 都是基线协议。任一变化都要求重新校准，不能当作透明升级。
+- Answer Relevance 使用 cosine，相似度可能因浮点尾差略超 1。两条 embedding 路都先做 L2 归一化，live capture 再以 `1e-6` 紧容差 clamp；非有限值和真实越界仍失败。replay 不接受容差，保证 fixture 永远严格 in-band。
+- judge model、Ragas 版本、重复次数、生成 prompt、statement prompt、Faithfulness context format 与 gating scope 都是基线协议。任一变化都要求重新校准，不能当作透明升级。
 
 reported-only 不等于删除或隐藏：Context Precision/Recall 仍输出全量分布，只是不再用一个与生成无关的 harness 常量阻断生成质量基线。稳健聚合和 prompt/context 修复也只提高评估装置的可信度，不会把错误答案“调成通过”。
+
+把 answer-relevance 的默认 embedding 选成本地模型，关键判断是这条闸只服务离线英文评测、不参与产品检索：本地推理确定性更好、无 API 配额、门禁可完全离线，within-case 离散度也比远程 embedding 更收紧，对依赖 MAD margin 的门禁更友好。生成提示按问题形状校准到“答案 + 最小支撑短语”的中间量后，已冻结一份通过门禁的正式 verdict fixture（schema `ragas-verdicts-v5`，pin 生成与抽取 prompt 版本、judge model、embedding 和 gating scope），`python -m eval.ragas_run replay` 离线自证门禁通过。
