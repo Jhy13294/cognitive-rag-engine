@@ -21,12 +21,13 @@ The current codebase focuses on the foundation:
 - Optional Redis cache wrappers for query embeddings, retrieval results, and generated answers
 - Optional MySQL-backed ACL/RBAC pre-filtering with fail-closed access checks
 - Optional structured audit logging and bounded-label Prometheus metrics with fail-open runtime emission
+- Split liveness/readiness probes with fail-closed backend readiness checks
 
 Built-in authentication is planned but not implemented yet.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, ACL/RBAC pre-filtering, and fail-open observability.
+Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, ACL/RBAC pre-filtering, fail-open observability, and deployment health gates.
 
 Implemented:
 
@@ -84,6 +85,11 @@ Implemented:
   - One sanitized JSON-line audit record is emitted for successful, empty, and ACL-denied queries; principal and query values are keyed hashes by default, and source content/ACL/API keys are never recorded.
   - `GET /metrics` exposes request latency, reported or estimated token usage, top-k score histograms, empty retrievals, and true L1/L2/L3 cache counters with bounded labels.
   - Audit, metric, and alert-hook failures are contained fail-open and cannot turn a valid query into an HTTP failure.
+- Health gates:
+  - `GET /health` is a shallow liveness probe and remains 200 while the process is running.
+  - `GET /ready` checks only enabled required backends: Qdrant when the vector-store provider is Qdrant, Redis when cache is enabled, and MySQL when ACL is enabled.
+  - Readiness fails closed with HTTP 503 and names the down dependency; the response does not include API keys, passwords, or connection strings.
+  - Missing DeepSeek generation credentials are reported as a non-blocking generation dependency so keyless deployment smoke tests can still boot.
 
 Not implemented yet:
 
@@ -275,6 +281,7 @@ AUDIT_PRINCIPAL_MODE=hash
 AUDIT_HASH_SALT=replace-with-a-long-random-secret
 METRICS_NAMESPACE=rag
 METRICS_PATH=/metrics
+READINESS_TIMEOUT=2.0
 ```
 
 ## Usage
@@ -319,13 +326,45 @@ Run the HTTP service locally:
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, and `GET /health`. When metrics are enabled it also exposes `GET /metrics`. Authentication is intentionally not implemented yet, so do not expose it publicly without a trusted gateway.
+The service exposes `POST /ingest`, `POST /query`, `POST /query/stream` for SSE streaming, `GET /cache/stats`, `GET /health`, and `GET /ready`. When metrics are enabled it also exposes `GET /metrics`. Authentication is intentionally not implemented yet, so do not expose it publicly without a trusted gateway.
 
 Redis caching is disabled by default. To enable it, run Redis, set `CACHE_ENABLED=true`, and configure `REDIS_URL`. `/query/stream` replays a cached L3 answer when present and marks the SSE payload with `cached=true`; otherwise it keeps the live provider stream and backfills L3 after completion.
 
 ACL/RBAC filtering is disabled by default. To enable it, set `ACL_ENABLED=true`, configure the metadata database, and place the service behind an authentication gateway that writes the trusted principal header named by `ACL_PRINCIPAL_HEADER` (`X-Principal` by default). Body-provided principals are rejected unless `ACL_ALLOW_BODY_PRINCIPAL=true` is explicitly enabled for local testing. MySQL ACL bindings can be denormalized into vector payloads during ingest with `ACL_INGEST_BINDINGS_ENABLED=true`; Qdrant payloads remain execution snapshots, so binding changes require re-ingest or re-sync before they affect retrieval.
 
 Observability is disabled by default. Set `OBSERVABILITY_ENABLED=true` and enable at least one of `AUDIT_ENABLED` or `METRICS_ENABLED`; audit hashing additionally requires a deployment secret in `AUDIT_HASH_SALT`. Runtime audit/metric failures fail open, while invalid enabled configuration fails during application creation. Query text is hashed unless `AUDIT_LOG_QUERY_TEXT=true` is explicitly selected. Token metrics prefer provider-reported counters; when upstream usage is unavailable they are labeled `estimated`, and provider watermarks prevent concurrent requests or cached raw responses from double-counting cumulative usage. Embedding estimates only cover query text visible at the service boundary, so provider-side rewrite expansion remains an estimate rather than billing truth.
+
+Run the full local stack with Docker Compose:
+
+```bash
+cp .env.compose.example .env
+# Fill DEEPSEEK_API_KEY, EMBEDDING_API_KEY, and AUDIT_HASH_SALT before starting.
+docker compose up --build
+docker compose ps
+```
+
+The compose stack starts Qdrant, Redis, MySQL, and the FastAPI app with service-name networking (`qdrant`, `redis`, `mysql`). The app container runs an idempotent startup initializer: it creates the MySQL ACL schema, seeds demo principals and ACL bindings, and ingests `eval/fixtures/knowledge_base/*.md` into Qdrant with trusted `--acl` metadata. This is a full-stack deployment smoke path, not a zero-key chatbot: ingestion needs a production embedding key, and `/query` needs a valid DeepSeek key.
+
+After the four healthchecks are green, try:
+
+```bash
+curl -s http://localhost:8000/health
+curl -s http://localhost:8000/ready
+
+curl -s http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -H "X-Principal: alice" \
+  -d '{"question":"What finance approval rules are in the knowledge base?","top_k":3}'
+
+curl -s http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -H "X-Principal: bob" \
+  -d '{"question":"What finance approval rules are in the knowledge base?","top_k":3}'
+
+curl -s http://localhost:8000/metrics
+```
+
+`alice` is seeded with finance access; `bob` is seeded with legal access. Re-running `docker compose up` should repeat the initializer without duplicating ACL rows or vector records. Use `/health` as a liveness probe and `/ready` as a readiness probe: Kubernetes should keep `livenessProbe` on `/health` so transient backend outages do not restart the process, and route traffic with `readinessProbe` on `/ready` so Qdrant, Redis, or MySQL outages fail closed with HTTP 503.
 
 Useful RAG CLI options:
 
@@ -647,6 +686,6 @@ Live evaluation is a controlled data-egress path. Positive samples send the ques
 
 1. Add more ingestion edge-case fixtures.
 2. Add score thresholding or abstain logic for negative queries.
-3. Add deployment health gates and external alert routing for the existing observability hooks.
-4. Add production deployment checks around Qdrant version compatibility and health probes.
+3. Add external alert routing for the existing observability hooks.
+4. Add production deployment checks around Qdrant version compatibility.
 5. Add built-in authentication or gateway integration checks for production deployments.

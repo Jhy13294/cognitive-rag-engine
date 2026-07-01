@@ -1,12 +1,13 @@
 import asyncio
 import json
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from api_client import APIClient
 from access import ACLAccessError, build_effective_metadata_filter, create_acl_resolver_from_config
@@ -16,14 +17,17 @@ from logger import setup_logger
 from observability import QueryObservation, RequestIDMiddleware, create_observability_manager
 from rag import RAGPipeline, RAGResponse, RetrievedSource
 from rag_cli import build_rag_pipeline_from_index, ingest_documents
+from vector_store import check_qdrant_connectivity
 
 from .errors import to_http_exception
 from .models import (
+    DependencyStatus,
     HealthResponse,
     IngestRequest,
     IngestResponse,
     QueryRequest,
     QueryResponse,
+    ReadinessResponse,
     SourceResponse,
 )
 
@@ -66,6 +70,9 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
     Config.validate_cache()
     Config.validate_acl(resolver_provided=service_state.acl_resolver is not None)
     Config.validate_observability()
+    Config.validate_vector_store()
+    Config.validate_embedding()
+    Config.validate_readiness()
     if Config.ACL_ENABLED and service_state.acl_resolver is None:
         service_state.acl_resolver = create_acl_resolver_from_config(Config)
     if Config.OBSERVABILITY_ENABLED and service_state.observability is None:
@@ -103,6 +110,20 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         return HealthResponse(
             status="ok",
             warning="Authentication is not implemented; do not expose this service publicly.",
+        )
+
+    @app.get(
+        "/ready",
+        response_model=ReadinessResponse,
+        responses={503: {"model": ReadinessResponse}},
+    )
+    async def ready() -> JSONResponse:
+        """Return dependency readiness for traffic admission."""
+        report = await build_readiness_report(service_state)
+        status_code = 200 if report.status == "ready" else 503
+        return JSONResponse(
+            status_code=status_code,
+            content=report.model_dump(exclude_none=True),
         )
 
     @app.get("/cache/stats")
@@ -221,6 +242,107 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         )
 
     return app
+
+
+async def build_readiness_report(service_state: ServiceState) -> ReadinessResponse:
+    """Build a fail-closed readiness report for enabled dependencies."""
+    probes: List[Awaitable[DependencyStatus]] = []
+    if Config.VECTOR_STORE_PROVIDER.lower() == "qdrant":
+        probes.append(
+            probe_dependency(
+                "qdrant",
+                lambda: asyncio.to_thread(
+                    check_qdrant_connectivity,
+                    host=Config.VECTOR_STORE_HOST,
+                    port=Config.VECTOR_STORE_PORT,
+                    api_key=Config.VECTOR_STORE_API_KEY,
+                    url=Config.VECTOR_STORE_URL,
+                    timeout=Config.READINESS_TIMEOUT,
+                ),
+            )
+        )
+    if Config.CACHE_ENABLED:
+        probes.append(probe_dependency("redis", lambda: ping_redis(service_state)))
+    if Config.ACL_ENABLED:
+        probes.append(probe_dependency("mysql", lambda: check_mysql(service_state)))
+
+    dependencies = list(await asyncio.gather(*probes)) if probes else []
+    dependencies.append(generation_dependency_status())
+    required_down = any(
+        dependency.required and dependency.status != "up"
+        for dependency in dependencies
+    )
+    return ReadinessResponse(
+        status="not_ready" if required_down else "ready",
+        dependencies=dependencies,
+    )
+
+
+async def probe_dependency(
+    name: str,
+    probe_factory: Callable[[], Awaitable[bool]],
+) -> DependencyStatus:
+    """Run one readiness probe with a bounded timeout."""
+    started = time.perf_counter()
+    timeout_seconds = Config.READINESS_TIMEOUT
+    try:
+        ok = await asyncio.wait_for(probe_factory(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        return DependencyStatus(
+            name=name,
+            status="down",
+            latency_ms=elapsed_ms(started),
+            detail=f"Timed out after {timeout_seconds:.2f}s",
+        )
+    except Exception as error:
+        return DependencyStatus(
+            name=name,
+            status="down",
+            latency_ms=elapsed_ms(started),
+            detail=f"Connectivity check failed: {type(error).__name__}",
+        )
+
+    if not ok:
+        return DependencyStatus(
+            name=name,
+            status="down",
+            latency_ms=elapsed_ms(started),
+            detail="Connectivity check returned false",
+        )
+    return DependencyStatus(name=name, status="up", latency_ms=elapsed_ms(started))
+
+
+async def ping_redis(service_state: ServiceState) -> bool:
+    """Ping the configured Redis store without touching its client event loop."""
+    cache_store = service_state.cache_store
+    if cache_store is None or not hasattr(cache_store, "ping"):
+        return False
+    return bool(await cache_store.ping(timeout_seconds=Config.READINESS_TIMEOUT))
+
+
+async def check_mysql(service_state: ServiceState) -> bool:
+    """Check MySQL ACL metadata connectivity off the event loop."""
+    resolver = service_state.acl_resolver
+    if resolver is None or not hasattr(resolver, "check_connectivity"):
+        return False
+    return bool(await asyncio.to_thread(resolver.check_connectivity, Config.READINESS_TIMEOUT))
+
+
+def generation_dependency_status() -> DependencyStatus:
+    """Expose generation configuration without making it a boot blocker."""
+    if Config.API_KEY:
+        return DependencyStatus(name="generation", status="up", required=False)
+    return DependencyStatus(
+        name="generation",
+        status="down",
+        required=False,
+        detail="DEEPSEEK_API_KEY is not configured; generation requests will fail until configured.",
+    )
+
+
+def elapsed_ms(started: float) -> float:
+    """Return elapsed milliseconds rounded for readiness output."""
+    return round((time.perf_counter() - started) * 1000, 2)
 
 
 async def get_or_build_pipeline(app: FastAPI, request: QueryRequest) -> RAGPipeline:

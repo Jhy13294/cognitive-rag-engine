@@ -21,12 +21,13 @@
 - 可选 Redis 三层缓存：query embedding、检索结果和生成答案
 - 可选 MySQL ACL/RBAC 检索前过滤：权限异常 fail-closed
 - 可选结构化审计与有限标签 Prometheus 指标：运行时观测故障 fail-open
+- liveness/readiness 双探针：后端 readiness 断连时 fail-closed
 
 内置认证等企业级能力尚未实现。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存、ACL/RBAC 检索前过滤，以及 fail-open 可观测性。
+当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存、ACL/RBAC 检索前过滤、fail-open 可观测性，以及部署健康门禁。
 
 已完成：
 
@@ -84,6 +85,11 @@
   - 成功、空召回和 ACL 拒绝查询各产生一条脱敏 JSON-line 审计；principal/query 默认使用带密钥 hash，绝不记录 source 正文、ACL subjects 或 API key。
   - `GET /metrics` 暴露请求耗时、reported/estimated token、top-k 分数 histogram、空召回，以及真实 L1/L2/L3 缓存计数。
   - audit sink、metric registry 和 alert hook 故障全部 fail-open，不能把正常查询变成 HTTP 失败。
+- 健康门禁：
+  - `GET /health` 是浅层 liveness 探针，只表示进程仍在运行。
+  - `GET /ready` 只检查当前配置启用且必需的后端：使用 Qdrant 时探 Qdrant，启用缓存时探 Redis，启用 ACL 时探 MySQL。
+  - readiness 断连时 fail-closed，返回 HTTP 503 并点名故障依赖；响应体不包含 API key、密码或完整连接串。
+  - DeepSeek 生成密钥缺失会作为非阻断 generation 状态呈现，保证零密钥部署 smoke 仍可启动。
 
 尚未完成：
 
@@ -275,6 +281,7 @@ AUDIT_PRINCIPAL_MODE=hash
 AUDIT_HASH_SALT=replace-with-a-long-random-secret
 METRICS_NAMESPACE=rag
 METRICS_PATH=/metrics
+READINESS_TIMEOUT=2.0
 ```
 
 ## 使用
@@ -319,13 +326,45 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
-服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats` 和 `GET /health`；启用指标后还会提供 `GET /metrics`。当前尚未内置鉴权，不能在没有受信网关的情况下直接暴露到公网。
+服务提供 `POST /ingest`、`POST /query`、`POST /query/stream` SSE 流式接口，以及 `GET /cache/stats`、`GET /health` 和 `GET /ready`；启用指标后还会提供 `GET /metrics`。当前尚未内置鉴权，不能在没有受信网关的情况下直接暴露到公网。
 
 Redis 缓存默认关闭。启用时需要运行 Redis，设置 `CACHE_ENABLED=true` 并配置 `REDIS_URL`。`/query/stream` 在 L3 命中时会重放缓存答案，并在 SSE payload 中标记 `cached=true`；未命中时保持真实 provider 流式输出，并在完成后回填 L3。
 
 ACL/RBAC 过滤默认关闭。启用时设置 `ACL_ENABLED=true`，配置 metadata 数据库，并把服务放在认证网关后，由网关写入 `ACL_PRINCIPAL_HEADER` 指定的受信 principal header（默认 `X-Principal`）。请求体中的 principal 默认拒绝，只有本地测试显式设置 `ACL_ALLOW_BODY_PRINCIPAL=true` 时才允许 fallback。设置 `ACL_INGEST_BINDINGS_ENABLED=true` 后，ingest 可把 MySQL ACL binding 写入向量 payload；Qdrant payload 仍是检索执行快照，因此 MySQL binding 变更需要 re-ingest 或 re-sync 后才会影响检索。
 
 可观测性默认关闭。启用时需要设置总闸 `OBSERVABILITY_ENABLED=true`，并至少开启 `AUDIT_ENABLED` 或 `METRICS_ENABLED`；审计 hash 还必须提供部署侧秘密 `AUDIT_HASH_SALT`。运行时 audit/metric 故障 fail-open，但开启后的非法配置会在应用创建时早失败。query 默认只落 hash，只有显式设置 `AUDIT_LOG_QUERY_TEXT=true` 才记录定长原文。token 指标优先使用 provider reported 计数；上游没有 usage 时明确标为 `estimated`，provider watermark 会防止并发请求或缓存 raw response 重复累计 token。embedding 估算只覆盖服务边界可见的 query 文本，provider 侧 rewrite 扩展仍是估算，不能当作计费真账。
+
+使用 Docker Compose 启动本地全栈：
+
+```bash
+cp .env.compose.example .env
+# 启动前填写 DEEPSEEK_API_KEY、EMBEDDING_API_KEY 和 AUDIT_HASH_SALT。
+docker compose up --build
+docker compose ps
+```
+
+该 compose 栈会启动 Qdrant、Redis、MySQL 和 FastAPI app，容器间使用服务名互联（`qdrant`、`redis`、`mysql`）。app 容器启动时会执行幂等初始化：创建 MySQL ACL schema、写入 demo principal 与 ACL binding，并用受信 `--acl` 元数据把 `eval/fixtures/knowledge_base/*.md` 写入 Qdrant。这是全栈部署 smoke 路径，不是零密钥问答；ingest 需要生产 embedding key，`/query` 需要有效 DeepSeek key。
+
+四个 healthcheck 都变绿后，可以尝试：
+
+```bash
+curl -s http://localhost:8000/health
+curl -s http://localhost:8000/ready
+
+curl -s http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -H "X-Principal: alice" \
+  -d '{"question":"What finance approval rules are in the knowledge base?","top_k":3}'
+
+curl -s http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -H "X-Principal: bob" \
+  -d '{"question":"What finance approval rules are in the knowledge base?","top_k":3}'
+
+curl -s http://localhost:8000/metrics
+```
+
+`alice` 默认拥有 finance 权限，`bob` 默认拥有 legal 权限。重复执行 `docker compose up` 时，初始化逻辑应再次完成且不重复写 ACL 行或向量记录。`/health` 用作 liveness 探针，`/ready` 用作 readiness 探针：Kubernetes 的 `livenessProbe` 应指向 `/health`，避免后端短暂抖动时重启进程；`readinessProbe` 应指向 `/ready`，让 Qdrant、Redis 或 MySQL 断连时以 HTTP 503 fail-closed 停止接流量。
 
 常用 RAG CLI 参数：
 
@@ -647,6 +686,6 @@ live 评估是受控数据出境面：正样本会把 question、生成 answer�
 
 1. 增加更多文档入库边界样例。
 2. 增加分数阈值或拒答逻辑，改善 negative query。
-3. 为现有观测钩子增加部署健康门禁与外部告警路由。
-4. 增加 Qdrant 版本兼容与健康检查等生产部署门禁。
+3. 为现有观测钩子增加外部告警路由。
+4. 增加 Qdrant 版本兼容等生产部署检查。
 5. 增加内置认证或生产网关集成检查。

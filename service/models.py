@@ -97,3 +97,20 @@ class HealthResponse(BaseModel):
 
     status: str
     warning: str
+
+
+class DependencyStatus(BaseModel):
+    """Readiness state for one service dependency."""
+
+    name: str
+    status: str
+    required: bool = True
+    latency_ms: Optional[float] = None
+    detail: Optional[str] = None
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness response for traffic admission."""
+
+    status: str
+    dependencies: List[DependencyStatus]

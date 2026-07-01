@@ -10,8 +10,12 @@ from dataclasses import asdict
 from cache import CachingEmbeddingProvider, CachingRAGPipeline
 from cache.redis_store import CacheSettings, RedisCacheStore
 from cache.serialization import decode_vector, encode_vector
+from config import Config
 from embeddings import EmbeddingConfig, EmbeddingProvider, HashEmbeddingProvider
 from rag import RAGPipeline, RAGResponse
+
+Config.EMBEDDING_PROVIDER = "hash"
+
 from service.app import ServiceState, create_app, stream_query_events
 from service.models import QueryRequest
 from vector_store import InMemoryVectorStore, VectorRecord

@@ -165,6 +165,22 @@ Redis cache layer 使用 L1/L2/L3 三层设计：
 - 指标 registry 只提供项目所需的 counter/histogram 与 Prometheus 文本导出，不把 principal、request ID、query 或 source ID 放入 label，避免无界时序数量。
 - token usage 优先读取 chat/embedding provider 的累计 reported 计数，并用进程级 watermark 原子认领增量；上游不回 usage 时才使用 TokenCounter 并标记 `estimated`。
 - request ID 使用纯 ASGI 中间件写入响应头，并通过 ContextVar 注入现有 logger；`asyncio.to_thread` 会传播该上下文，同时避免通用 HTTP middleware 对 SSE 产生缓冲或时序干扰。
+
+## 部署镜像与一键起栈
+
+- 服务单独维护一份精简的打包依赖清单，只装 serving 真正 import 的包（评估栈、重依赖不进 serving 镜像），并把版本钉到确切值：无上界的 `>=` 会让依赖解析在构建时爆炸，删掉不 import 的重依赖 + 钉版本是镜像可复现构建的前提。
+- 镜像用多阶段构建、以非 root 用户运行；运行期需要的资源（如分词编码表）在构建期就固化进镜像，保证可断网、可离线、冷启动确定，不在首次使用时去公网拉取。
+- 一键起栈用 compose 编排向量库、缓存、元数据库和应用四件套，后端之间用服务名互联而非 localhost；每个后端声明原生 healthcheck，应用用 `depends_on: service_healthy` 等后端就绪再起；应用启动跑一次幂等初始化，重复起栈不叠库。
+- 密钥只从环境注入，不进镜像、编排文件和提交；缺生成密钥时仍允许起栈跑入库与检索（用不需要密钥的测试 embedding），这样部署冒烟不必先充值，但要诚实声明“能起栈”不等于“零密钥问答”。
+
+## 健康门禁：liveness 与 readiness 分开
+
+- 存活探针（liveness）只表示进程还活着、恒返回 200，语义偏宽容——进程没死就不该因为后端抖动被重启；容器编排的健康检查打这个探针。
+- 就绪探针（readiness）表示能不能接流量，必须 fail-closed：真去探当前配置下启用的后端，任一必需后端不通就返回 503 并点名，交给编排层（如 k8s readinessProbe）决定是否导流量。这和可观测性那一层的 fail-open 语义刻意相反。
+- 探针并发执行、每个有独立超时上界（防一个后端卡死拖挂整个就绪检查）、按配置条件探测（没启用的不探）、探向量库只做只读连通查询避免建集合副作用、探缓存走其绑定的稳定事件循环；就绪响应体不含连接串/密码/密钥。
+- 结构性配置在应用创建时就 fail-fast（非法配置早失败好过首个请求才炸）；但“需要付费密钥”的生成校验不接进启动，缺密钥降级为就绪里的非阻断依赖，避免打穿无密钥起栈能力。
+- 验证 fail-closed 只认真断后端（逐个停掉看就绪翻 503、存活仍 200、恢复回 200），mock 一个“假装挂了”的后端不作数。
+
 ## 生成质量评估：Ragas 双轨判官
 
 Ragas 用来回答确定性检索指标回答不了的问题：答案是否有上下文支撑、是否回答了问题，以及供给上下文是否精确和完整。当前使用 Faithfulness、Answer Relevance、Context Precision、Context Recall 四维。

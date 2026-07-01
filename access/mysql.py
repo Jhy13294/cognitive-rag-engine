@@ -148,7 +148,30 @@ class MySQLACLResolver:
             raise ACLResolutionError(f"Document source has no ACL bindings: {source}")
         return acl_values
 
-    def _connect(self):
+    def check_connectivity(self, timeout_seconds: Optional[float] = None) -> bool:
+        """Return whether the metadata database accepts a simple read query."""
+        connection = None
+        cursor = None
+        try:
+            extra_options = {}
+            if timeout_seconds is not None:
+                extra_options["connection_timeout"] = max(1, int(timeout_seconds))
+            connection = self._connect(extra_options=extra_options)
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1")
+            row = cursor.fetchone()
+            return bool(row and row[0] == 1)
+        except ACLConfigurationError:
+            raise
+        except Exception as e:
+            raise ACLResolutionError("Failed to connect to MySQL metadata store.") from e
+        finally:
+            if cursor is not None:
+                cursor.close()
+            if connection is not None:
+                connection.close()
+
+    def _connect(self, extra_options: Optional[dict] = None):
         """Open a MySQL connection from config or a test-supplied factory."""
         if self.connection_factory is not None:
             return self.connection_factory()
@@ -159,6 +182,8 @@ class MySQLACLResolver:
             raise ACLConfigurationError("mysql-connector-python is required for MySQL ACL resolution.") from e
 
         options = self._connection_options()
+        if extra_options:
+            options = {**options, **extra_options}
         return mysql.connector.connect(**options)
 
     def _connection_options(self) -> dict:

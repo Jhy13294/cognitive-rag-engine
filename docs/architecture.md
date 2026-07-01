@@ -256,13 +256,14 @@ flowchart TD
 - 权限预过滤：MySQL metadata resolver 可解析 principal membership，也可在入库时按 document/chunk binding 写入 payload ACL；服务默认只信任上游 header principal，并将其显式传入 ACL filter resolver，内部不回读请求体身份。
 - 可观测性：可选 JSON-line 审计、`X-Request-ID`、Prometheus 文本指标和 fail-open 告警钩子；默认关闭。
 - 服务化：FastAPI app factory，可接 uvicorn。
+- 一键起全栈：多阶段构建的 serving 镜像 + compose 编排四件套（向量库、缓存、元数据库、应用），后端之间用服务名互联而非 localhost，各自带原生 healthcheck，应用用 `depends_on: service_healthy` 等后端就绪再起。应用容器启动时跑一次幂等初始化（建权限 schema、seed 演示 principal/binding、按受信 ACL 入库演示语料），重复起栈不叠库。运行期资源（分词编码表）在构建期固化、可断网起容器；密钥只从环境注入、不进镜像与编排文件。默认无密钥也能起栈跑入库与检索（用不需要密钥的测试 embedding），真实问答仍需生成密钥。
+- 健康门禁：存活探针 `/health` 恒 200、只表示进程存活；就绪探针 `/ready` 按配置探启用的后端，任一必需后端不通即返回 503 并点名，探针并发、有超时上界、只读探向量库、不泄敏感信息。结构性配置在应用创建时 fail-fast，缺生成密钥降级为就绪里的非阻断依赖而非拒绝启动。容器编排的健康检查打存活探针，避免后端抖动误重启进程；就绪语义留给编排层做流量准入（如 k8s readinessProbe）。
 
 ## 后续演进
 
-1. 按生成敏感门禁范围执行全套付费 capture，并冻结首份正式 verdict fixture。
-2. 入库增强：OCR、表格抽取优化、权限字段 fixture。
-3. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。
-4. 外部告警路由、指标聚合和部署健康门禁。
+1. 入库增强：OCR、表格抽取优化、权限字段 fixture。
+2. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。
+3. 外部告警路由、多副本指标聚合，以及面向高可用的编排增强（就绪探针已就位，可直接接入编排层的流量准入）。
 
 ## 双轨生成质量评估
 

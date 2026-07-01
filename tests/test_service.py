@@ -11,6 +11,9 @@ from access import ACLAccessError, StaticACLResolver
 from config import Config
 from rag import EmbeddingSpaceMismatchError, IndexNotReadyError
 from rag import RAGResponse, RetrievedSource
+
+Config.EMBEDDING_PROVIDER = "hash"
+
 from service.app import ServiceState, create_app, resolve_request_metadata_filter, stream_query_events
 from service.models import QueryRequest
 
@@ -80,6 +83,16 @@ class FakePipeline:
         return f"prompt for {question}", sources
 
 
+class FakeReadinessCache:
+    """Cache store double with only the readiness ping surface."""
+
+    def __init__(self, ok=True):
+        self.ok = ok
+
+    async def ping(self, timeout_seconds=None):
+        return self.ok
+
+
 @dataclass
 class FakeIngestResult:
     ids: list
@@ -108,6 +121,78 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
                 create_app(ServiceState(cache_store=object()))
         finally:
             Config.CACHE_EMBEDDING_TTL = original_ttl
+
+    async def test_ready_keeps_liveness_shallow_and_generation_key_non_blocking(self):
+        original_provider = Config.VECTOR_STORE_PROVIDER
+        original_cache_enabled = Config.CACHE_ENABLED
+        original_acl_enabled = Config.ACL_ENABLED
+        original_api_key = Config.API_KEY
+        original_embedding_provider = Config.EMBEDDING_PROVIDER
+        try:
+            Config.VECTOR_STORE_PROVIDER = "memory"
+            Config.CACHE_ENABLED = False
+            Config.ACL_ENABLED = False
+            Config.API_KEY = None
+            Config.EMBEDDING_PROVIDER = "hash"
+
+            app = create_app(
+                ServiceState(
+                    pipeline_builder=lambda **kwargs: FakePipeline(),
+                    chat_client_factory=lambda: FakeChatClient(),
+                )
+            )
+            async with await self.open_client(app) as client:
+                ready = await client.get("/ready")
+                health = await client.get("/health")
+
+            self.assertEqual(ready.status_code, 200)
+            self.assertEqual(ready.json()["status"], "ready")
+            generation = next(item for item in ready.json()["dependencies"] if item["name"] == "generation")
+            self.assertEqual(generation["status"], "down")
+            self.assertFalse(generation["required"])
+            self.assertEqual(health.status_code, 200)
+        finally:
+            Config.VECTOR_STORE_PROVIDER = original_provider
+            Config.CACHE_ENABLED = original_cache_enabled
+            Config.ACL_ENABLED = original_acl_enabled
+            Config.API_KEY = original_api_key
+            Config.EMBEDDING_PROVIDER = original_embedding_provider
+
+    async def test_ready_fails_closed_when_enabled_cache_is_unreachable(self):
+        original_provider = Config.VECTOR_STORE_PROVIDER
+        original_cache_enabled = Config.CACHE_ENABLED
+        original_acl_enabled = Config.ACL_ENABLED
+        original_api_key = Config.API_KEY
+        original_embedding_provider = Config.EMBEDDING_PROVIDER
+        try:
+            Config.VECTOR_STORE_PROVIDER = "memory"
+            Config.CACHE_ENABLED = True
+            Config.ACL_ENABLED = False
+            Config.API_KEY = "configured"
+            Config.EMBEDDING_PROVIDER = "hash"
+
+            app = create_app(
+                ServiceState(
+                    cache_store=FakeReadinessCache(ok=False),
+                    pipeline_builder=lambda **kwargs: FakePipeline(),
+                    chat_client_factory=lambda: FakeChatClient(),
+                )
+            )
+            async with await self.open_client(app) as client:
+                ready = await client.get("/ready")
+                health = await client.get("/health")
+
+            self.assertEqual(ready.status_code, 503)
+            self.assertEqual(ready.json()["status"], "not_ready")
+            redis = next(item for item in ready.json()["dependencies"] if item["name"] == "redis")
+            self.assertEqual(redis["status"], "down")
+            self.assertEqual(health.status_code, 200)
+        finally:
+            Config.VECTOR_STORE_PROVIDER = original_provider
+            Config.CACHE_ENABLED = original_cache_enabled
+            Config.ACL_ENABLED = original_acl_enabled
+            Config.API_KEY = original_api_key
+            Config.EMBEDDING_PROVIDER = original_embedding_provider
 
     async def test_query_offloads_sync_answer_work_for_concurrent_requests(self):
         state = ServiceState(
@@ -392,6 +477,7 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(response.status_code, 200)
         self.assertIn("/health", body["paths"])
+        self.assertIn("/ready", body["paths"])
         self.assertIn("/ingest", body["paths"])
         self.assertIn("/query", body["paths"])
         self.assertIn("/query/stream", body["paths"])

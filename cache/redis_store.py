@@ -205,6 +205,30 @@ class RedisCacheStore:
         self._increment_metric("corpus_version_bumps")
         return int(version)
 
+    async def ping(self, timeout_seconds: Optional[float] = None) -> bool:
+        """Return whether Redis responds through the store-owned event loop."""
+        return bool(
+            await self._run_on_store_loop(
+                lambda: self._ping_impl(timeout_seconds),
+                default=False,
+                operation="ping",
+            )
+        )
+
+    async def _ping_impl(self, timeout_seconds: Optional[float] = None) -> bool:
+        """Ping Redis on the client-owned event loop."""
+        timeout = timeout_seconds if timeout_seconds is not None else self.settings.timeout_seconds
+        try:
+            client = await self._ensure_client()
+            result = client.ping()
+            if inspect.isawaitable(result):
+                result = await asyncio.wait_for(result, timeout=timeout)
+            return bool(result)
+        except Exception as e:
+            self._increment_metric("errors")
+            logger.warning("Redis cache ping failed | error=%s", e)
+            return False
+
     def stats(self) -> Dict[str, Any]:
         """Return cache observability counters."""
         with self._metrics_lock:

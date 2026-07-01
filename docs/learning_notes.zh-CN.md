@@ -4,7 +4,7 @@
 
 - [技术选型思考](./tech-selection.md)：解释为什么选择当前模型、框架、协议、向量库、检索策略、服务协议和缓存设计。
 - [系统架构与数据流图](./architecture.md)：说明入库、查询、混合检索、父子分块、上下文装填、Redis 缓存和评估链路。
-- [核心踩坑记录](./dev-log-crashing.md)：沉淀指标污染、上下文装填边界、假异步、假流式、缓存失效、FakeRedis、live Redis 和事件循环绑定等问题。
+- [核心踩坑记录](./dev-log-crashing.md)：沉淀指标污染、上下文装填边界、假异步、假流式、缓存失效、FakeRedis、live Redis、事件循环绑定，以及镜像构建、自包含性和 liveness/readiness 健康门禁等问题。
 
 ## 推荐阅读顺序
 
@@ -23,6 +23,8 @@
 - verdict fixture 已升级为 `ragas-verdicts-v5`，强制 pin judge model、Ragas 版本、生成 prompt、statement prompt、Faithfulness context format 与 gating scope。协议漂移会使旧基线失效。
 - Answer Relevance 使用 cosine，相似度可能因单位向量浮点尾差略超 1。两条 embedding 路都先做 L2 归一化，live capture 再以 `1e-6` 容差 clamp，NaN/inf 和真实越界仍致命；fixture replay 继续严格要求 `[0,1]`。
 - 已冻结首份通过门禁的正式 verdict fixture：16 条正样本的 Faithfulness 与 Answer Relevance median 全部达标、负样本全部弃答，并由独立第二份 capture 确认稳定，离线 replay 自证门禁通过。约 20 条人工样本上的四维分数仍是带方差的判官估计，不是 production 真值。
+- 服务已经能一键起全栈：多阶段构建的 serving 镜像 + compose 编排（向量库、缓存、元数据库、应用，服务名互联、healthcheck + 就绪依赖）+ 幂等初始化 + 无密钥也能起栈跑入库与检索的冒烟路径。打包依赖清单单独精简并钉死版本、删掉不 import 的重依赖，运行期资源在构建期固化以支持断网起容器。
+- 健康检查拆成语义相反的两个探针：存活探针恒 200 只表示进程活着（容器编排用它，避免后端抖动误重启），就绪探针 fail-closed 按配置探启用的后端、任一必需后端不通即 503 并点名（交编排层做流量准入）。探针并发、有超时上界、只读探向量库、不泄敏感信息；结构性配置启动即校验、缺生成密钥降级为就绪非阻断依赖。验证 fail-closed 只认真断后端，mock 不算数。
 
 ## 维护约定
 

@@ -13,6 +13,9 @@ from logger import LOG_FORMAT, get_request_id, reset_request_id, set_request_id,
 from observability import JSONLineAuditSink, MetricsRegistry, ObservabilityManager, StructuredAuditEmitter
 from observability.factory import create_observability_manager
 from rag import RAGResponse, RetrievedSource
+
+Config.EMBEDDING_PROVIDER = "hash"
+
 from service.app import ServiceState, create_app, stream_query_events
 from service.models import QueryRequest
 

@@ -165,6 +165,7 @@ class Config:
     AUDIT_QUEUE_SIZE = _env_int("AUDIT_QUEUE_SIZE", 10000)
     METRICS_NAMESPACE = os.getenv("METRICS_NAMESPACE", "rag")
     METRICS_PATH = os.getenv("METRICS_PATH", "/metrics")
+    READINESS_TIMEOUT = _env_float("READINESS_TIMEOUT", 2.0)
 
     RAGAS_ENABLED = _env_bool("RAGAS_ENABLED", False)
     RUN_RAGAS_EVAL = _env_bool("RUN_RAGAS_EVAL", False)
@@ -485,6 +486,14 @@ class Config:
         logger.debug("Audit query text enabled: %s", cls.AUDIT_LOG_QUERY_TEXT)
         logger.debug("Metrics namespace: %s", cls.METRICS_NAMESPACE)
         logger.debug("Metrics path: %s", cls.METRICS_PATH)
+        return True
+
+    @classmethod
+    def validate_readiness(cls):
+        """Validate readiness probe configuration."""
+        if cls.READINESS_TIMEOUT <= 0:
+            raise ValueError("READINESS_TIMEOUT must be greater than 0.")
+        logger.debug("Readiness timeout: %s", cls.READINESS_TIMEOUT)
         return True
 
     @classmethod

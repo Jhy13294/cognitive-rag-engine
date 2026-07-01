@@ -120,6 +120,37 @@ def is_qdrant_client_available() -> bool:
         return False
 
 
+def check_qdrant_connectivity(
+    *,
+    host: str = "localhost",
+    port: int = 6333,
+    api_key: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: float = 2.0,
+) -> bool:
+    """Return whether Qdrant responds to a read-only collections request."""
+    try:
+        from qdrant_client import QdrantClient
+    except ImportError as e:
+        raise QdrantVectorStoreError(
+            "qdrant-client is required for Qdrant readiness checks."
+        ) from e
+
+    client_kwargs = {"api_key": api_key, "timeout": timeout}
+    client_kwargs = {key: value for key, value in client_kwargs.items() if value is not None}
+    client = QdrantClient(url=url, **client_kwargs) if url else QdrantClient(host=host, port=port, **client_kwargs)
+
+    try:
+        client.get_collections()
+        return True
+    except Exception as e:
+        raise QdrantVectorStoreError("Qdrant readiness check failed.") from e
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            close()
+
+
 class QdrantVectorStore(VectorStore):
     """Production vector store backed by Qdrant."""
 

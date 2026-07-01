@@ -1,0 +1,26 @@
+# API calls
+httpx==0.28.1
+requests==2.33.1
+python-dotenv==1.2.2
+redis==8.0.0
+
+# HTTP service
+fastapi==0.137.1
+pydantic==2.13.4
+uvicorn[standard]==0.49.0
+
+# Metadata / ACL
+mysql-connector-python==9.7.0
+
+# Document processing
+PyMuPDF==1.27.2.3
+pdfplumber==0.11.9
+python-docx==1.2.0
+PyYAML==6.0.3
+
+# Text processing
+regex==2026.4.4
+tiktoken==0.13.0
+
+# Vector storage
+qdrant-client==1.18.0
