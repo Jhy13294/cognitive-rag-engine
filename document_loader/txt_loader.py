@@ -22,6 +22,7 @@ class TXTLoader(DocumentLoader):
     def load(self) -> str:
         """Load text content from a TXT file."""
         logger.info("Loading TXT file | path=%s", self.file_path)
+        self._raise_if_probably_binary()
 
         if self.encoding == "auto":
             self.encoding = self._detect_encoding()
@@ -55,6 +56,23 @@ class TXTLoader(DocumentLoader):
                 continue
 
         return "utf-8"
+
+    def _raise_if_probably_binary(self) -> None:
+        """Reject binary payloads before latin-1 can decode arbitrary bytes."""
+        with open(self.file_path, "rb") as f:
+            sample = f.read(4096)
+
+        if not sample:
+            return
+        if sample.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf")):
+            return
+        if b"\x00" in sample:
+            raise ValueError("TXT file appears to be binary; refusing to load as text.")
+
+        allowed_controls = {9, 10, 13}
+        control_count = sum(1 for byte in sample if byte < 32 and byte not in allowed_controls)
+        if control_count / len(sample) > 0.30:
+            raise ValueError("TXT file appears to be binary; refusing to load as text.")
 
     def get_metadata(self) -> Dict:
         """Return TXT file metadata."""

@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart LR
-    A["Documents\nTXT / Markdown / PDF / Word"] --> B["Document Loader"]
+    A["Documents\nTXT / Markdown / PDF / Word"] --> B["Document Loader\nscan detection / optional tables / optional OCR"]
     B --> C["Cleaner"]
     C --> D["Splitter\nflat or parent-child"]
     D --> E["Embedding Provider"]
@@ -51,6 +51,9 @@ sequenceDiagram
 入库阶段负责：
 
 - 加载文档。
+- 检测 PDF 扫描页并写入 scanned/OCR 计数 metadata。
+- 在显式开启时对扫描页做逐页 OCR 兜底。
+- 在显式开启时抽取 PDF 表格，并复用同一次 pdfplumber 文档句柄。
 - 清洗文本。
 - 切分 chunk。
 - 批量 embedding。
@@ -255,13 +258,14 @@ flowchart TD
 - 缓存验证：Redis `localhost:6379`，通过 `REDIS_URL=redis://localhost:6379/0` gated live smoke、跨事件循环回归和 fail-open 探针。
 - 权限预过滤：MySQL metadata resolver 可解析 principal membership，也可在入库时按 document/chunk binding 写入 payload ACL；服务默认只信任上游 header principal，并将其显式传入 ACL filter resolver，内部不回读请求体身份。
 - 可观测性：可选 JSON-line 审计、`X-Request-ID`、Prometheus 文本指标和 fail-open 告警钩子；默认关闭。
+- 文档入库：PDF 默认检测扫描页并记录 metadata；OCR 和表格抽取均默认关闭，由环境配置启用。TXT 加载器会拒绝明显二进制内容，避免 latin-1 把垃圾字节伪装成文本。
 - 服务化：FastAPI app factory，可接 uvicorn。
 - 一键起全栈：多阶段构建的 serving 镜像 + compose 编排四件套（向量库、缓存、元数据库、应用），后端之间用服务名互联而非 localhost，各自带原生 healthcheck，应用用 `depends_on: service_healthy` 等后端就绪再起。应用容器启动时跑一次幂等初始化（建权限 schema、seed 演示 principal/binding、按受信 ACL 入库演示语料），重复起栈不叠库。运行期资源（分词编码表）在构建期固化、可断网起容器；密钥只从环境注入、不进镜像与编排文件。默认无密钥也能起栈跑入库与检索（用不需要密钥的测试 embedding），真实问答仍需生成密钥。
 - 健康门禁：存活探针 `/health` 恒 200、只表示进程存活；就绪探针 `/ready` 按配置探启用的后端，任一必需后端不通即返回 503 并点名，探针并发、有超时上界、只读探向量库、不泄敏感信息。结构性配置在应用创建时 fail-fast，缺生成密钥降级为就绪里的非阻断依赖而非拒绝启动。容器编排的健康检查打存活探针，避免后端抖动误重启进程；就绪语义留给编排层做流量准入（如 k8s readinessProbe）。
 
 ## 后续演进
 
-1. 入库增强：OCR、表格抽取优化、权限字段 fixture。
+1. 入库运维增强：RapidOCR 真引擎质量、模型资产打包和隔离网运行策略的 gated 复核。
 2. 权限同步增强：MySQL binding 变更后的 re-ingest/re-sync 与 gateway header 信任边界部署检查。
 3. 外部告警路由、多副本指标聚合，以及面向高可用的编排增强（就绪探针已就位，可直接接入编排层的流量准入）。
 

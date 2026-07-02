@@ -36,7 +36,7 @@
 - Document 数据模型和加载器抽象接口
 - TXT 加载器
 - 支持 Front Matter 的 Markdown 加载器
-- 支持可选表格提取的 PDF 加载器
+- 支持扫描页检测、可选 OCR 兜底和可选表格提取的 PDF 加载器
 - Word `.docx` 加载器
 - 文本清洗器
 - 保留元数据的 RAG 文本切分器
@@ -122,7 +122,7 @@
 │   ├── chunking.py            # 文本切分
 │   ├── loader.py              # 统一加载入口
 │   ├── md_loader.py           # Markdown 加载器
-│   ├── pdf_loader.py          # PDF 加载器
+│   ├── pdf_loader.py          # 支持扫描页检测、OCR 兜底和表格的 PDF 加载器
 │   ├── txt_loader.py          # TXT 加载器
 │   └── word_loader.py         # Word 加载器
 ├── embeddings/
@@ -215,6 +215,11 @@ EMBEDDING_PROVIDER=openai
 EMBEDDING_API_KEY=your_openai_api_key_here
 EMBEDDING_MODEL_NAME=text-embedding-3-small
 EMBEDDING_DIMENSION=512
+
+PDF_EXTRACT_TABLES=false
+PDF_OCR_ENABLED=false
+PDF_OCR_MIN_CHARS=1
+PDF_OCR_DPI=200
 
 VECTOR_STORE_PROVIDER=memory
 VECTOR_STORE_COLLECTION=enterprise_kb

@@ -22,7 +22,7 @@ from .ragas_evaluation import (
     RAGAS_METRICS,
     REPORTED_METRICS,
     content_sha256,
-    file_sha256,
+    golden_file_sha256,
 )
 from .schemas import GoldenExample
 
@@ -393,7 +393,7 @@ def build_live_fixture_metadata(
         "generator_temperature": Config.RAGAS_LIVE_GENERATION_TEMPERATURE,
         "repetitions": repetitions,
         "pipeline_profile": profile,
-        "golden_version": file_sha256(golden_path),
+        "golden_version": golden_file_sha256(golden_path),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "recording_mode": "live_gated",
         "generator_model_id": Config.MODEL_NAME,

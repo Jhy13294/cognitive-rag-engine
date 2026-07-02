@@ -9,6 +9,16 @@
 - **可降级**：网络 I/O、rerank、cache、query rewrite 失败时优先降级到已知稳定路径，而不是中断问答。
 - **可观测**：关键阶段保留配置、来源、token、耗时、cache hit/miss 和错误分类，方便后续接入指标与审计。
 
+## Document Loading：PyMuPDF + pdfplumber + RapidOCR 可选兜底
+
+文档加载层优先做“入库诚实性”而不是盲目扩大格式能力。TXT、Markdown、PDF、Word 都先统一成 `Document(content, metadata)`，后续清洗、切分、embedding 和 ACL payload 写入只消费这个统一模型。
+
+PDF 选择 PyMuPDF 作为主解析器，因为它对文本层和页级遍历足够稳定，也能在需要 OCR 时把单页渲染成图像。扫描页检测默认开启，只看页内文本层是否低于阈值；这一步不改变内容，只写 `scanned_page_count` / `ocr_page_count` 并打 warning，避免纯扫描 PDF 静默变成只有页眉骨架的“空知识”。OCR 选择 RapidOCR 作为可选兜底，原因是它本地运行、无需把文档图像送到外部 OCR 服务；但 OCR 默认关闭，只有显式开启且页面确实缺少文本层时才运行。
+
+表格抽取继续使用 pdfplumber，但只在 `PDF_EXTRACT_TABLES=true` 时启用。实现上必须对整份 PDF 只打开一次 pdfplumber 句柄，再按页复用，避免页数增加时把全文件解析重复做成 O(pages) 次。表格输出保持原有 Markdown 形态，保证默认关和旧表格输出都能被字符级回归测试锁住。
+
+TXT 加载器保留多编码探测，但在 latin-1 fallback 之前先拒绝明显二进制 payload。latin-1 可以解码任意字节，如果没有二进制 guard，损坏文件会被当作“合法文本”入库，后续检索指标也很难暴露这个错误。
+
 ## LLM API：DeepSeek 兼容聊天接口
 
 当前聊天层通过 `api_client.py` 封装 DeepSeek 兼容接口。这样做的原因是：

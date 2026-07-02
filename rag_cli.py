@@ -268,6 +268,17 @@ def validate_query_rewrite_values(
         raise ValueError("At least one query rewrite weight must be greater than 0.")
 
 
+def build_loader_kwargs_from_config() -> Dict:
+    """Build document-loader keyword arguments from environment configuration."""
+    Config.validate_document_loading()
+    return {
+        "extract_tables": Config.PDF_EXTRACT_TABLES,
+        "ocr_enabled": Config.PDF_OCR_ENABLED,
+        "ocr_min_chars": Config.PDF_OCR_MIN_CHARS,
+        "ocr_dpi": Config.PDF_OCR_DPI,
+    }
+
+
 def ingest_documents(
     path: str,
     clean: bool = True,
@@ -289,6 +300,7 @@ def ingest_documents(
 ) -> IngestResult:
     """Load, split, embed, and upsert documents into a vector store."""
     use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+    loader_kwargs = build_loader_kwargs_from_config()
 
     if use_parent_child:
         Config.validate_parent_child()
@@ -302,6 +314,7 @@ def ingest_documents(
             ),
             child_chunk_size=child_chunk_size if child_chunk_size is not None else Config.CHILD_CHUNK_SIZE,
             child_chunk_overlap=child_chunk_overlap if child_chunk_overlap is not None else Config.CHILD_CHUNK_OVERLAP,
+            **loader_kwargs,
         )
         chunks = hierarchical.children
         add_parent_payload_to_children(chunks, hierarchical.parents)
@@ -313,6 +326,7 @@ def ingest_documents(
             clean=clean,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            **loader_kwargs,
         )
         parent_count = 0
 

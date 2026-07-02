@@ -15,6 +15,7 @@ mysql-connector-python>=8.4.0
 # Document processing
 PyMuPDF>=1.23.0          # PDF processing, import name: fitz
 pdfplumber>=0.10.0       # PDF table extraction
+rapidocr-onnxruntime>=1.4.4  # Optional OCR fallback for scanned PDFs (gated by PDF_OCR_ENABLED)
 python-docx>=1.0.0       # Word processing, import name: docx
 
 # Text processing

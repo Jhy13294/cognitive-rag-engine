@@ -36,7 +36,7 @@ Implemented:
 - Document model and loader interface
 - TXT loader
 - Markdown loader with Front Matter support
-- PDF loader with optional table extraction
+- PDF loader with scanned-page detection, optional OCR fallback, and optional table extraction
 - Word `.docx` loader
 - Text cleaner
 - Text splitter for RAG chunks
@@ -122,7 +122,7 @@ Start here when you want to understand the engineering choices behind the projec
 │   ├── chunking.py            # Text chunking
 │   ├── loader.py              # Unified loading entry point
 │   ├── md_loader.py           # Markdown loader
-│   ├── pdf_loader.py          # PDF loader
+│   ├── pdf_loader.py          # PDF loader with scan detection, OCR fallback, and tables
 │   ├── txt_loader.py          # TXT loader
 │   └── word_loader.py         # Word loader
 ├── embeddings/
@@ -215,6 +215,11 @@ EMBEDDING_PROVIDER=openai
 EMBEDDING_API_KEY=your_openai_api_key_here
 EMBEDDING_MODEL_NAME=text-embedding-3-small
 EMBEDDING_DIMENSION=512
+
+PDF_EXTRACT_TABLES=false
+PDF_OCR_ENABLED=false
+PDF_OCR_MIN_CHARS=1
+PDF_OCR_DPI=200
 
 VECTOR_STORE_PROVIDER=memory
 VECTOR_STORE_COLLECTION=enterprise_kb

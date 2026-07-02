@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 from typing import Iterable, List, Optional, Type
 
@@ -49,7 +50,26 @@ def get_document_loader(file_path: str, **loader_kwargs) -> DocumentLoader:
         raise ValueError(f"Unsupported file extension: {extension}. Supported extensions: {supported}")
 
     logger.debug("Selected document loader | path=%s | loader=%s", path, loader_class.__name__)
-    return loader_class(str(path), **loader_kwargs)
+    return loader_class(str(path), **_filter_loader_kwargs(loader_class, loader_kwargs))
+
+
+def _filter_loader_kwargs(loader_class: Type[DocumentLoader], loader_kwargs: dict) -> dict:
+    """Return only kwargs accepted by the selected loader constructor."""
+    if not loader_kwargs:
+        return {}
+
+    signature = inspect.signature(loader_class.__init__)
+    parameters = signature.parameters.values()
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return dict(loader_kwargs)
+
+    accepted = {
+        parameter.name
+        for parameter in parameters
+        if parameter.name != "self"
+        and parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    }
+    return {key: value for key, value in loader_kwargs.items() if key in accepted}
 
 
 def load_document(file_path: str, clean: bool = False, **loader_kwargs) -> Document:

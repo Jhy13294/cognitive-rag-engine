@@ -32,6 +32,7 @@ from eval.ragas_evaluation import (
     REPORTED_METRICS,
     build_replay_report,
     file_sha256,
+    golden_file_sha256,
     load_verdict_fixture,
     summarize_values,
     validate_score,
@@ -122,6 +123,59 @@ class RagasEvaluationTests(unittest.TestCase):
             second = write_ragas_report(report, str(workspace.root / "two"), timestamp="fixed")
 
             self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_golden_hash_normalizes_only_crlf_line_endings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lf_path = root / "golden-lf.jsonl"
+            crlf_path = root / "golden-crlf.jsonl"
+            isolated_cr_path = root / "golden-isolated-cr.jsonl"
+            changed_path = root / "golden-changed.jsonl"
+
+            lf_path.write_bytes(b'{"qid":"q001"}\n{"qid":"q002"}\n')
+            crlf_path.write_bytes(b'{"qid":"q001"}\r\n{"qid":"q002"}\r\n')
+            isolated_cr_path.write_bytes(b'{"qid":"q001"}\r{"qid":"q002"}\n')
+            changed_path.write_bytes(b'{"qid":"q001"}\n{"qid":"q003"}\n')
+
+            self.assertEqual(
+                golden_file_sha256(str(lf_path)),
+                golden_file_sha256(str(crlf_path)),
+            )
+            self.assertEqual(file_sha256(str(lf_path)), golden_file_sha256(str(lf_path)))
+            self.assertNotEqual(
+                golden_file_sha256(str(lf_path)),
+                golden_file_sha256(str(isolated_cr_path)),
+            )
+            self.assertNotEqual(
+                golden_file_sha256(str(lf_path)),
+                golden_file_sha256(str(changed_path)),
+            )
+
+    def test_replay_accepts_crlf_golden_with_lf_fixture_hash(self):
+        with self.fixture_workspace() as workspace:
+            lf_hash = golden_file_sha256(str(workspace.golden_path))
+            raw = workspace.golden_path.read_bytes().replace(b"\r\n", b"\n")
+            workspace.golden_path.write_bytes(raw.replace(b"\n", b"\r\n"))
+
+            fixture = load_verdict_fixture(str(workspace.fixture_path))
+            report = self.build_report(fixture, workspace)
+
+            self.assertEqual(lf_hash, golden_file_sha256(str(workspace.golden_path)))
+            self.assertTrue(report["gate"]["passed"])
+            self.assertEqual(report["metadata"]["golden_version"], lf_hash)
+
+    def test_replay_rejects_real_golden_content_change(self):
+        with self.fixture_workspace() as workspace:
+            original = workspace.golden_path.read_text(encoding="utf-8")
+            workspace.golden_path.write_text(
+                original.replace("Question?", "Question changed?", 1),
+                encoding="utf-8",
+            )
+
+            fixture = load_verdict_fixture(str(workspace.fixture_path))
+
+            with self.assertRaisesRegex(ValueError, "golden_version does not match"):
+                self.build_report(fixture, workspace)
 
     def test_bad_score_fails_and_names_case_metric_and_threshold(self):
         with self.fixture_workspace(positive_score=0.2) as workspace:
@@ -1243,7 +1297,7 @@ class RagasEvaluationTests(unittest.TestCase):
                 "temperature": 0.0,
                 "repetitions": len(run_values),
                 "pipeline_profile": "baseline",
-                "golden_version": file_sha256(str(golden_path)),
+                "golden_version": golden_file_sha256(str(golden_path)),
                 "recorded_at": "2026-06-21T00:00:00+00:00",
                 "recording_mode": "live_gated",
                 "generation_prompt_version": RAG_SYSTEM_PROMPT_VERSION,

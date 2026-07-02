@@ -59,6 +59,11 @@ class Config:
     EMBEDDING_MAX_DELAY = _env_float("EMBEDDING_MAX_DELAY", 30.0)
     EMBEDDING_USER = os.getenv("EMBEDDING_USER")
 
+    PDF_EXTRACT_TABLES = _env_bool("PDF_EXTRACT_TABLES", False)
+    PDF_OCR_ENABLED = _env_bool("PDF_OCR_ENABLED", False)
+    PDF_OCR_MIN_CHARS = _env_int("PDF_OCR_MIN_CHARS", 1)
+    PDF_OCR_DPI = _env_int("PDF_OCR_DPI", 200)
+
     VECTOR_STORE_PROVIDER = os.getenv("VECTOR_STORE_PROVIDER", "memory")
     VECTOR_STORE_HOST = os.getenv("VECTOR_STORE_HOST") or os.getenv("QDRANT_HOST", "localhost")
     VECTOR_STORE_PORT = _env_int("VECTOR_STORE_PORT", _env_int("QDRANT_PORT", 6333))
@@ -278,6 +283,20 @@ class Config:
         logger.debug("Vector store url: %s", cls.VECTOR_STORE_URL)
         logger.debug("Vector store collection: %s", cls.VECTOR_STORE_COLLECTION)
         logger.debug("Vector store distance metric: %s", cls.VECTOR_STORE_DISTANCE_METRIC)
+        return True
+
+    @classmethod
+    def validate_document_loading(cls):
+        """Validate document loading configuration."""
+        if cls.PDF_OCR_MIN_CHARS <= 0:
+            raise ValueError("PDF_OCR_MIN_CHARS must be greater than 0.")
+        if cls.PDF_OCR_DPI <= 0:
+            raise ValueError("PDF_OCR_DPI must be greater than 0.")
+
+        logger.debug("PDF table extraction enabled: %s", cls.PDF_EXTRACT_TABLES)
+        logger.debug("PDF OCR enabled: %s", cls.PDF_OCR_ENABLED)
+        logger.debug("PDF OCR min chars: %s", cls.PDF_OCR_MIN_CHARS)
+        logger.debug("PDF OCR DPI: %s", cls.PDF_OCR_DPI)
         return True
 
     @classmethod

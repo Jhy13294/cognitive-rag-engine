@@ -22,13 +22,31 @@ FIXTURE_SCHEMA_VERSION = "ragas-verdicts-v5"
 REPORT_SCHEMA_VERSION = "ragas-report-v1"
 
 
-def file_sha256(path: str) -> str:
-    """Return a stable SHA256 fingerprint for a file."""
+def golden_file_sha256(path: str) -> str:
+    """Return the Ragas golden-set fingerprint with CRLF normalized to LF."""
     digest = hashlib.sha256()
+    pending_cr = b""
     with Path(path).open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
+            data = pending_cr + block
+            if data.endswith(b"\r"):
+                pending_cr = b"\r"
+                data = data[:-1]
+            else:
+                pending_cr = b""
+            digest.update(data.replace(b"\r\n", b"\n"))
+    if pending_cr:
+        digest.update(pending_cr)
     return digest.hexdigest()
+
+
+def file_sha256(path: str) -> str:
+    """Return the Ragas golden-set fingerprint.
+
+    Kept for compatibility with existing local tooling; new Ragas golden binding
+    code should call golden_file_sha256 directly.
+    """
+    return golden_file_sha256(path)
 
 
 def content_sha256(parts: Iterable[str]) -> str:
@@ -223,7 +241,7 @@ def build_replay_report(
     expected_faithfulness_context_format: str,
 ) -> Dict:
     """Build a deterministic replay report and evaluate all quality gates."""
-    golden_version = file_sha256(golden_path)
+    golden_version = golden_file_sha256(golden_path)
     validate_fixture_against_golden(fixture, examples, golden_version)
 
     fixture_metadata = fixture["metadata"]

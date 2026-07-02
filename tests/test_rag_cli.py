@@ -1,8 +1,14 @@
+import sys
+import tempfile
+import types
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from rag_cli import (
     apply_acl_metadata_from_bindings,
     build_cli_metadata_filter,
+    build_loader_kwargs_from_config,
     build_arg_parser,
     build_rag_pipeline_from_index,
     build_rag_pipeline_from_path,
@@ -226,6 +232,154 @@ class RAGCLITests(unittest.TestCase):
             self.assertEqual(metadata_filter, {"source": "finance.md", "acl": ["role:finance"]})
         finally:
             Config.ACL_ENABLED = original_enabled
+
+    def test_build_loader_kwargs_from_config_uses_pdf_flags(self):
+        original_values = {
+            "PDF_EXTRACT_TABLES": Config.PDF_EXTRACT_TABLES,
+            "PDF_OCR_ENABLED": Config.PDF_OCR_ENABLED,
+            "PDF_OCR_MIN_CHARS": Config.PDF_OCR_MIN_CHARS,
+            "PDF_OCR_DPI": Config.PDF_OCR_DPI,
+        }
+        try:
+            Config.PDF_EXTRACT_TABLES = True
+            Config.PDF_OCR_ENABLED = True
+            Config.PDF_OCR_MIN_CHARS = 2
+            Config.PDF_OCR_DPI = 220
+
+            self.assertEqual(
+                build_loader_kwargs_from_config(),
+                {
+                    "extract_tables": True,
+                    "ocr_enabled": True,
+                    "ocr_min_chars": 2,
+                    "ocr_dpi": 220,
+                },
+            )
+        finally:
+            for name, value in original_values.items():
+                setattr(Config, name, value)
+
+    def test_build_loader_kwargs_rejects_invalid_pdf_ocr_threshold(self):
+        original_value = Config.PDF_OCR_MIN_CHARS
+        try:
+            Config.PDF_OCR_MIN_CHARS = 0
+
+            with self.assertRaisesRegex(ValueError, "PDF_OCR_MIN_CHARS"):
+                build_loader_kwargs_from_config()
+        finally:
+            Config.PDF_OCR_MIN_CHARS = original_value
+
+    def test_ingest_documents_passes_pdf_loader_config(self):
+        original_values = {
+            "PDF_EXTRACT_TABLES": Config.PDF_EXTRACT_TABLES,
+            "PDF_OCR_ENABLED": Config.PDF_OCR_ENABLED,
+            "PDF_OCR_MIN_CHARS": Config.PDF_OCR_MIN_CHARS,
+            "PDF_OCR_DPI": Config.PDF_OCR_DPI,
+        }
+        captured_kwargs = {}
+
+        def fake_load_and_split_documents(path, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [
+                Document(
+                    content="PDF chunk",
+                    metadata={
+                        "source": "sample.pdf",
+                        "chunk_index": 0,
+                        "start_char": 0,
+                        "end_char": 9,
+                    },
+                )
+            ]
+
+        try:
+            Config.PDF_EXTRACT_TABLES = True
+            Config.PDF_OCR_ENABLED = True
+            Config.PDF_OCR_MIN_CHARS = 3
+            Config.PDF_OCR_DPI = 240
+            provider = HashEmbeddingProvider(dimension=64)
+            store = InMemoryVectorStore(dimension=64)
+
+            with mock.patch("rag_cli.load_and_split_documents", side_effect=fake_load_and_split_documents):
+                ingest_documents(
+                    "ignored-path",
+                    clean=True,
+                    recursive=True,
+                    chunk_size=100,
+                    chunk_overlap=10,
+                    embedding_provider=provider,
+                    vector_store=store,
+                    parent_child_enabled=False,
+                )
+
+            self.assertTrue(captured_kwargs["extract_tables"])
+            self.assertTrue(captured_kwargs["ocr_enabled"])
+            self.assertEqual(captured_kwargs["ocr_min_chars"], 3)
+            self.assertEqual(captured_kwargs["ocr_dpi"], 240)
+        finally:
+            for name, value in original_values.items():
+                setattr(Config, name, value)
+
+    def test_ingest_documents_pdf_table_config_reaches_chunks(self):
+        try:
+            import fitz
+        except ImportError:
+            self.skipTest("PyMuPDF is not installed")
+
+        class FakePage:
+            def extract_tables(self):
+                return [[["Key", "Value"], ["Owner", "Finance"]]]
+
+        class FakePlumberPDF:
+            pages = [FakePage()]
+
+            def close(self):
+                return None
+
+        original_values = {
+            "PDF_EXTRACT_TABLES": Config.PDF_EXTRACT_TABLES,
+            "PDF_OCR_ENABLED": Config.PDF_OCR_ENABLED,
+            "PDF_OCR_MIN_CHARS": Config.PDF_OCR_MIN_CHARS,
+            "PDF_OCR_DPI": Config.PDF_OCR_DPI,
+        }
+        try:
+            Config.PDF_EXTRACT_TABLES = True
+            Config.PDF_OCR_ENABLED = False
+            Config.PDF_OCR_MIN_CHARS = 1
+            Config.PDF_OCR_DPI = 200
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                path = Path(tmp_dir) / "table.pdf"
+                doc = fitz.open()
+                page = doc.new_page()
+                page.insert_text((72, 72), "PDF table ingest fixture.", fontsize=14)
+                doc.save(path)
+                doc.close()
+
+                def fake_open(open_path):
+                    return FakePlumberPDF()
+
+                provider = HashEmbeddingProvider(dimension=64)
+                store = InMemoryVectorStore(dimension=64)
+                with mock.patch.dict(sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}):
+                    result = ingest_documents(
+                        str(path),
+                        clean=False,
+                        recursive=True,
+                        chunk_size=1000,
+                        chunk_overlap=0,
+                        embedding_provider=provider,
+                        vector_store=store,
+                        parent_child_enabled=False,
+                    )
+
+            self.assertEqual(len(result.records), 1)
+            self.assertIn("[Table]", result.records[0].content)
+            self.assertIn("| Key | Value |", result.records[0].content)
+            self.assertIn("| Owner | Finance |", result.records[0].content)
+        finally:
+            for name, value in original_values.items():
+                setattr(Config, name, value)
 
     def test_build_rag_pipeline_from_path_with_fake_client(self):
         chat_client = FakeChatClient()
