@@ -1,10 +1,10 @@
-# AI QA Assistant
+# Cognitive RAG Engine
 
 [![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
 
-An early-stage Python project for building an enterprise-grade RAG knowledge base.
+A Python project that builds an enterprise-grade RAG knowledge base, with the retrieval funnel and generation quality both held behind evaluation gates.
 
-The current codebase focuses on the foundation:
+The codebase covers:
 
 - DeepSeek-compatible chat API client
 - Environment-based configuration
@@ -118,7 +118,12 @@ Start here when you want to understand the engineering choices behind the projec
 ├── cache/                     # Redis cache decorators and serialization
 ├── access/                    # ACL/RBAC filters, resolvers, and MySQL metadata adapter
 ├── observability/             # Structured audit, metrics registry, request IDs, and alert hooks
-├── requirements.txt           # Python dependencies
+├── ci/                        # Push CI gates: full-suite accounting and frozen retrieval baselines
+├── .github/workflows/         # CI: offline test gate, Ragas replay gate, gated live evaluation
+├── Dockerfile                 # Service image build
+├── docker-compose.yml         # Full local stack: Qdrant, Redis, MySQL, app
+├── requirements.txt           # Development dependencies
+├── requirements-serve.txt     # Pinned runtime dependencies for the service image
 ├── document_loader/
 │   ├── base.py                # Document model and loader interface
 │   ├── chunking.py            # Text chunking
@@ -143,12 +148,18 @@ Start here when you want to understand the engineering choices behind the projec
 │   └── counter.py             # TokenCounter, tiktoken counter, and offline fallback
 ├── eval/
 │   ├── golden_set.jsonl       # Retrieval golden set with relevant source lists
-│   ├── fixtures/query_rewrites.jsonl # Deterministic query rewrite fixture
 │   ├── baseline.py            # Deterministic HashEmbeddingProvider baseline
 │   ├── metrics.py             # hit_rate, MRR, recall, negative metrics
 │   ├── reporting.py           # JSON and Markdown report rendering
 │   ├── run.py                 # python -m eval.run entry point
-│   ├── fixtures/              # Evaluation knowledge-base fixtures
+│   ├── ragas_run.py           # python -m eval.ragas_run replay/live/compare entry point
+│   ├── ragas_evaluation.py    # Ragas replay gate, fixture validation, and gating rules
+│   ├── ragas_live.py          # Gated live judge recording
+│   ├── bge_embedding.py       # Local fastembed BGE embedding for answer relevance
+│   ├── gemini_embedding.py    # Optional Gemini embedding for answer relevance
+│   ├── fixtures/              # Evaluation knowledge base and frozen fixtures
+│   │   ├── ragas_verdicts.jsonl   # Committed Ragas verdict baseline (replay gate input)
+│   │   └── query_rewrites.jsonl   # Deterministic query rewrite fixture
 │   └── reports/               # Generated evaluation reports
 ├── lexical/
 │   ├── tokenizer.py           # Shared normalization and tokenization
@@ -174,24 +185,31 @@ Start here when you want to understand the engineering choices behind the projec
 │   └── cleaner.py             # Text cleaning
 ├── tests/
 │   ├── fixtures/              # Sample TXT and Markdown fixtures
-│   ├── test_document_ingestion.py
-│   ├── test_api_client.py
-│   ├── test_embeddings.py
-│   ├── test_eval_metrics.py
-│   ├── test_hybrid.py
-│   ├── test_parent_child.py
-│   ├── test_context_packing.py
-│   ├── test_token_counter.py
-│   ├── test_rerank.py
 │   ├── test_acl.py
 │   ├── test_acl_mysql_integration.py
-│   ├── test_qdrant_store_mock.py
-│   ├── test_qdrant_store_integration.py
-│   ├── test_vector_store.py
-│   ├── test_rag_pipeline.py
-│   ├── test_service.py
+│   ├── test_api_client.py
+│   ├── test_bge_embedding.py
+│   ├── test_cache.py
+│   ├── test_ci_gates.py
+│   ├── test_context_packing.py
+│   ├── test_document_ingestion.py
+│   ├── test_e2e_integration.py
+│   ├── test_embeddings.py
+│   ├── test_eval_metrics.py
+│   ├── test_gemini_embedding.py
+│   ├── test_hybrid.py
 │   ├── test_observability.py
-│   └── test_rag_cli.py
+│   ├── test_parent_child.py
+│   ├── test_qdrant_store_integration.py
+│   ├── test_qdrant_store_mock.py
+│   ├── test_query_rewrite.py
+│   ├── test_rag_cli.py
+│   ├── test_rag_pipeline.py
+│   ├── test_ragas_eval.py
+│   ├── test_rerank.py
+│   ├── test_service.py
+│   ├── test_token_counter.py
+│   └── test_vector_store.py
 └── docs/
     ├── tech-selection.md      # Technology selection notes
     ├── architecture.md        # System architecture and data-flow diagrams
@@ -673,7 +691,7 @@ Record feature profiles separately and compare their means together with judge s
 
 ```bash
 python -m eval.ragas_run live --profile context_packing --repetitions 3 --fixture eval/fixtures/ragas-context-packing.jsonl --refresh-fixture
-python -m eval.ragas_run compare --before eval/fixtures/ragas-verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
+python -m eval.ragas_run compare --before eval/fixtures/ragas_verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
 ```
 
 The gate covers only answer-consuming dimensions: Faithfulness, Answer Relevance, and negative abstention/fabrication are gated, while Context Precision/Recall are reported-only and still emitted in full because they do not consume the generated answer. Generation prompts are calibrated per question shape toward an "answer plus minimal supporting phrase" middle ground — a bare answer leaves the judge's reverse-questions under-informed, while over-scaffolding drifts them away from the original question — and together with versioned statement extraction this brings all 16 positive samples to passing Faithfulness and Answer Relevance medians with every negative abstaining. That passing capture has been promoted to the committed verdict fixture (schema `ragas-verdicts-v5`, pinning the generation/extraction prompt versions, judge model, embedding, and gating scope), and `python -m eval.ragas_run replay` verifies the offline gate passes.

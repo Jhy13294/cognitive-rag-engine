@@ -1,10 +1,10 @@
-# AI QA Assistant
+# Cognitive RAG Engine
 
 [![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
 
-这是一个面向企业级 RAG 知识库的早期 Python 项目。
+这是一个构建企业级 RAG 知识库的 Python 项目，检索漏斗与生成质量都由评估门禁把关。
 
-当前项目重点是打好基础能力：
+当前具备的能力：
 
 - DeepSeek 兼容的聊天 API 客户端
 - 基于环境变量的配置管理
@@ -118,7 +118,12 @@
 ├── cache/                     # Redis 缓存装饰器和序列化
 ├── access/                    # ACL/RBAC filter、resolver 和 MySQL metadata 适配器
 ├── observability/             # 结构化审计、指标 registry、request ID 和告警钩子
-├── requirements.txt           # Python 依赖
+├── ci/                        # push CI 门禁：全量套件账目与冻结检索基线
+├── .github/workflows/         # CI：离线测试门禁、Ragas replay 门禁、gated live 评估
+├── Dockerfile                 # 服务镜像构建
+├── docker-compose.yml         # 本地全栈：Qdrant、Redis、MySQL 和应用
+├── requirements.txt           # 开发依赖
+├── requirements-serve.txt     # 服务镜像锁定的运行时依赖
 ├── document_loader/
 │   ├── base.py                # Document 模型和加载器接口
 │   ├── chunking.py            # 文本切分
@@ -143,12 +148,18 @@
 │   └── counter.py             # TokenCounter、tiktoken 计数器和离线兜底
 ├── eval/
 │   ├── golden_set.jsonl       # 使用 relevant 列表标注的检索 golden set
-│   ├── fixtures/query_rewrites.jsonl # 确定性 query rewrite fixture
 │   ├── baseline.py            # HashEmbeddingProvider 确定性基线
 │   ├── metrics.py             # hit_rate、MRR、recall、negative 指标
 │   ├── reporting.py           # JSON 和 Markdown 报告
 │   ├── run.py                 # python -m eval.run 入口
-│   ├── fixtures/              # 评估知识库样例
+│   ├── ragas_run.py           # python -m eval.ragas_run replay/live/compare 入口
+│   ├── ragas_evaluation.py    # Ragas replay 门禁、fixture 校验与门禁规则
+│   ├── ragas_live.py          # gated live 判官录制
+│   ├── bge_embedding.py       # answer relevance 本地 fastembed BGE embedding
+│   ├── gemini_embedding.py    # answer relevance 可选 Gemini embedding
+│   ├── fixtures/              # 评估知识库与冻结 fixture
+│   │   ├── ragas_verdicts.jsonl   # 已提交的 Ragas 判官冻结基线（replay 门禁输入）
+│   │   └── query_rewrites.jsonl   # 确定性 query rewrite fixture
 │   └── reports/               # 生成的评估报告
 ├── lexical/
 │   ├── tokenizer.py           # 共享 normalization 和 tokenization
@@ -174,24 +185,31 @@
 │   └── cleaner.py             # 文本清洗
 ├── tests/
 │   ├── fixtures/              # TXT 和 Markdown 样例文档
-│   ├── test_document_ingestion.py
-│   ├── test_api_client.py
-│   ├── test_embeddings.py
-│   ├── test_eval_metrics.py
-│   ├── test_hybrid.py
-│   ├── test_parent_child.py
-│   ├── test_context_packing.py
-│   ├── test_token_counter.py
-│   ├── test_rerank.py
 │   ├── test_acl.py
 │   ├── test_acl_mysql_integration.py
-│   ├── test_qdrant_store_mock.py
-│   ├── test_qdrant_store_integration.py
-│   ├── test_vector_store.py
-│   ├── test_rag_pipeline.py
-│   ├── test_service.py
+│   ├── test_api_client.py
+│   ├── test_bge_embedding.py
+│   ├── test_cache.py
+│   ├── test_ci_gates.py
+│   ├── test_context_packing.py
+│   ├── test_document_ingestion.py
+│   ├── test_e2e_integration.py
+│   ├── test_embeddings.py
+│   ├── test_eval_metrics.py
+│   ├── test_gemini_embedding.py
+│   ├── test_hybrid.py
 │   ├── test_observability.py
-│   └── test_rag_cli.py
+│   ├── test_parent_child.py
+│   ├── test_qdrant_store_integration.py
+│   ├── test_qdrant_store_mock.py
+│   ├── test_query_rewrite.py
+│   ├── test_rag_cli.py
+│   ├── test_rag_pipeline.py
+│   ├── test_ragas_eval.py
+│   ├── test_rerank.py
+│   ├── test_service.py
+│   ├── test_token_counter.py
+│   └── test_vector_store.py
 └── docs/
     ├── tech-selection.md      # 技术选型思考
     ├── architecture.md        # 系统架构与数据流图
@@ -673,7 +691,7 @@ python -m eval.ragas_run live --profile baseline --repetitions 3 --refresh-fixtu
 
 ```bash
 python -m eval.ragas_run live --profile context_packing --repetitions 3 --fixture eval/fixtures/ragas-context-packing.jsonl --refresh-fixture
-python -m eval.ragas_run compare --before eval/fixtures/ragas-verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
+python -m eval.ragas_run compare --before eval/fixtures/ragas_verdicts.jsonl --after eval/fixtures/ragas-context-packing.jsonl --before-label baseline --after-label context-packing
 ```
 
 门禁只覆盖消费生成答案的维度：Faithfulness、Answer Relevance 和负样本弃答/虚构进入 gate，Context Precision/Recall 不消费答案、只作为 reported-only 完整输出。生成提示按问题形状校准到“答案 + 最小支撑短语”的中间量——裸答案会让判官反推问题信息不足、过度脚手架又会漂离原问——配合版本化 statement 抽取，使 16 条正样本的 Faithfulness 与 Answer Relevance median 全部达标、负样本全部弃答。这份通过门禁的 capture 已提升为正式冻结 verdict fixture（schema `ragas-verdicts-v5`，pin 生成与抽取 prompt 版本、judge model、embedding 与 gating scope），`python -m eval.ragas_run replay` 离线自证门禁通过。
