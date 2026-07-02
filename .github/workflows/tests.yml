@@ -1,0 +1,34 @@
+name: Offline Test Gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RAGAS_ENABLED: "true"
+      RUN_RAGAS_EVAL: "false"
+      RAGAS_JUDGE_MODEL: "deepseek-v4-pro"
+      RAGAS_DO_NOT_TRACK: "true"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run full offline unittest suite
+        run: python -m ci.unittest_gate --output ci-artifacts/unittest-summary.json --verbosity 1
+      - name: Check frozen retrieval baselines
+        run: python -m ci.retrieval_baseline_gate --report-dir ci-artifacts/retrieval-baselines
+      - name: Upload offline gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-test-gate
+          path: ci-artifacts/
+          if-no-files-found: warn

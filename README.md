@@ -1,5 +1,7 @@
 # AI QA Assistant
 
+[![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
+
 An early-stage Python project for building an enterprise-grade RAG knowledge base.
 
 The current codebase focuses on the foundation:

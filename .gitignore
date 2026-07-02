@@ -5,6 +5,7 @@ __pycache__/
 logs/
 tasks/
 memory/
+ci-artifacts/
 # Generated evaluation reports
 eval/reports/*.json
 eval/reports/*.md

@@ -1,5 +1,7 @@
 # AI QA Assistant
 
+[![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
+
 这是一个面向企业级 RAG 知识库的早期 Python 项目。
 
 当前项目重点是打好基础能力：
