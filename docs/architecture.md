@@ -251,6 +251,11 @@ flowchart TD
 - Context packing：不应改变 retrieval metrics。
 - Multi-query retrieval：属于检索侧，可以合法改变 hit/MRR/recall，但必须分 capability 看。
 
+持续集成把这套评估变成每次 push 都跑的两道离线门禁，均不需要任何密钥：
+
+- 测试账目门禁：先清空全部外部服务环境变量，再跑完整测试套件，并把运行数、失败数、错误数、跳过数以及每类跳过原因的条数钉成精确常量逐项比对。任何一项对不上都失败，防止“测试被静默跳过”伪装成全绿。
+- 检索基线门禁：以 `--no-cache` 实跑 dense、hybrid、parent-child 三个 profile 的评估，把 MRR@3 与冻结基线做六位小数的精确比对。检索漏斗的任何回归或漂移都会在 push 时立即暴露；Linux CI 与本地 Windows 跑出的分数逐位一致，也顺带证明了基线的跨平台可复现性。
+
 ## 当前部署态
 
 - 本地开发：CLI + unittest + memory store。
@@ -281,7 +286,7 @@ flowchart TD
     S --> C2["Faithfulness contexts\n[n] filename: content"]
     C1 --> CP["Context Precision / Recall\nreported only"]
     C2 --> FAI["Faithfulness gate\nversioned prompt + narrow statement guard"]
-    S --> AR["Answer Relevance gate\nGemini embedding"]
+    S --> AR["Answer Relevance gate\nlocal bge embedding"]
     CP --> J["DeepSeek judge\n5 repetitions"]
     FAI --> J
     AR --> J
@@ -291,9 +296,9 @@ flowchart TD
 
 live 轨先通过既有 `RAGPipeline.answer()` 生成一次答案，再固定 answer/context 重复判官五次。Faithfulness 与 Answer Relevance 按 case 使用 median 过阈值，MAD 衡量中心估计附近的稳健离散度；negative 样本单独 gate abstention/fabrication。Context Precision/Recall 的 median、MAD、mean/stddev/min/max 仍完整输出，但不产生 gate failure。
 
-Answer Relevance 的 Gemini vectors 在 Ragas adapter 边界统一做 L2 归一化。live 判官原始分进入 fixture 前经过紧容差数值守卫：只将 `[-1e-6, 0)` 和 `(1, 1+1e-6]` clamp 回边界；NaN、inf 和更大越界立即失败。该容差只属于 capture，fixture 中的值必须已经严格位于 `[0,1]`，offline replay 的校验不放宽。
+Answer Relevance 的 embedding 默认走本地 fastembed `BAAI/bge-small-en-v1.5`（384 维、无 key、可完全离线），Gemini `gemini-embedding-001` 作为可选 provider；两条路的向量都在 Ragas adapter 边界统一做 L2 归一化。live 判官原始分进入 fixture 前经过紧容差数值守卫：只将 `[-1e-6, 0)` 和 `(1, 1+1e-6]` clamp 回边界；NaN、inf 和更大越界立即失败。该容差只属于 capture，fixture 中的值必须已经严格位于 `[0,1]`，offline replay 的校验不放宽。
 
-Faithfulness 与另外两类 context 指标使用不同输入：Faithfulness 需要验证答案中的来源声明，因此按 `RetrievedSource.index` 构造 `[n] filename: content`；Context Precision/Recall 继续使用 content-only。文件名从 metadata path 取 basename，绝对路径不外发。Answer Relevance 不消费 retrieved contexts，只使用问题、答案和 Gemini embedding。
+Faithfulness 与另外两类 context 指标使用不同输入：Faithfulness 需要验证答案中的来源声明，因此按 `RetrievedSource.index` 构造 `[n] filename: content`；Context Precision/Recall 继续使用 content-only。文件名从 metadata path 取 basename，绝对路径不外发。Answer Relevance 不消费 retrieved contexts，只使用问题、答案和所选 embedding provider 的向量。
 
 Faithfulness 的 statement extraction 是概率步骤，而后续 NLI 只接收 context 与 statement，不接收原始 question。版本化 prompt 负责保留联合要求和不可缺失的理由；窄确定性 guard 只处理单句 `is relevant because`，防止关系 claim 与证明它的具体事实被拆开。该 guard 只修正 statement 边界，不修改 NLI verdict，未被 context 支持的完整 claim 仍应判 0。
 
@@ -301,4 +306,4 @@ Context Precision/Recall 不消费 generated answer，当前量到的是冻结 h
 
 replay 轨不导入 Ragas runtime、不联网，fixture 只保存 hash、分数和 provenance。当前 schema 为 `ragas-verdicts-v5`，会拒绝 stale golden、qid 集不完整、synthetic recording，以及 judge model、Ragas 版本、重复次数、生成 prompt、statement prompt、Faithfulness context format 或 gating scope 漂移。
 
-live 数据出境包括正样本 question、generated answer、检索正文、来源文件名和 ground truth；Answer Relevance 还会向 embedding endpoint 发送文本。该路径默认关闭，ACL 敏感生产语料未经审批不得运行。当前装置已通过离线测试，但首份正式 fixture 仍需 gated 付费复测后才能冻结。
+live 数据出境包括正样本 question、generated answer、检索正文、来源文件名和 ground truth；Answer Relevance 默认在本地 embedding 上打分、不出境，仅在显式选用远程 embedding provider 时才会向 embedding endpoint 发送文本。该路径默认关闭，ACL 敏感生产语料未经审批不得运行。首份正式 verdict fixture 已经冻结：16 条正样本的 Faithfulness 与 Answer Relevance median 全部达标、负样本全部弃答，并由独立第二份 capture 确认稳定，离线 replay 自证门禁通过。
