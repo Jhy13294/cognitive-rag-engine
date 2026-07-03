@@ -104,6 +104,7 @@ Start here when you want to understand the engineering choices behind the projec
 - **[Technology Selection](docs/tech-selection.md)**: why the project uses the current embedding providers, vector stores, retrieval stack, service protocol, access filters, caching, and observability design.
 - **[Architecture](docs/architecture.md)**: system architecture, ingest/query data flow, retrieval funnel, access control, cache layout, observability, and evaluation boundaries.
 - **[Crash / Pitfall Log](docs/dev-log-crashing.md)**: hard-earned debugging notes about metric pollution, fake streaming, async traps, cache invalidation, access boundaries, audit leakage, and token accounting.
+- **[Local Benchmarking](docs/benchmark.md)**: reproducible local latency/QPS runs against the keyless compose stack; numbers exclude real paid generation.
 
 ## Directory Structure
 
@@ -161,6 +162,9 @@ Start here when you want to understand the engineering choices behind the projec
 │   │   ├── ragas_verdicts.jsonl   # Committed Ragas verdict baseline (replay gate input)
 │   │   └── query_rewrites.jsonl   # Deterministic query rewrite fixture
 │   └── reports/               # Generated evaluation reports
+├── bench/
+│   ├── run.py                 # python -m bench.run zero-paid local latency/QPS benchmark
+│   └── reports/               # Generated benchmark reports (git-ignored)
 ├── lexical/
 │   ├── tokenizer.py           # Shared normalization and tokenization
 │   └── bm25.py                # IDF, BM25, and lexical scoring primitives

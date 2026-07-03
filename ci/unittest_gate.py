@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict
 
 
-EXPECTED_RAN = 307
+EXPECTED_RAN = 311
 EXPECTED_FAILURES = 0
 EXPECTED_ERRORS = 0
 EXPECTED_SKIPPED = 19

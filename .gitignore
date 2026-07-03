@@ -6,6 +6,7 @@ logs/
 tasks/
 memory/
 ci-artifacts/
+bench/reports/
 # Generated evaluation reports
 eval/reports/*.json
 eval/reports/*.md

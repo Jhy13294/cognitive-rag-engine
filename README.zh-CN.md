@@ -104,6 +104,7 @@
 - **[技术选型思考](docs/tech-selection.md)**：为什么选择当前 embedding provider、向量库、检索栈、服务协议、访问过滤、缓存和可观测性设计。
 - **[系统架构](docs/architecture.md)**：系统架构、ingest/query 数据流、检索漏斗、访问控制、缓存布局、可观测性和评估边界。
 - **[核心踩坑记录](docs/dev-log-crashing.md)**：关于指标污染、假流式、异步陷阱、缓存失效、访问边界、审计泄漏和 token 账目等问题的调试记录。
+- **[本机基准](docs/benchmark.md)**：面向零密钥 compose 栈的可复跑延迟/QPS 口径；数字不包含真实付费生成。
 
 ## 目录结构
 
@@ -161,6 +162,9 @@
 │   │   ├── ragas_verdicts.jsonl   # 已提交的 Ragas 判官冻结基线（replay 门禁输入）
 │   │   └── query_rewrites.jsonl   # 确定性 query rewrite fixture
 │   └── reports/               # 生成的评估报告
+├── bench/
+│   ├── run.py                 # python -m bench.run 零付费本机延迟/QPS 基准入口
+│   └── reports/               # 生成的基准报告（git 忽略）
 ├── lexical/
 │   ├── tokenizer.py           # 共享 normalization 和 tokenization
 │   └── bm25.py                # IDF、BM25 和词法评分 primitives
