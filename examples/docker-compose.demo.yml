@@ -1,0 +1,25 @@
+# Zero-key demo override for the full compose stack.
+#
+# Swaps the paid providers for the offline hash embedding and a local
+# deterministic chat stub (examples/demo_chat_stub.py) reachable from the
+# app container, and unmaps the backing-store host ports so the demo cannot
+# collide with Qdrant/Redis/MySQL instances already running on this machine.
+# The app stays on http://localhost:8000.
+services:
+  qdrant:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  mysql:
+    ports: !reset []
+  app:
+    environment:
+      DEEPSEEK_API_KEY: demo-local
+      DEEPSEEK_API_URL: http://host.docker.internal:18080/v1/chat/completions
+      EMBEDDING_PROVIDER: hash
+      EMBEDDING_DIMENSION: "128"
+      VECTOR_STORE_COLLECTION: demo_kb
+      CACHE_NAMESPACE: demo-cache
+      AUDIT_HASH_SALT: demo-local-audit-salt
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

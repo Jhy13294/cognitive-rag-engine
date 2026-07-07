@@ -2,30 +2,69 @@
 
 [![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
 
-这是一个构建企业级 RAG 知识库的 Python 项目，检索漏斗与生成质量都由评估门禁把关。
+## 一句话
 
-当前具备的能力：
+一个面向企业知识库场景、工程化的 RAG 系统：检索漏斗与生成质量都由评估门禁把关。重点在可评估检索、混合检索、重排、ACL 检索前过滤、缓存、可观测性和异步 FastAPI 服务——不是一个单文件 demo。
 
-- DeepSeek 兼容的聊天 API 客户端
-- 基于环境变量的配置管理
-- 滚动文件日志
-- TXT、Markdown、PDF、Word 文档加载
-- 保守型文本清洗
-- 面向向量入库的文本切分和元数据保留
-- 生产级 Embedding 和向量库适配器
-- 确定性检索评估和可选重排
-- 共享词法检索基础能力
-- Dense + BM25 混合检索和 RRF 融合
-- Parent-Child 分块：子块检索、父块展开供给生成
-- 可选上下文装填：整块纳入、确定性去重、引用连号和 token 预算
-- Query Rewrite / Multi-Query：确定性改写 fixture 与跨 query RRF 融合
-- FastAPI 异步服务层：ingest/query HTTP 接口和 SSE 流式返回
-- 可选 Redis 三层缓存：query embedding、检索结果和生成答案
-- 可选 MySQL ACL/RBAC 检索前过滤：权限异常 fail-closed
-- 可选结构化审计与有限标签 Prometheus 指标：运行时观测故障 fail-open
-- liveness/readiness 双探针：后端 readiness 断连时 fail-closed
+## 为什么做这个项目
 
-内置认证等企业级能力尚未实现。
+大多数 RAG 示例止步于「PDF → embedding → 相似度检索 → 回答」。这足够跑一个 notebook，却把决定检索是否正确、答案是否有据、系统是否能安全上线的每一个决策都藏了起来。本项目把这些当成真正要做的工作：检索质量每次 push 都对着冻结基线度量，生成质量由 LLM-as-judge 轨评分，权限过滤前置于候选评分，服务自带缓存、可观测性和健康探针。它是 production-shaped（生产形态），而非 production-complete（生产完备）——边界在 [生产化边界](#生产化边界) 里写清楚。
+
+## 系统架构
+
+```text
+文档入库（TXT / Markdown / PDF+OCR / Word）
+  → 清洗 / 切分（父子分块）
+  → embedding
+  → dense 检索 + BM25 稀疏检索
+  → RRF 混合融合
+  → 重排
+  → 父块展开
+  → 上下文装填
+  → 带引用生成
+  → 评估 / 指标 / 缓存 / ACL 检索前过滤
+```
+
+ACL 检索前过滤、Redis 缓存和可观测性是包裹这条漏斗、而非嵌在其中：权限过滤前置于评分，缓存包裹 retrieve/answer 调用，审计/指标是 fail-open 旁路。数据流细节见 [docs/architecture.md](docs/architecture.md)。
+
+## 核心亮点
+
+- **可评估检索** —— 确定性 golden set 评估（hit rate、MRR、recall、负样本指标），逐位可复现的冻结基线，CI 门禁每次 push 对 MRR@3 做六位小数精确断言。
+- **混合检索** —— Dense + BM25 经 RRF 融合，外加确定性多查询改写与跨查询融合。
+- **重排与父子分块** —— 可插拔重排、失败降级回 dense；子块用于检索，父块展开供给生成。
+- **上下文装填** —— 生成输入侧的整块纳入、确定性去重、引用连号和 token 预算。
+- **异步 FastAPI 服务** —— `/ingest`、`/query` 与 SSE `/query/stream`，同步漏斗走线程池 offload、异常统一脱敏映射。
+- **Redis 缓存与 ACL/RBAC 检索前过滤** —— 三层缓存（query embedding / 检索结果 / 答案）+ 原子 corpus version 失效；ACL fail-closed 且前置于候选评分，有效 ACL 进入缓存 key。
+- **可观测性与健康门禁** —— 有界 label 的 Prometheus 指标、脱敏 JSON-line 审计、request ID、liveness/readiness 双探针；CI 把测试账目钉死以防「静默跳过伪装全绿」。
+
+## 快速开始
+
+最快一瞥，无需 Docker、无需 API key —— 在 golden set 上跑离线检索评估：
+
+```bash
+pip install -r requirements.txt
+python -m eval.run
+```
+
+想看完整端到端流程（离线评估 **加** 一个零密钥全栈 HTTP demo，含 ACL、引用、缓存计数和健康探针），见 **[examples/minimal_demo.md](examples/minimal_demo.md)**。
+
+## 评估
+
+检索质量与生成质量分两轨评估，离线回放是默认的可复现路径：
+
+- **确定性检索评估** —— `python -m eval.run` 用 `HashEmbeddingProvider` 对 JSONL golden set（约 20 条人工标注查询）打分，报告 MRR、Recall、hit rate 和专门的负样本指标。dense 基线 `MRR@3 = 0.677083` 已冻结，CI 检索门禁每次 push 实跑三个 profile 并对 MRR@3 做六位小数精确断言。
+- **生成质量（Ragas）** —— live LLM-as-judge 轨对 Faithfulness、Answer Relevance、Context Precision/Recall 打分，温度钉死、多次重复、median 门禁；CI 只离线回放冻结 verdict fixture。分数是小样本上带方差的判官估计，不是 production 质量下限。
+
+详见下方 [生成质量评估](#生成质量评估)，零付费本机延迟/QPS 口径见 [docs/benchmark.md](docs/benchmark.md)。
+
+## 生产化边界
+
+这是一个面向企业、生产形态（production-shaped）的 RAG 后端，而非开箱即用的 production-ready 产品。边界是刻意的，且事先讲清：
+
+- **内置认证尚未实现。** 服务不校验 JWT 或 session。
+- **ACL 依赖受信上游网关。** principal 从受信上游 header 读取；必须部署在一个持有该 header 的认证网关之后。body 传入的 principal 默认拒绝，除非为本地测试显式开启。
+- **离线回放/golden 基线是默认可复现路径。** live LLM-as-judge 评估和付费检索需要 API key；在 CI 里无密钥跑的是冻结基线和离线门禁。
+- **评估分数是小样本上的判官估计。** golden set 约 20 条人工标注查询；分数当方向参考、不是 production 质量保证。
 
 ## 当前进度
 
@@ -165,6 +204,10 @@
 ├── bench/
 │   ├── run.py                 # python -m bench.run 零付费本机延迟/QPS 基准入口
 │   └── reports/               # 生成的基准报告（git 忽略）
+├── examples/
+│   ├── minimal_demo.md        # 离线评估 + 零密钥全栈 HTTP demo
+│   ├── demo_chat_stub.py      # demo 用的本地确定性聊天 stub
+│   └── docker-compose.demo.yml # demo 用的零密钥 compose override
 ├── lexical/
 │   ├── tokenizer.py           # 共享 normalization 和 tokenization
 │   └── bm25.py                # IDF、BM25 和词法评分 primitives
@@ -183,8 +226,13 @@
 │   ├── chat.py                # 生产 Chat 改写器
 │   └── factory.py             # Query rewriter 工厂
 ├── rag/
-│   ├── context_packing.py     # top-k 后的上下文装填
-│   └── pipeline.py            # 最小 RAG 管线
+│   ├── pipeline.py            # 高层 RAG 编排与兼容导出
+│   ├── retrieval_orchestrator.py # dense/hybrid/multi-query 检索与重排
+│   ├── source_finalizer.py    # 父块展开与兄弟子块折叠
+│   ├── prompt_builder.py      # 系统提示、scope 指令、上下文组装
+│   ├── question_classifier.py # 确定性问题形状启发式
+│   ├── models.py              # 共享 source/response 数据模型
+│   └── context_packing.py     # top-k 后的上下文装填
 ├── text_cleaner/
 │   └── cleaner.py             # 文本清洗
 ├── tests/

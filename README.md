@@ -2,30 +2,69 @@
 
 [![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
 
-A Python project that builds an enterprise-grade RAG knowledge base, with the retrieval funnel and generation quality both held behind evaluation gates.
+## One-liner
 
-The codebase covers:
+An engineering-oriented RAG system for enterprise knowledge bases, where both the retrieval funnel and generation quality are held behind evaluation gates. The focus is on evaluated retrieval, hybrid search, reranking, ACL pre-filtering, caching, observability, and an async FastAPI service — not on being a single-file demo.
 
-- DeepSeek-compatible chat API client
-- Environment-based configuration
-- Rotating file logging
-- Document loading for TXT, Markdown, PDF, and Word files
-- Conservative text cleaning
-- Metadata-preserving text chunking for later vector indexing
-- Production embedding and vector-store adapters
-- Deterministic retrieval evaluation and optional reranking
-- Shared lexical retrieval primitives
-- Hybrid dense + BM25 retrieval with RRF fusion
-- Parent-child chunking for child retrieval and parent context expansion
-- Optional context packing with whole-block inclusion, deterministic deduplication, and token-aware budgets
-- Query rewrite / multi-query retrieval with deterministic fixtures and cross-query RRF
-- Async FastAPI service layer for ingest/query and SSE streaming
-- Optional Redis cache wrappers for query embeddings, retrieval results, and generated answers
-- Optional MySQL-backed ACL/RBAC pre-filtering with fail-closed access checks
-- Optional structured audit logging and bounded-label Prometheus metrics with fail-open runtime emission
-- Split liveness/readiness probes with fail-closed backend readiness checks
+## Why this project
 
-Built-in authentication is planned but not implemented yet.
+Most RAG examples stop at "PDF → embedding → similarity search → answer." That is enough for a notebook but hides every decision that decides whether retrieval is correct, whether the answer is grounded, and whether the system is safe to put behind a service. This project treats those as the actual work: retrieval quality is measured against a frozen baseline on every push, generation quality is scored by an LLM-as-judge track, access control filters before scoring, and the service ships with caching, observability, and health probes. It is production-shaped rather than production-complete — the boundaries are spelled out under [Production caveats](#production-caveats).
+
+## Architecture
+
+```text
+Document ingestion (TXT / Markdown / PDF+OCR / Word)
+  → cleaning / chunking (parent-child)
+  → embedding
+  → dense retrieval + BM25 sparse retrieval
+  → RRF hybrid fusion
+  → rerank
+  → parent expansion
+  → context packing
+  → generation with citations
+  → evaluation / metrics / cache / ACL pre-filtering
+```
+
+ACL pre-filtering, Redis caching, and observability wrap this funnel rather than sitting inside it: access filters apply before scoring, caches wrap the retrieve/answer calls, and audit/metrics are a fail-open side channel. See [docs/architecture.md](docs/architecture.md) for the data-flow detail.
+
+## Key features
+
+- **Evaluated retrieval** — deterministic golden-set evaluation (hit rate, MRR, recall, negative-query metrics) with a bit-reproducible frozen baseline the CI gate asserts to six decimals on every push.
+- **Hybrid retrieval** — dense + BM25 with RRF fusion, plus deterministic multi-query rewriting and cross-query fusion.
+- **Rerank and parent-child chunking** — pluggable reranking with dense fallback; child chunks for retrieval, parent chunks expanded for generation.
+- **Context packing** — whole-block inclusion, deterministic deduplication, contiguous citations, and token-aware budgets on the generation input.
+- **Async FastAPI service** — `/ingest`, `/query`, and SSE `/query/stream`, with a threadpool offload for the synchronous funnel and sanitized error mapping.
+- **Redis cache and ACL/RBAC pre-filtering** — three cache layers (query embedding / retrieval / answer) with atomic corpus-version invalidation, and fail-closed ACL filtering applied before candidate scoring with the effective ACL folded into cache keys.
+- **Observability and health gates** — bounded-label Prometheus metrics, sanitized JSON-line audit, request IDs, and split liveness/readiness probes; a CI suite pins exact test accounting to prevent silent-skip false greens.
+
+## Quick start
+
+Fastest look, no Docker and no API keys — run the offline retrieval evaluation over the golden set:
+
+```bash
+pip install -r requirements.txt
+python -m eval.run
+```
+
+For a full end-to-end walk-through (offline eval **and** a zero-key full-stack HTTP demo with ACL, citations, cache counters, and health probes), see **[examples/minimal_demo.md](examples/minimal_demo.md)**.
+
+## Evaluation
+
+Retrieval and generation quality are evaluated on separate tracks, and the offline replay path is the default reproducible one:
+
+- **Deterministic retrieval evaluation** — `python -m eval.run` scores a JSONL golden set (~20 hand-labeled queries) with `HashEmbeddingProvider`, reporting MRR, Recall, hit rate, and dedicated negative-query metrics. The dense baseline `MRR@3 = 0.677083` is frozen, and the CI retrieval gate re-runs three profiles on every push and asserts MRR@3 to six decimals.
+- **Generation quality (Ragas)** — a live LLM-as-judge track scores Faithfulness, Answer Relevance, and Context Precision/Recall with pinned temperatures, repetition, and median-based gating; CI replays a frozen verdict fixture fully offline. Scores are noisy judge estimates on a small hand-labeled set, not a production quality floor.
+
+See [Generation Quality Evaluation](#generation-quality-evaluation) below and [docs/benchmark.md](docs/benchmark.md) for the zero-paid local latency/QPS methodology.
+
+## Production caveats
+
+This is an enterprise-oriented, production-shaped RAG backend, not a turnkey production-ready product. The boundaries are deliberate and stated up front:
+
+- **Built-in authentication is planned but not implemented.** The service does not validate JWTs or sessions.
+- **ACL depends on a trusted upstream gateway.** The principal is read from a trusted upstream header; you must deploy behind an authentication gateway that owns that header. Body-provided principals are rejected unless explicitly enabled for local testing.
+- **The offline replay/golden baseline is the default reproducible path.** Live LLM-as-judge evaluation and paid retrieval require API keys; the frozen baselines and offline gates are what run keyless in CI.
+- **Evaluation scores are judge estimates on a small set.** The golden set is roughly 20 hand-labeled queries; treat scores as directional, not as a production quality guarantee.
 
 ## Project Status
 
@@ -165,6 +204,10 @@ Start here when you want to understand the engineering choices behind the projec
 ├── bench/
 │   ├── run.py                 # python -m bench.run zero-paid local latency/QPS benchmark
 │   └── reports/               # Generated benchmark reports (git-ignored)
+├── examples/
+│   ├── minimal_demo.md        # Offline eval + zero-key full-stack HTTP demo
+│   ├── demo_chat_stub.py      # Local deterministic chat stub for the demo
+│   └── docker-compose.demo.yml # Zero-key compose override for the demo
 ├── lexical/
 │   ├── tokenizer.py           # Shared normalization and tokenization
 │   └── bm25.py                # IDF, BM25, and lexical scoring primitives
@@ -183,8 +226,13 @@ Start here when you want to understand the engineering choices behind the projec
 │   ├── chat.py                # Chat-backed production query rewriter
 │   └── factory.py             # Query rewriter factory
 ├── rag/
-│   ├── context_packing.py     # Post-retrieval context packing
-│   └── pipeline.py            # Minimal RAG pipeline
+│   ├── pipeline.py            # High-level RAG orchestration and compatibility exports
+│   ├── retrieval_orchestrator.py # Dense/hybrid/multi-query retrieval and rerank
+│   ├── source_finalizer.py    # Parent expansion and sibling-child collapse
+│   ├── prompt_builder.py      # System prompt, scope instructions, context assembly
+│   ├── question_classifier.py # Deterministic question-shape heuristics
+│   ├── models.py              # Shared source/response data models
+│   └── context_packing.py     # Post-retrieval context packing
 ├── text_cleaner/
 │   └── cleaner.py             # Text cleaning
 ├── tests/

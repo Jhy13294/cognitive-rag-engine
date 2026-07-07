@@ -6,6 +6,9 @@ from .exceptions import (
     RAGConfigurationError,
 )
 from .pipeline import RAGPipeline, RAGResponse, RetrievedSource
+from .prompt_builder import PromptBuilder
+from .retrieval_orchestrator import RetrievalOrchestrator
+from .source_finalizer import SourceFinalizer
 
 __all__ = [
     "ContextPacker",
@@ -13,8 +16,11 @@ __all__ = [
     "EmbeddingSpaceMismatchError",
     "IndexNotReadyError",
     "PackedContext",
+    "PromptBuilder",
     "RAGConfigurationError",
     "RAGPipeline",
     "RAGResponse",
+    "RetrievalOrchestrator",
     "RetrievedSource",
+    "SourceFinalizer",
 ]

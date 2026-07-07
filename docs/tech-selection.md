@@ -1,4 +1,4 @@
-# 技术选型思考：企业级 RAG 知识库
+# 技术选型思考：面向企业的 RAG 知识库
 
 本文记录当前项目为什么选择这些框架、模型、协议和工程边界。它不是安装手册，而是后续做架构复盘、替换组件和评估收益时的判断依据。
 
@@ -40,7 +40,7 @@ TXT 加载器保留多编码探测，但在 latin-1 fallback 之前先拒绝明�
 选择 OpenAI embedding 的原因：
 
 - `text-embedding-3` 系列支持 `dimensions` 参数，适合 Matryoshka 裁剪到 512 或 256 维，降低向量库成本。
-- API 稳定、生态成熟，便于先把企业级 RAG 工程边界跑通。
+- API 稳定、生态成熟，便于先把面向企业的 RAG 工程边界跑通。
 - 与 `TokenCounter` 配合后可以做 token-aware batching，避免中文被旧 `len/4` 估算低估而超限。
 
 保留 Hash provider 的原因：
