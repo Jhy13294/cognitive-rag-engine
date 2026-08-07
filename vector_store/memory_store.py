@@ -54,8 +54,31 @@ class InMemoryVectorStore(VectorStore):
             score = cosine_similarity(query_embedding, record.embedding)
             results.append(SearchResult(record=record, score=score))
 
-        results.sort(key=lambda result: result.score, reverse=True)
+        results.sort(key=self._result_sort_key)
         return results[:top_k]
+
+    @staticmethod
+    def _result_sort_key(result: SearchResult) -> tuple:
+        """Return a stable semantic order for equal-score search results."""
+        metadata = result.record.metadata
+        source = str(metadata.get("source", "")).replace("\\", "/")
+
+        def numeric_metadata(name: str) -> int:
+            value = metadata.get(name)
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 2**63 - 1
+
+        return (
+            -result.score,
+            source.casefold(),
+            source,
+            numeric_metadata("chunk_index"),
+            numeric_metadata("start_char"),
+            numeric_metadata("end_char"),
+            result.record.id,
+        )
 
     def get_record(self, record_id: str) -> Optional[VectorRecord]:
         """Return a record by id."""

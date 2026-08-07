@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .base import DocumentLoader
 from logger import setup_logger
@@ -18,26 +18,47 @@ logger = setup_logger(__name__)
 class MDLoader(DocumentLoader):
     """Markdown document loader for RAG ingestion."""
 
+    _CODE_BLOCK_PATTERN = re.compile(
+        r"^```(?P<language>[A-Za-z0-9_+.\-]*)[ \t]*\r?\n"
+        r"(?P<code>.*?)^[ \t]*```[ \t]*(?=\r?$)",
+        flags=re.DOTALL | re.MULTILINE,
+    )
+
     def __init__(
         self,
         file_path: str,
         keep_markdown_syntax: bool = False,
-        extract_code_blocks: bool = True,
+        extract_code_blocks: Optional[bool] = None,
         remove_links: bool = True,
         use_yaml_lib: bool = True,
+        code_block_mode: Optional[str] = None,
     ):
         """Initialize the Markdown loader.
 
         Args:
             file_path: Source file path.
             keep_markdown_syntax: Whether to keep Markdown markup.
-            extract_code_blocks: Whether to replace code blocks with placeholders.
+            extract_code_blocks: Compatibility switch. True replaces fenced code
+                with metadata placeholders; False drops it. When omitted, code
+                bodies remain searchable in the document text.
             remove_links: Whether to remove URLs while keeping link text.
             use_yaml_lib: Whether to prefer PyYAML for Front Matter parsing.
+            code_block_mode: Explicit ``preserve``, ``extract``, or ``drop`` mode.
         """
         super().__init__(file_path)
+        if code_block_mode is not None and extract_code_blocks is not None:
+            raise ValueError("Set either code_block_mode or extract_code_blocks, not both")
+        if code_block_mode is None:
+            if extract_code_blocks is None:
+                code_block_mode = "preserve"
+            else:
+                code_block_mode = "extract" if extract_code_blocks else "drop"
+        if code_block_mode not in {"preserve", "extract", "drop"}:
+            raise ValueError("code_block_mode must be one of: preserve, extract, drop")
+
         self.keep_markdown_syntax = keep_markdown_syntax
-        self.extract_code_blocks = extract_code_blocks
+        self.code_block_mode = code_block_mode
+        self.extract_code_blocks = code_block_mode == "extract"
         self.remove_links = remove_links
         self.use_yaml_lib = use_yaml_lib and HAS_YAML
         self.code_blocks: List[Dict] = []
@@ -60,6 +81,7 @@ class MDLoader(DocumentLoader):
             self._front_matter = metadata
 
             if self.keep_markdown_syntax:
+                self._record_code_blocks(content)
                 processed_content = content.strip()
             else:
                 processed_content = self._convert_to_plain_text(content)
@@ -179,10 +201,13 @@ class MDLoader(DocumentLoader):
         """Convert Markdown content into plain text for indexing."""
         text = content
 
-        if self.extract_code_blocks:
+        protected_code_blocks = {}
+        if self.code_block_mode == "extract":
             text = self._extract_and_replace_code_blocks(text)
-        else:
+        elif self.code_block_mode == "drop":
             text = self._remove_code_blocks(text)
+        else:
+            text, protected_code_blocks = self._protect_code_blocks(text)
 
         text = self._convert_tables(text)
         text = self._remove_images(text)
@@ -200,31 +225,59 @@ class MDLoader(DocumentLoader):
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
 
+        if protected_code_blocks:
+            token_pattern = "|".join(re.escape(token) for token in protected_code_blocks)
+            text = re.sub(token_pattern, lambda match: protected_code_blocks[match.group(0)], text)
+
         return text.strip()
 
     def _extract_and_replace_code_blocks(self, text: str) -> str:
         """Extract fenced code blocks and replace them with placeholders."""
-        code_block_pattern = r"```([A-Za-z0-9_+-]*)\n(.*?)```"
-
         def replace_code(match):
-            language = match.group(1) or "unknown"
-            code = match.group(2).strip()
-            index = len(self.code_blocks)
-            self.code_blocks.append(
-                {
-                    "language": language,
-                    "code": code,
-                    "index": index,
-                    "char_count": len(code),
-                }
-            )
+            language, _, index = self._record_code_block(match)
             return f"\n[Code block {index + 1}: {language}]\n"
 
-        return re.sub(code_block_pattern, replace_code, text, flags=re.DOTALL)
+        return self._CODE_BLOCK_PATTERN.sub(replace_code, text)
+
+    def _protect_code_blocks(self, text: str) -> Tuple[str, Dict[str, str]]:
+        """Protect code bodies while the surrounding Markdown is normalized."""
+        protected = {}
+
+        def protect_code(match):
+            _, code, index = self._record_code_block(match)
+            token = f"CODEBLOCKPRESERVE{index:08d}TOKEN"
+            protected[token] = code
+            return f"\n{token}\n"
+
+        return self._CODE_BLOCK_PATTERN.sub(protect_code, text), protected
+
+    def _record_code_blocks(self, text: str) -> None:
+        """Record fenced code metadata without changing Markdown content."""
+        for match in self._CODE_BLOCK_PATTERN.finditer(text):
+            self._record_code_block(match)
+
+    def _record_code_block(self, match) -> Tuple[str, str, int]:
+        """Append one fenced block to metadata and return its normalized fields."""
+        language = match.group("language") or "unknown"
+        code = match.group("code")
+        if code.endswith("\r\n"):
+            code = code[:-2]
+        elif code.endswith("\n"):
+            code = code[:-1]
+        index = len(self.code_blocks)
+        self.code_blocks.append(
+            {
+                "language": language,
+                "code": code,
+                "index": index,
+                "char_count": len(code),
+            }
+        )
+        return language, code, index
 
     def _remove_code_blocks(self, text: str) -> str:
         """Remove fenced code blocks."""
-        return re.sub(r"```[A-Za-z0-9_+-]*\n.*?```", "", text, flags=re.DOTALL)
+        return self._CODE_BLOCK_PATTERN.sub("", text)
 
     def _convert_tables(self, text: str) -> str:
         """Keep table cell text while removing Markdown table syntax."""

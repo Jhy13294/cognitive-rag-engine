@@ -7,6 +7,14 @@ from logger import setup_logger
 logger = setup_logger(__name__)
 
 
+@dataclass(frozen=True)
+class _TextSpan:
+    """Half-open source-text span used while splitting and merging."""
+
+    start: int
+    end: int
+
+
 @dataclass
 class TextSplitter:
     """Recursive text splitter for RAG ingestion."""
@@ -38,32 +46,25 @@ class TextSplitter:
         if not text:
             return []
 
-        pieces = self._split_recursive(text.strip(), self.separators)
-        chunks = self._merge_pieces(pieces)
-        logger.debug("Text split completed | chunks=%s", len(chunks))
-        return chunks
+        spans = self._split_text_spans(text)
+        logger.debug("Text split completed | chunks=%s", len(spans))
+        return [text[span.start:span.end] for span in spans]
 
     def split_document(self, document: Document) -> List[Document]:
         """Split a Document while preserving and extending metadata."""
-        chunks = self.split_text(document.content)
+        spans = self._split_text_spans(document.content)
         documents = []
-        search_start = 0
 
-        for index, chunk in enumerate(chunks):
-            start_char = document.content.find(chunk, search_start)
-            if start_char == -1:
-                start_char = search_start
-
-            end_char = start_char + len(chunk)
-            search_start = max(start_char + 1, end_char - self.chunk_overlap)
+        for index, span in enumerate(spans):
+            chunk = document.content[span.start:span.end]
 
             metadata = dict(document.metadata)
             metadata.update(
                 {
                     "chunk_index": index,
-                    "total_chunks": len(chunks),
-                    "start_char": start_char,
-                    "end_char": end_char,
+                    "total_chunks": len(spans),
+                    "start_char": span.start,
+                    "end_char": span.end,
                     "chunk_size": len(chunk),
                 }
             )
@@ -78,73 +79,116 @@ class TextSplitter:
             chunks.extend(self.split_document(document))
         return chunks
 
-    def _split_recursive(self, text: str, separators: List[str]) -> List[str]:
-        """Recursively split text by preferred separators."""
-        if len(text) <= self.chunk_size:
-            return [text]
+    def _split_text_spans(self, text: str) -> List[_TextSpan]:
+        """Return exact source spans for all chunks."""
+        start, end = self._trim_span(text, 0, len(text))
+        if start >= end:
+            return []
+
+        pieces = self._split_recursive_spans(text, start, end, self.separators)
+        return self._merge_spans(pieces)
+
+    def _split_recursive_spans(
+        self,
+        text: str,
+        start: int,
+        end: int,
+        separators: List[str],
+    ) -> List[_TextSpan]:
+        """Recursively split a source range without rewriting its text."""
+        start, end = self._trim_span(text, start, end)
+        if start >= end:
+            return []
+        if end - start <= self.chunk_size:
+            return [_TextSpan(start, end)]
+        if not separators or separators[0] == "":
+            return self._fixed_spans(start, end)
 
         separator = separators[0]
         remaining_separators = separators[1:]
+        ranges = []
+        cursor = start
+        separator_found = False
 
-        if separator == "":
-            return [text[i:i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
+        while cursor < end:
+            separator_start = text.find(separator, cursor, end)
+            if separator_start == -1:
+                ranges.append((cursor, end))
+                break
 
-        pieces = text.split(separator)
-        if len(pieces) == 1:
-            return self._split_recursive(text, remaining_separators)
+            separator_found = True
+            ranges.append((cursor, separator_start))
+            cursor = separator_start + len(separator)
 
-        split_pieces = []
-        for piece in pieces:
-            piece = piece.strip()
-            if not piece:
-                continue
+        if not separator_found:
+            return self._split_recursive_spans(text, start, end, remaining_separators)
 
-            if len(piece) <= self.chunk_size:
-                split_pieces.append(piece)
-            else:
-                split_pieces.extend(self._split_recursive(piece, remaining_separators))
+        spans = []
+        for piece_start, piece_end in ranges:
+            spans.extend(
+                self._split_recursive_spans(
+                    text,
+                    piece_start,
+                    piece_end,
+                    remaining_separators,
+                )
+            )
+        return spans
 
-        return split_pieces
+    def _fixed_spans(self, start: int, end: int) -> List[_TextSpan]:
+        """Split a range into overlapping fixed-width source spans."""
+        spans = []
+        cursor = start
 
-    def _merge_pieces(self, pieces: List[str]) -> List[str]:
-        """Merge small pieces into chunks near the target size."""
+        while cursor < end:
+            chunk_end = min(cursor + self.chunk_size, end)
+            spans.append(_TextSpan(cursor, chunk_end))
+            if chunk_end == end:
+                break
+            cursor = chunk_end - self.chunk_overlap
+
+        return spans
+
+    def _merge_spans(self, pieces: List[_TextSpan]) -> List[_TextSpan]:
+        """Merge source spans while keeping every output within the size limit."""
+        if not pieces:
+            return []
+
         chunks = []
-        current = ""
+        current = pieces[0]
 
-        for piece in pieces:
-            if not piece:
-                continue
-
-            candidate = f"{current}\n{piece}".strip() if current else piece
-
-            if len(candidate) <= self.chunk_size:
+        for piece in pieces[1:]:
+            candidate = _TextSpan(current.start, max(current.end, piece.end))
+            if candidate.end - candidate.start <= self.chunk_size:
                 current = candidate
                 continue
 
-            if current:
-                chunks.append(current)
-                current = self._build_overlap(current, piece)
-            else:
-                chunks.append(piece[:self.chunk_size])
-                current = piece[self.chunk_size - self.chunk_overlap:]
-
-        if current:
             chunks.append(current)
+            if piece.start < current.end:
+                current = piece
+                continue
 
-        return [chunk.strip() for chunk in chunks if chunk.strip()]
+            overlap_start = max(
+                current.start,
+                current.end - self.chunk_overlap,
+                piece.end - self.chunk_size,
+            )
+            if overlap_start < current.end:
+                current = _TextSpan(overlap_start, piece.end)
+            else:
+                current = piece
 
-    def _build_overlap(self, previous_chunk: str, next_piece: str) -> str:
-        """Build overlap context from the previous chunk tail."""
-        if self.chunk_overlap == 0:
-            return next_piece
+        chunks.append(current)
+        return chunks
 
-        overlap = previous_chunk[-self.chunk_overlap:].strip()
-        candidate = f"{overlap}\n{next_piece}".strip()
-
-        if len(candidate) <= self.chunk_size:
-            return candidate
-
-        return candidate[-self.chunk_size:]
+    @staticmethod
+    def _trim_span(text: str, start: int, end: int) -> Tuple[int, int]:
+        """Trim only a span's boundaries while retaining source coordinates."""
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        return start, end
 
 
 @dataclass
@@ -196,26 +240,21 @@ class ParentChildSplitter:
             chunk_overlap=self.child_chunk_overlap,
             separators=list(self.separators),
         )
-        parent_texts = parent_splitter.split_text(document.content)
+        parent_spans = parent_splitter._split_text_spans(document.content)
         parents = []
         children = []
-        parent_search_start = 0
         child_index = 0
 
-        for parent_index, parent_text in enumerate(parent_texts):
-            parent_start, parent_end = locate_text_span(
-                document.content,
-                parent_text,
-                parent_search_start,
-            )
+        for parent_index, parent_span in enumerate(parent_spans):
+            parent_start = parent_span.start
+            parent_end = parent_span.end
             parent_text = document.content[parent_start:parent_end]
-            parent_search_start = max(parent_start + 1, parent_end - self.parent_chunk_overlap)
 
             parent_metadata = dict(document.metadata)
             parent_metadata.update(
                 {
                     "parent_index": parent_index,
-                    "total_parents": len(parent_texts),
+                    "total_parents": len(parent_spans),
                     "start_char": parent_start,
                     "end_char": parent_end,
                     "parent_chunk_size": len(parent_text),
@@ -225,12 +264,11 @@ class ParentChildSplitter:
             parent = Document(content=parent_text, metadata=parent_metadata)
             parents.append(parent)
 
-            child_texts = child_splitter.split_text(parent_text)
-            child_search_start = 0
-            for child_text in child_texts:
-                relative_start, relative_end = locate_text_span(parent_text, child_text, child_search_start)
+            child_spans = child_splitter._split_text_spans(parent_text)
+            for child_span in child_spans:
+                relative_start = child_span.start
+                relative_end = child_span.end
                 child_text = parent_text[relative_start:relative_end]
-                child_search_start = max(relative_start + 1, relative_end - self.child_chunk_overlap)
                 child_start = parent_start + relative_start
                 child_end = parent_start + relative_end
 
@@ -268,12 +306,24 @@ class ParentChildSplitter:
         return ParentChildSplitResult(parents=all_parents, children=all_children)
 
 
-def locate_text_span(text: str, needle: str, search_start: int = 0) -> Tuple[int, int]:
-    """Locate a chunk span in a source text with deterministic fallback."""
+def locate_text_span(
+    text: str,
+    needle: str,
+    search_start: int = 0,
+    document_id: str = "unknown",
+) -> Tuple[int, int]:
+    """Locate a text span for compatibility, warning if fallback is required."""
     start_char = text.find(needle, search_start)
     if start_char == -1:
         start_char = text.find(needle)
     if start_char == -1:
+        logger.warning(
+            "Text span lookup failed; using bounded fallback | document_id=%s | "
+            "needle_chars=%s | search_start=%s",
+            document_id,
+            len(needle),
+            search_start,
+        )
         start_char = min(max(search_start, 0), len(text))
     end_char = min(start_char + len(needle), len(text))
     return start_char, end_char

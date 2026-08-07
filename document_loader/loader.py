@@ -110,7 +110,14 @@ def iter_supported_files(path: str, recursive: bool = True) -> Iterable[Path]:
         raise ValueError(f"Path is neither a file nor a directory: {root}")
 
     pattern = "**/*" if recursive else "*"
-    for candidate in root.glob(pattern):
+    candidates = sorted(
+        root.glob(pattern),
+        key=lambda candidate: (
+            candidate.relative_to(root).as_posix().casefold(),
+            candidate.relative_to(root).as_posix(),
+        ),
+    )
+    for candidate in candidates:
         if candidate.is_file() and candidate.suffix.lower() in LOADER_REGISTRY:
             yield candidate
 
