@@ -60,6 +60,10 @@ sequenceDiagram
 - 写入向量库。
 - 写入父块库。
 
+切分器在递归切分与合并过程中携带半开原文区间，最终 chunk 必须满足 `document.content[start_char:end_char] == chunk.content`。文件枚举先按规范化相对路径排序；record id 会统一 source 的路径分隔符；内存向量检索的同分项再按规范化 source、chunk index、span 和 record id 排序，因此结果不依赖文件系统或插入顺序。
+
+2026 年 8 月的 span 修复与 Markdown fenced code 默认保留共用一次索引迁移窗口：两者都会改变 chunk 正文或 span，继而改变 record id。已有 Qdrant collection 需要设置 `VECTOR_STORE_RECREATE=true` 重建一次并重新 ingest；普通 upsert 不会删除旧 id，可能同时留下新旧记录。
+
 入库阶段不负责：
 
 - 回答问题。
@@ -114,11 +118,12 @@ flowchart LR
     RERANK --> TOPK["top-k"]
 ```
 
-三条质量门禁：
+四条质量门禁：
 
 - Dense baseline：`HashEmbeddingProvider` 可逐位复现。
 - Rerank baseline：`DeterministicReranker` 离线、零网络。
 - Hybrid baseline：reranker 关闭时并报 dense-only、bm25-only、fused。
+- Parent-child baseline：只评 child ranked list，parent expansion 留在生成侧。
 
 最容易出错的是 id 对齐：
 
@@ -254,7 +259,8 @@ flowchart TD
 持续集成把这套评估变成每次 push 都跑的两道离线门禁，均不需要任何密钥：
 
 - 测试账目门禁：先清空全部外部服务环境变量，再跑完整测试套件，并把运行数、失败数、错误数、跳过数以及每类跳过原因的条数钉成精确常量逐项比对。任何一项对不上都失败，防止“测试被静默跳过”伪装成全绿。
-- 检索基线门禁：以 `--no-cache` 实跑 dense、hybrid、parent-child 三个 profile 的评估，把 MRR@3 与冻结基线做六位小数的精确比对。检索漏斗的任何回归或漂移都会在 push 时立即暴露；Linux CI 与本地 Windows 跑出的分数逐位一致，也顺带证明了基线的跨平台可复现性。
+- 检索基线门禁：以 `--no-cache` 实跑 dense、hybrid、parent-child、rerank 四个 profile，把 MRR@3 与冻结基线做六位小数精确比对。报告在本地生成并由 CI 作为 artifact 上传，不提交到仓库。
+- 依赖门禁：开发环境继续使用 `requirements.txt` 的范围约束；`requirements-ci.in` 记录直接依赖，`requirements-ci.constraints` 记录通过完整门禁的跨平台 transitive 兼容版本，CI 安装二者生成的 universal `requirements-ci.txt` 完整锁。代码同时显式固定文件枚举和同分排序，避免把顺序不确定性误判成依赖漂移。冻结数值、迁移原因与负样本边界见 [retrieval-baselines.md](retrieval-baselines.md)。
 
 ## 当前部署态
 

@@ -4,9 +4,18 @@ from document_loader import load_and_split_document
 from embeddings import EmbeddedDocument, HashEmbeddingProvider
 from tests.test_document_ingestion import FIXTURES_DIR
 from vector_store import InMemoryVectorStore, VectorRecord
+from vector_store.base import build_record_id
 
 
 class InMemoryVectorStoreTests(unittest.TestCase):
+    def test_record_ids_normalize_source_path_separators(self):
+        metadata = {"source": "docs/sample.md", "chunk_index": 0, "start_char": 0}
+
+        posix_id = build_record_id("content", metadata)
+        windows_id = build_record_id("content", {**metadata, "source": "docs\\sample.md"})
+
+        self.assertEqual(posix_id, windows_id)
+
     def test_add_records_stores_records_and_returns_ids(self):
         store = InMemoryVectorStore(dimension=2)
         ids = store.add_records(
@@ -66,6 +75,32 @@ class InMemoryVectorStoreTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].record.id, "x")
         self.assertAlmostEqual(results[0].score, 1.0)
+
+    def test_similarity_search_ties_are_independent_of_ingestion_order(self):
+        records = [
+            VectorRecord(
+                id="support",
+                content="support",
+                embedding=[1.0, 0.0],
+                metadata={"source": "docs\\support.md", "chunk_index": 0, "start_char": 0},
+            ),
+            VectorRecord(
+                id="product",
+                content="product",
+                embedding=[1.0, 0.0],
+                metadata={"source": "docs/product.md", "chunk_index": 0, "start_char": 0},
+            ),
+        ]
+
+        ranked_ids = []
+        for insertion_order in (records, list(reversed(records))):
+            store = InMemoryVectorStore(dimension=2)
+            store.add_records(insertion_order)
+            ranked_ids.append(
+                [result.record.id for result in store.similarity_search([1.0, 0.0], top_k=2)]
+            )
+
+        self.assertEqual(ranked_ids, [["product", "support"], ["product", "support"]])
 
     def test_similarity_search_supports_metadata_filter(self):
         store = InMemoryVectorStore(dimension=2)

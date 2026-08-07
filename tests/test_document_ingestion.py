@@ -7,12 +7,15 @@ from pathlib import Path
 from unittest import mock
 
 from document_loader import (
+    Document,
     MDLoader,
     PDFLoader,
+    TextSplitter,
     TXTLoader,
     WordLoader,
     get_document_loader,
     get_supported_extensions,
+    iter_supported_files,
     load_and_split_document,
     load_and_split_documents,
     load_document,
@@ -73,12 +76,75 @@ class DocumentLoaderEntrypointTests(unittest.TestCase):
         self.assertEqual(document.metadata["code_block_count"], 1)
         self.assertIn("Knowledge Base Notes", document.content)
         self.assertIn("project notes", document.content)
+        self.assertIn('print("hello rag")', document.content)
+        self.assertNotIn("[Code block 1: python]", document.content)
 
     def test_load_documents_loads_supported_files_from_directory(self):
         documents = load_documents(str(FIXTURES_DIR), clean=True)
         file_types = sorted(document.metadata["file_type"] for document in documents)
 
         self.assertEqual(file_types, ["markdown", "txt"])
+
+    def test_supported_files_are_sorted_independently_of_creation_order(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "nested").mkdir()
+            for relative_path in ("zeta.txt", "nested/Beta.md", "alpha.md"):
+                path = root / relative_path
+                path.write_text(relative_path, encoding="utf-8")
+
+            relative_paths = [
+                path.relative_to(root).as_posix() for path in iter_supported_files(str(root))
+            ]
+
+        self.assertEqual(relative_paths, ["alpha.md", "nested/Beta.md", "zeta.txt"])
+
+    def test_split_document_uses_exact_source_spans_with_mixed_line_endings(self):
+        content = (
+            "Repeated policy detail.\r\n\r\n"
+            "Repeated policy detail.\n\n"
+            "A distinct paragraph carries enough text to require another chunk.\r\n"
+            "Final line."
+        )
+        document = Document(content=content, metadata={"source": "mixed.md"})
+        splitter = TextSplitter(chunk_size=55, chunk_overlap=8)
+
+        chunks = splitter.split_document(document)
+
+        self.assertGreaterEqual(len(chunks), 3)
+        self.assertTrue(any("\r\n" in chunk.content for chunk in chunks))
+        self.assertEqual(
+            [chunk.metadata["start_char"] for chunk in chunks],
+            sorted(chunk.metadata["start_char"] for chunk in chunks),
+        )
+        for chunk in chunks:
+            start = chunk.metadata["start_char"]
+            end = chunk.metadata["end_char"]
+            self.assertEqual(document.content[start:end], chunk.content)
+            self.assertLessEqual(len(chunk.content), splitter.chunk_size)
+
+    def test_markdown_code_block_modes_preserve_compatibility(self):
+        markdown = (
+            "# Runbook\n\n"
+            "```python\n"
+            "items = ['a_b', '[link](https://example.com)']\n"
+            "    print(items)\n"
+            "```\n"
+        )
+        expected_code = "items = ['a_b', '[link](https://example.com)']\n    print(items)"
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "runbook.md"
+            path.write_text(markdown, encoding="utf-8")
+
+            preserved = MDLoader(str(path)).load()
+            extracted = MDLoader(str(path), extract_code_blocks=True).load()
+            dropped = MDLoader(str(path), extract_code_blocks=False).load()
+
+        self.assertIn(expected_code, preserved)
+        self.assertIn("[Code block 1: python]", extracted)
+        self.assertNotIn("print(items)", extracted)
+        self.assertNotIn("print(items)", dropped)
 
     def test_load_and_split_document_adds_chunk_metadata(self):
         chunks = load_and_split_document(

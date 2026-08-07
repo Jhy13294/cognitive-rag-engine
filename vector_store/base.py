@@ -117,6 +117,8 @@ def build_record_id(content: str, metadata: Dict) -> str:
         ]
         if key in metadata
     }
+    if "source" in stable_metadata and stable_metadata["source"] is not None:
+        stable_metadata["source"] = str(stable_metadata["source"]).replace("\\", "/")
     payload = json.dumps(
         {
             "content": content,

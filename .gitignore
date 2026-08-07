@@ -1,8 +1,13 @@
 .env
 .venv/
+.vscode/
+.idea/
+.DS_Store
+.pytest_cache/
 __pycache__/
 *.pyc
 logs/
+# Local planning and runtime data; never committed.
 tasks/
 memory/
 ci-artifacts/

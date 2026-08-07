@@ -53,9 +53,20 @@ class ParentChildSplitterTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(result.parents), 1)
         self.assertGreaterEqual(len(result.children), 2)
+        for parent in result.parents:
+            self.assertEqual(
+                document.content[parent.metadata["start_char"]:parent.metadata["end_char"]],
+                parent.content,
+            )
+            self.assertLessEqual(len(parent.content), splitter.parent_chunk_size)
         for child in result.children:
             parent = parents_by_id[child.metadata["parent_id"]]
             self.assertIn(child.content, parent.content)
+            self.assertEqual(
+                document.content[child.metadata["start_char"]:child.metadata["end_char"]],
+                child.content,
+            )
+            self.assertLessEqual(len(child.content), splitter.child_chunk_size)
             self.assertGreaterEqual(child.metadata["start_char"], parent.metadata["start_char"])
             self.assertLessEqual(child.metadata["end_char"], parent.metadata["end_char"])
             self.assertEqual(child.metadata["parent_index"], parent.metadata["parent_index"])

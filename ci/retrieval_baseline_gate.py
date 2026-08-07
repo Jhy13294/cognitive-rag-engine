@@ -17,7 +17,12 @@ BASELINES = {
     },
     "parent_child": {
         "args": ["--parent-child"],
-        "expected_mrr_at_3": "0.625000",
+        # Exact source-slice chunk semantics replaced the former fallback slices.
+        "expected_mrr_at_3": "0.614583",
+    },
+    "rerank": {
+        "args": ["--rerank-provider", "deterministic"],
+        "expected_mrr_at_3": "1.000000",
     },
 }
 
