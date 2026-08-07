@@ -29,7 +29,7 @@ ACL pre-filtering, Redis caching, and observability wrap this funnel rather than
 
 ## Key features
 
-- **Evaluated retrieval** — deterministic golden-set evaluation (hit rate, MRR, recall, negative-query metrics) with a bit-reproducible frozen baseline the CI gate asserts to six decimals on every push.
+- **Evaluated retrieval** — deterministic golden-set evaluation (hit rate, MRR, recall, negative-query metrics) with a frozen baseline the CI gate asserts to six decimals on every push.
 - **Hybrid retrieval** — dense + BM25 with RRF fusion, plus deterministic multi-query rewriting and cross-query fusion.
 - **Rerank and parent-child chunking** — pluggable reranking with dense fallback; child chunks for retrieval, parent chunks expanded for generation.
 - **Context packing** — whole-block inclusion, deterministic deduplication, contiguous citations, and token-aware budgets on the generation input.
@@ -52,7 +52,7 @@ For a full end-to-end walk-through (offline eval **and** a zero-key full-stack H
 
 Retrieval and generation quality are evaluated on separate tracks, and the offline replay path is the default reproducible one:
 
-- **Deterministic retrieval evaluation** — `python -m eval.run` scores a JSONL golden set (~20 hand-labeled queries) with `HashEmbeddingProvider`, reporting MRR, Recall, hit rate, and dedicated negative-query metrics. The dense baseline `MRR@3 = 0.677083` is frozen, and the CI retrieval gate re-runs three profiles on every push and asserts MRR@3 to six decimals.
+- **Deterministic retrieval evaluation** — `python -m eval.run` scores 20 labeled queries (16 positive and 4 negative) against five synthetic Markdown documents of 765–887 bytes with `HashEmbeddingProvider`. CI re-runs dense, hybrid, parent-child, and rerank profiles and asserts positive-query MRR@3 to six decimals; negative-query behavior is reported separately.
 - **Generation quality (Ragas)** — a live LLM-as-judge track scores Faithfulness, Answer Relevance, and Context Precision/Recall with pinned temperatures, repetition, and median-based gating; CI replays a frozen verdict fixture fully offline. Scores are noisy judge estimates on a small hand-labeled set, not a production quality floor.
 
 See [Generation Quality Evaluation](#generation-quality-evaluation) below and [docs/benchmark.md](docs/benchmark.md) for the zero-paid local latency/QPS methodology.
@@ -70,71 +70,15 @@ This is an enterprise-oriented, production-shaped RAG backend, not a turnkey pro
 
 Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, ACL/RBAC pre-filtering, fail-open observability, and deployment health gates.
 
-Implemented:
+Current highlights:
 
-- Basic LLM API call flow
-- Reusable API client with retry handling
-- Document model and loader interface
-- TXT loader
-- Markdown loader with Front Matter support
-- PDF loader with scanned-page detection, optional OCR fallback, and optional table extraction
-- Word `.docx` loader
-- Text cleaner
-- Text splitter for RAG chunks
-- Unified document loading entry point
-- Sample fixtures and ingestion tests
-- Embedding provider abstraction
-- OpenAI production embedding provider with dimensions support, batching, retries, and usage logging
-- Shared token counting abstraction with optional tiktoken support and deterministic offline fallback
-- Deterministic local hash embedding provider for tests
-- Vector store abstraction
-- In-memory vector store for local retrieval tests
-- Qdrant production vector store adapter with batching, metadata filters, payload indexes, and retry handling
-- Vector-store factory and CLI provider selection
-- Minimal RAG pipeline with retrieval, context assembly, chat generation, and sources
-- Split ingest/query CLI commands with cross-process persistence through Qdrant
-- Deterministic retrieval evaluation with a JSONL golden set, HashEmbeddingProvider baseline, and JSON/Markdown reports
-- Reranker abstraction with deterministic offline reranker and Cohere neural reranker provider
-- Optional rerank insertion in `RAGPipeline.retrieve`: dense fetch, rerank, top-k selection, and dense fallback on failure
-- Shared `lexical/` core for tokenization, IDF, BM25, and deterministic lexical scoring
-- BM25 sparse retriever that emits the same `VectorRecord.id` values as dense retrieval
-- RRF fusion with configurable dense/sparse weights and stable tie-breaking
-- Hybrid comparison evaluation for dense-only, bm25-only, and fused retrieval with reranker disabled
-- Parent-child splitter that indexes child chunks and stores parent chunks separately
-- In-memory ParentStore for deterministic parent lookup by `parent_id`
-- Optional post-top-k parent expansion in `RAGPipeline.retrieve`, with sibling child collapse by parent id
-- ContextPacker for build_prompt/answer paths only: whole-block packing, exact deduplication, optional near-duplicate deduplication, contiguous citations, and token budgets
-- OpenAI embedding batch construction based on TokenCounter instead of the legacy `len/4` estimate
-- QueryRewriter abstraction with deterministic fixture-backed rewrites and a chat-backed production provider
-- Multi-query retrieval in `RAGPipeline.retrieve`: original query plus variants, per-variant retrieval, cross-query RRF, then the existing rerank/parent expansion/context packing stages
-- Async FastAPI adapter with `/ingest`, `/query`, `/query/stream`, Pydantic models, threadpool offload for the synchronous retrieval funnel, sanitized exception mapping, and cache invalidation after ingest
-- Async `httpx.AsyncClient` chat and OpenAI embedding providers with `asyncio.sleep` retry backoff and OpenAI-compatible streaming chat deltas
-- Redis-backed cache decorators:
-  - L1 caches query embeddings by embedding model, dimension, normalization flag, and normalized question.
-  - L2 caches retrieved sources by persistent corpus version, exact query/options key, top-k, and metadata filter.
-  - L3 caches full `RAGResponse` answers by the L2 key plus system prompt and chat generation factors.
-  - The Redis store owns a dedicated background event loop for the `redis.asyncio` client, so synchronous CLI/evaluation calls and service threadpool calls do not reuse a client across closed event loops.
-  - Redis failures fail open as cache misses.
-  - `/ingest` clears the in-process pipeline cache and increments a Redis-persisted corpus version.
-- ACL/RBAC pre-filtering:
-  - MySQL metadata resolver for principal membership and document/chunk ACL bindings.
-  - Ingest can denormalize trusted ACL subjects or MySQL `acl_binding` subjects into vector payload metadata.
-  - FastAPI query endpoints read principal from a trusted upstream header by default and fail closed when identity or ACL resolution is missing.
-  - Dense memory search, Qdrant payload filters, BM25 sparse retrieval, multi-query variants, and L2/L3 cache keys all use the same effective ACL filter.
-- Observability:
-  - Pure-ASGI request IDs are returned through `X-Request-ID` without buffering SSE responses.
-  - One sanitized JSON-line audit record is emitted for successful, empty, and ACL-denied queries; principal and query values are keyed hashes by default, and source content/ACL/API keys are never recorded.
-  - `GET /metrics` exposes request latency, reported or estimated token usage, top-k score histograms, empty retrievals, and true L1/L2/L3 cache counters with bounded labels.
-  - Audit, metric, and alert-hook failures are contained fail-open and cannot turn a valid query into an HTTP failure.
-- Health gates:
-  - `GET /health` is a shallow liveness probe and remains 200 while the process is running.
-  - `GET /ready` checks only enabled required backends: Qdrant when the vector-store provider is Qdrant, Redis when cache is enabled, and MySQL when ACL is enabled.
-  - Readiness fails closed with HTTP 503 and names the down dependency; the response does not include API keys, passwords, or connection strings.
-  - Missing DeepSeek generation credentials are reported as a non-blocking generation dependency so keyless deployment smoke tests can still boot.
+- Deterministic dense, hybrid, parent-child, and rerank evaluation profiles are enforced in CI to six decimal places.
+- TXT, Markdown, PDF/OCR, and Word ingestion feed exact source-slice chunks; fenced Markdown code remains searchable by default.
+- Dense and BM25 retrieval, RRF fusion, reranking, multi-query rewriting, parent expansion, and token-aware context packing share one staged pipeline.
+- The async FastAPI service provides ingest, query, SSE streaming, Redis caching, ACL/RBAC pre-filtering, observability, and split liveness/readiness probes.
+- Memory providers support keyless local verification; Qdrant, MySQL, Redis, OpenAI-compatible generation, OpenAI embeddings, and Cohere reranking are optional integrations.
 
-Not implemented yet:
-
-- Built-in authentication, JWT validation, or session management
+See the maintained [capability inventory and explicit gaps](docs/capabilities.md). Built-in authentication, JWT validation, and session management remain out of scope.
 
 ## Advanced Learning Notes
 
@@ -142,6 +86,7 @@ Start here when you want to understand the engineering choices behind the projec
 
 - **[Technology Selection](docs/tech-selection.md)**: why the project uses the current embedding providers, vector stores, retrieval stack, service protocol, access filters, caching, and observability design.
 - **[Architecture](docs/architecture.md)**: system architecture, ingest/query data flow, retrieval funnel, access control, cache layout, observability, and evaluation boundaries.
+- **[Frozen Retrieval Baselines](docs/retrieval-baselines.md)**: current CI numbers, the parent-child migration delta, tie-order controls, and the dependency-lock contract.
 - **[Crash / Pitfall Log](docs/dev-log-crashing.md)**: hard-earned debugging notes about metric pollution, fake streaming, async traps, cache invalidation, access boundaries, audit leakage, and token accounting.
 - **[Local Benchmarking](docs/benchmark.md)**: reproducible local latency/QPS runs against the keyless compose stack; numbers exclude real paid generation.
 
@@ -162,7 +107,11 @@ Start here when you want to understand the engineering choices behind the projec
 ├── .github/workflows/         # CI: offline test gate, Ragas replay gate, gated live evaluation
 ├── Dockerfile                 # Service image build
 ├── docker-compose.yml         # Full local stack: Qdrant, Redis, MySQL, app
+├── LICENSE                    # MIT License
 ├── requirements.txt           # Development dependencies
+├── requirements-ci.in        # Exact direct dependencies for CI
+├── requirements-ci.constraints # Cross-platform transitive compatibility pins
+├── requirements-ci.txt       # Universal compiled CI lock
 ├── requirements-serve.txt     # Pinned runtime dependencies for the service image
 ├── document_loader/
 │   ├── base.py                # Document model and loader interface
@@ -174,7 +123,7 @@ Start here when you want to understand the engineering choices behind the projec
 │   └── word_loader.py         # Word loader
 ├── embeddings/
 │   ├── base.py                # Embedding interface and vector utilities
-│   ├── openai_provider.py     # OpenAI production embedding provider
+│   ├── openai_provider.py     # OpenAI embedding provider
 │   └── hash_provider.py       # Deterministic local provider for tests
 ├── vector_store/
 │   ├── base.py                # Vector store interface and record models
@@ -223,7 +172,7 @@ Start here when you want to understand the engineering choices behind the projec
 ├── query_rewrite/
 │   ├── base.py                # Query rewrite interface and config
 │   ├── deterministic.py       # Offline fixture-backed query rewriter
-│   ├── chat.py                # Chat-backed production query rewriter
+│   ├── chat.py                # Chat-backed query rewriter
 │   └── factory.py             # Query rewriter factory
 ├── rag/
 │   ├── pipeline.py            # High-level RAG orchestration and compatibility exports
@@ -263,8 +212,11 @@ Start here when you want to understand the engineering choices behind the projec
 │   ├── test_token_counter.py
 │   └── test_vector_store.py
 └── docs/
+    ├── capabilities.md        # Maintained implementation inventory and gaps
+    ├── capabilities.zh-CN.md  # Chinese capability inventory
     ├── tech-selection.md      # Technology selection notes
     ├── architecture.md        # System architecture and data-flow diagrams
+    ├── retrieval-baselines.md # Frozen metrics and reproducibility controls
     ├── dev-log-crashing.md    # Core pitfall and incident debugging log
     └── learning_notes.zh-CN.md # Legacy learning-note index
 ```
@@ -276,6 +228,8 @@ Create and activate a virtual environment, then install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+To reproduce the CI dependency set, install `requirements-ci.txt`. Maintainers update direct pins in `requirements-ci.in`, compatibility pins in `requirements-ci.constraints`, and regenerate the universal lock with the command in its header.
 
 Create a `.env` file:
 
@@ -397,6 +351,8 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 
 The `memory` vector store is process-local and is useful for separation tests only; use Qdrant for cross-process persistence.
 
+**Index migration (August 2026):** exact source spans, searchable Markdown code, and normalized source path separators change chunk content or record IDs together. Existing persistent Qdrant collections must be recreated once and then re-ingested; set `VECTOR_STORE_RECREATE=true` for that ingest only, then return it to `false`. A normal upsert does not remove records created under the old IDs.
+
 Run the HTTP service locally:
 
 ```bash
@@ -420,7 +376,7 @@ docker compose up --build
 docker compose ps
 ```
 
-The compose stack starts Qdrant, Redis, MySQL, and the FastAPI app with service-name networking (`qdrant`, `redis`, `mysql`). The app container runs an idempotent startup initializer: it creates the MySQL ACL schema, seeds demo principals and ACL bindings, and ingests `eval/fixtures/knowledge_base/*.md` into Qdrant with trusted `--acl` metadata. This is a full-stack deployment smoke path, not a zero-key chatbot: ingestion needs a production embedding key, and `/query` needs a valid DeepSeek key.
+The compose stack starts Qdrant, Redis, MySQL, and the FastAPI app with service-name networking (`qdrant`, `redis`, `mysql`). The app container runs an idempotent startup initializer: it creates the MySQL ACL schema, seeds demo principals and ACL bindings, and ingests `eval/fixtures/knowledge_base/*.md` into Qdrant with trusted `--acl` metadata. This is a full-stack deployment smoke path, not a zero-key chatbot: ingestion needs an embedding API key, and `/query` needs a valid DeepSeek key.
 
 After the four healthchecks are green, try:
 
@@ -501,7 +457,7 @@ from document_loader import load_documents
 documents = load_documents("knowledge_base", recursive=True, clean=True)
 ```
 
-Embed chunks with the production embedding provider:
+Embed chunks with the OpenAI embedding provider:
 
 ```python
 from document_loader import load_and_split_document
@@ -699,11 +655,13 @@ python -m eval.run --no-cache
 
 The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
 
-Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The latest rerank report is under `eval/reports/`.
+The frozen fixture contains five synthetic Markdown documents of 765–887 bytes and 20 queries: 16 positive and 4 negative. MRR and recall claims below apply to the positive queries. At top-k 3 the four negative queries still return non-empty results (`negative_false_recall_rate = 1.000000`), so this system does not yet demonstrate abstention.
 
-Current hybrid retrieval comparison, with reranker disabled and `HashEmbeddingProvider`, reports dense-only MRR@3 `0.677083`, bm25-only MRR@3 `1.000000`, and fused MRR@3 `1.000000`. The fused route also lifts exact_name and long_tail MRR@3 to `1.000000` while preserving deterministic byte-stable reports. The latest hybrid reports are under `eval/reports/`.
+Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The rerank profile is asserted by `ci/retrieval_baseline_gate.py`; each run writes local reports and CI uploads them as workflow artifacts.
 
-Current parent-child retrieval mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
+Current hybrid retrieval comparison, with reranker disabled and `HashEmbeddingProvider`, reports dense-only MRR@3 `0.677083`, bm25-only MRR@3 `1.000000`, and fused MRR@3 `1.000000`. The fused route also lifts exact_name and long_tail MRR@3 to `1.000000` while preserving deterministic metric output. The hybrid profile is asserted by the same gate, with reports generated per run rather than committed.
+
+Current parent-child retrieval mode uses child chunks for retrieval and parent chunks only after final top-k selection. Retrieval reports default to child chunks with parent expansion disabled, so any metric movement is attributed to chunk-granularity changes rather than parent expansion. Under exact source-slice chunk semantics its frozen MRR@3 is `0.614583`; the former `0.625000` value depended on fallback slices with incorrect source spans and has been retired. Parent expansion quality is a generation-side concern and is deferred to the later Ragas evaluation.
 
 Current context packing is a generation-input assembly step. It does not enter `retrieve()` and must not be reported as MRR/recall improvement. With all context flags off, the legacy character-based `_build_context` path is preserved. When enabled, packing includes whole blocks or skips them, renumbers citations contiguously, folds exact duplicates, optionally folds near duplicates behind a flag, and uses `TokenCounter` for token budgets. tiktoken is optional; when it is unavailable, the system falls back to a deterministic heuristic counter. For Chinese text, true token counting may create more but legal smaller batches; the benefit is correctness and zero over-limit requests, not claiming fewer batches. Generation quality and coherence remain deferred to Ragas-style answer-quality evaluation.
 
@@ -749,6 +707,10 @@ python -m eval.ragas_run compare --before eval/fixtures/ragas_verdicts.jsonl --a
 The gate covers only answer-consuming dimensions: Faithfulness, Answer Relevance, and negative abstention/fabrication are gated, while Context Precision/Recall are reported-only and still emitted in full because they do not consume the generated answer. Generation prompts are calibrated per question shape toward an "answer plus minimal supporting phrase" middle ground — a bare answer leaves the judge's reverse-questions under-informed, while over-scaffolding drifts them away from the original question — and together with versioned statement extraction this brings all 16 positive samples to passing Faithfulness and Answer Relevance medians with every negative abstaining. That passing capture has been promoted to the committed verdict fixture (schema `ragas-verdicts-v5`, pinning the generation/extraction prompt versions, judge model, embedding, and gating scope), and `python -m eval.ragas_run replay` verifies the offline gate passes.
 
 Live evaluation is a controlled data-egress path. Positive samples send the question, generated answer, retrieved context text, and hand-written ground truth to the configured judge; with the `gemini` provider, Answer Relevance also sends text to the embedding endpoint, while the local `bge` provider performs no network calls. Fixtures store hashes and verdicts rather than raw evaluation text. Scores on this small hand-labeled set are noisy judge estimates, not deterministic facts or a production quality floor. `temperature=0` does not remove provider or model variance.
+
+## License
+
+This repository is licensed under the [MIT License](LICENSE).
 
 ## Development Conventions
 

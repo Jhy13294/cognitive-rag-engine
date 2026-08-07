@@ -52,7 +52,7 @@ python -m eval.run
 
 检索质量与生成质量分两轨评估，离线回放是默认的可复现路径：
 
-- **确定性检索评估** —— `python -m eval.run` 用 `HashEmbeddingProvider` 对 JSONL golden set（约 20 条人工标注查询）打分，报告 MRR、Recall、hit rate 和专门的负样本指标。dense 基线 `MRR@3 = 0.677083` 已冻结，CI 检索门禁每次 push 实跑三个 profile 并对 MRR@3 做六位小数精确断言。
+- **确定性检索评估** —— `python -m eval.run` 用 `HashEmbeddingProvider` 在 5 篇 765–887 字节的合成 Markdown 上评估 20 条标注 query（16 条正样本、4 条负样本）。CI 每次实跑 dense、hybrid、parent-child、rerank 四个 profile，对正样本 MRR@3 做六位小数精确断言；负样本行为单独报告。
 - **生成质量（Ragas）** —— live LLM-as-judge 轨对 Faithfulness、Answer Relevance、Context Precision/Recall 打分，温度钉死、多次重复、median 门禁；CI 只离线回放冻结 verdict fixture。分数是小样本上带方差的判官估计，不是 production 质量下限。
 
 详见下方 [生成质量评估](#生成质量评估)，零付费本机延迟/QPS 口径见 [docs/benchmark.md](docs/benchmark.md)。
@@ -70,71 +70,15 @@ python -m eval.run
 
 当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存、ACL/RBAC 检索前过滤、fail-open 可观测性，以及部署健康门禁。
 
-已完成：
+当前能力高光：
 
-- 基础 LLM API 调用流程
-- 可复用 API 客户端和错误重试
-- Document 数据模型和加载器抽象接口
-- TXT 加载器
-- 支持 Front Matter 的 Markdown 加载器
-- 支持扫描页检测、可选 OCR 兜底和可选表格提取的 PDF 加载器
-- Word `.docx` 加载器
-- 文本清洗器
-- 保留元数据的 RAG 文本切分器
-- 统一文档加载入口
-- 样例 fixture 和文档入库测试
-- Embedding 抽象层
-- 支持 dimensions、批处理、重试和 usage 日志的 OpenAI 生产级 Embedding Provider
-- 共享 TokenCounter 抽象：支持可选 tiktoken 和离线确定性兜底
-- 用于测试管线的本地确定性 Hash Embedding Provider
-- 向量库抽象层
-- 用于本地检索测试的内存向量库
-- 支持批量写入、metadata 过滤、payload index 和重试机制的 Qdrant 生产级向量库适配器
-- 向量库工厂和 CLI provider 选择
-- 最小 RAG 管线：检索、上下文组装、LLM 生成、引用来源返回
-- ingest/query CLI 职责分离，Qdrant 路径支持跨进程持久化
-- 确定性检索评估：JSONL golden set、HashEmbeddingProvider 基线、JSON/Markdown 报告
-- Reranker 抽象层：确定性离线重排器和 Cohere neural reranker provider
-- `RAGPipeline.retrieve` 可选接入重排：dense 召回、rerank、取 top-k，失败时降级回 dense 原序
-- 共享 `lexical/` 核心：tokenization、IDF、BM25 和确定性词法评分
-- BM25 稀疏检索器，输出与 dense 检索一致的 `VectorRecord.id`
-- RRF 融合器，支持配置 dense/sparse 权重并稳定处理同分排序
-- hybrid 对照评估：在关闭 reranker 的前提下并报 dense-only、bm25-only、fused 三路指标
-- Parent-Child 分块器：只索引子块，父块通过 `parent_id` 键值取回
-- 内存 `ParentStore`，用于本地确定性父块展开
-- `RAGPipeline.retrieve` 支持 top-k 之后展开父块，并按父块折叠兄弟子块
-- `ContextPacker` 只接入 build_prompt/answer 路径，支持整块装填、精确去重、可选近重复去重、引用连号和 token 预算
-- OpenAI embedding batch 切分改为使用 TokenCounter，不再依赖旧的 `len/4` 估算
-- QueryRewriter 抽象层：支持确定性 fixture 改写器和生产 Chat 改写器
-- `RAGPipeline.retrieve` 支持 Multi-Query：原始 query + 改写变体，多路检索后用 RRF 融合，再进入既有 rerank、父块展开和上下文装填
-- FastAPI HTTP 适配层：提供 `/ingest`、`/query`、`/query/stream`，使用 Pydantic 模型、线程池 offload 既有同步检索漏斗、统一脱敏异常映射，并在 ingest 后失效 pipeline 缓存
-- 聊天客户端和 OpenAI embedding provider 已迁移到 `httpx.AsyncClient`，重试退避使用 `asyncio.sleep`，聊天侧支持 OpenAI 兼容流式 delta
-- Redis 缓存装饰器：
-  - L1 按 embedding model、dimension、normalize 和归一化 question 缓存 query embedding。
-  - L2 按持久 corpus version、精确 query/options key、top_k 和 metadata_filter 缓存检索结果。
-  - L3 在 L2 key 基础上叠加 system prompt 和生成模型因子，缓存完整 `RAGResponse`。
-  - Redis store 为 `redis.asyncio` 客户端持有独立后台事件循环，避免 CLI/评估同步桥和服务线程池调用跨已关闭 loop 复用同一连接。
-  - Redis 故障时 fail-open 为 cache miss，不影响回答。
-  - `/ingest` 会清空进程内 pipeline cache，并递增 Redis 持久化 corpus version。
-- ACL/RBAC 检索前过滤：
-  - MySQL metadata resolver 支持 principal membership 和 document/chunk ACL binding。
-  - ingest 可将受信 ACL subjects 或 MySQL `acl_binding` subjects 写入向量 payload metadata。
-  - FastAPI query 端点默认从受信上游 header 读取 principal，身份缺失或 ACL 解析失败时 fail-closed。
-  - dense memory、Qdrant payload filter、BM25 稀疏检索、multi-query 各变体和 L2/L3 缓存 key 使用同一个有效 ACL filter。
-- 可观测性：
-  - 纯 ASGI request-id 中间件通过 `X-Request-ID` 回写关联 ID，不缓冲 SSE。
-  - 成功、空召回和 ACL 拒绝查询各产生一条脱敏 JSON-line 审计；principal/query 默认使用带密钥 hash，绝不记录 source 正文、ACL subjects 或 API key。
-  - `GET /metrics` 暴露请求耗时、reported/estimated token、top-k 分数 histogram、空召回，以及真实 L1/L2/L3 缓存计数。
-  - audit sink、metric registry 和 alert hook 故障全部 fail-open，不能把正常查询变成 HTTP 失败。
-- 健康门禁：
-  - `GET /health` 是浅层 liveness 探针，只表示进程仍在运行。
-  - `GET /ready` 只检查当前配置启用且必需的后端：使用 Qdrant 时探 Qdrant，启用缓存时探 Redis，启用 ACL 时探 MySQL。
-  - readiness 断连时 fail-closed，返回 HTTP 503 并点名故障依赖；响应体不包含 API key、密码或完整连接串。
-  - DeepSeek 生成密钥缺失会作为非阻断 generation 状态呈现，保证零密钥部署 smoke 仍可启动。
+- CI 对 dense、hybrid、parent-child、rerank 四个确定性 profile 的 MRR@3 做六位小数精确断言。
+- TXT、Markdown、PDF/OCR、Word 入库统一生成原文连续切片；Markdown fenced code 默认进入可检索正文。
+- Dense、BM25、RRF、重排、Multi-Query、父块展开和 token-aware 上下文装填共用一条分阶段管线。
+- 异步 FastAPI 服务提供入库、问答、SSE 流式响应、Redis 缓存、ACL/RBAC 检索前过滤、可观测性和双健康探针。
+- Memory provider 支持无密钥本地验证；Qdrant、MySQL、Redis、OpenAI-compatible 生成、OpenAI embedding 与 Cohere 重排均为可选集成。
 
-尚未完成：
-
-- 内置认证、JWT 校验或 session 管理
+完整清单与明确缺口见[能力清单](docs/capabilities.zh-CN.md)。内置认证、JWT 校验和 session 管理仍不在当前范围内。
 
 ## 高级学习笔记
 
@@ -142,6 +86,7 @@ python -m eval.run
 
 - **[技术选型思考](docs/tech-selection.md)**：为什么选择当前 embedding provider、向量库、检索栈、服务协议、访问过滤、缓存和可观测性设计。
 - **[系统架构](docs/architecture.md)**：系统架构、ingest/query 数据流、检索漏斗、访问控制、缓存布局、可观测性和评估边界。
+- **[冻结检索基线](docs/retrieval-baselines.md)**：当前 CI 数值、Parent-Child 迁移差异、同分排序约束与依赖锁口径。
 - **[核心踩坑记录](docs/dev-log-crashing.md)**：关于指标污染、假流式、异步陷阱、缓存失效、访问边界、审计泄漏和 token 账目等问题的调试记录。
 - **[本机基准](docs/benchmark.md)**：面向零密钥 compose 栈的可复跑延迟/QPS 口径；数字不包含真实付费生成。
 
@@ -162,7 +107,11 @@ python -m eval.run
 ├── .github/workflows/         # CI：离线测试门禁、Ragas replay 门禁、gated live 评估
 ├── Dockerfile                 # 服务镜像构建
 ├── docker-compose.yml         # 本地全栈：Qdrant、Redis、MySQL 和应用
+├── LICENSE                    # MIT License
 ├── requirements.txt           # 开发依赖
+├── requirements-ci.in        # CI 精确直接依赖
+├── requirements-ci.constraints # 跨平台 transitive 兼容约束
+├── requirements-ci.txt       # universal CI 完整锁
 ├── requirements-serve.txt     # 服务镜像锁定的运行时依赖
 ├── document_loader/
 │   ├── base.py                # Document 模型和加载器接口
@@ -174,7 +123,7 @@ python -m eval.run
 │   └── word_loader.py         # Word 加载器
 ├── embeddings/
 │   ├── base.py                # Embedding 接口和向量工具
-│   ├── openai_provider.py     # OpenAI 生产级 Embedding Provider
+│   ├── openai_provider.py     # OpenAI Embedding Provider
 │   └── hash_provider.py       # 用于测试的本地确定性 Provider
 ├── vector_store/
 │   ├── base.py                # 向量库接口和记录模型
@@ -223,7 +172,7 @@ python -m eval.run
 ├── query_rewrite/
 │   ├── base.py                # Query rewrite 接口和配置
 │   ├── deterministic.py       # 离线 fixture 改写器
-│   ├── chat.py                # 生产 Chat 改写器
+│   ├── chat.py                # Chat 改写器
 │   └── factory.py             # Query rewriter 工厂
 ├── rag/
 │   ├── pipeline.py            # 高层 RAG 编排与兼容导出
@@ -263,8 +212,11 @@ python -m eval.run
 │   ├── test_token_counter.py
 │   └── test_vector_store.py
 └── docs/
+    ├── capabilities.md        # 英文能力与缺口清单
+    ├── capabilities.zh-CN.md  # 中文能力与缺口清单
     ├── tech-selection.md      # 技术选型思考
     ├── architecture.md        # 系统架构与数据流图
+    ├── retrieval-baselines.md # 冻结指标与可复现约束
     ├── dev-log-crashing.md    # 核心踩坑记录
     └── learning_notes.zh-CN.md # 学习笔记索引
 ```
@@ -276,6 +228,8 @@ python -m eval.run
 ```bash
 pip install -r requirements.txt
 ```
+
+复现 CI 依赖集时安装 `requirements-ci.txt`。维护者在 `requirements-ci.in` 更新直接依赖，在 `requirements-ci.constraints` 更新兼容约束，并按 lock 文件头命令重新生成 universal lock。
 
 创建 `.env` 文件：
 
@@ -397,6 +351,8 @@ python rag_cli.py query "What does the knowledge base say about deployment?" \
 
 `memory` 向量库是进程内状态，只适合职责分离测试；跨进程持久化请使用 Qdrant。
 
+**索引迁移（2026 年 8 月）：** 精确原文 span、Markdown 代码可检索语义与 source 路径分隔符归一化会同时改变 chunk 正文或 record id。已有持久化 Qdrant collection 必须重建一次后再入库；仅在该次 ingest 设置 `VECTOR_STORE_RECREATE=true`，完成后恢复为 `false`。普通 upsert 不会删除旧 id 对应的记录。
+
 本地启动 HTTP 服务：
 
 ```bash
@@ -420,7 +376,7 @@ docker compose up --build
 docker compose ps
 ```
 
-该 compose 栈会启动 Qdrant、Redis、MySQL 和 FastAPI app，容器间使用服务名互联（`qdrant`、`redis`、`mysql`）。app 容器启动时会执行幂等初始化：创建 MySQL ACL schema、写入 demo principal 与 ACL binding，并用受信 `--acl` 元数据把 `eval/fixtures/knowledge_base/*.md` 写入 Qdrant。这是全栈部署 smoke 路径，不是零密钥问答；ingest 需要生产 embedding key，`/query` 需要有效 DeepSeek key。
+该 compose 栈会启动 Qdrant、Redis、MySQL 和 FastAPI app，容器间使用服务名互联（`qdrant`、`redis`、`mysql`）。app 容器启动时会执行幂等初始化：创建 MySQL ACL schema、写入 demo principal 与 ACL binding，并用受信 `--acl` 元数据把 `eval/fixtures/knowledge_base/*.md` 写入 Qdrant。这是全栈部署 smoke 路径，不是零密钥问答；ingest 需要 embedding API key，`/query` 需要有效 DeepSeek key。
 
 四个 healthcheck 都变绿后，可以尝试：
 
@@ -501,7 +457,7 @@ from document_loader import load_documents
 documents = load_documents("knowledge_base", recursive=True, clean=True)
 ```
 
-使用生产级 Embedding Provider 生成向量：
+使用 OpenAI Embedding Provider 生成向量：
 
 ```python
 from document_loader import load_and_split_document
@@ -699,11 +655,13 @@ python -m eval.run --no-cache
 
 评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
 
-当前重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。最新重排评估报告位于 `eval/reports/`。
+冻结 fixture 包含 5 篇 765–887 字节的合成 Markdown，以及 20 条 query（16 条正样本、4 条负样本）。下述 MRR 与 recall 只针对正样本。top-k 为 3 时，4 条负样本仍全部返回非空结果（`negative_false_recall_rate = 1.000000`），因此当前系统尚未证明弃答能力。
 
-当前 hybrid retrieval 对照在关闭 reranker、使用 `HashEmbeddingProvider` 的条件下：dense-only MRR@3 为 `0.677083`，bm25-only MRR@3 为 `1.000000`，fused MRR@3 为 `1.000000`；fused 的 exact_name 和 long_tail MRR@3 也达到 `1.000000`，并保持报告逐字节可复现。最新 hybrid 报告位于 `eval/reports/`。
+当前重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。`ci/retrieval_baseline_gate.py` 会断言 rerank profile；报告在每次本地运行时生成，并由 CI 作为 workflow artifact 上传。
 
-当前 Parent-Child retrieval 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。生成侧连贯性和 Context Precision 的真账留到 Ragas 质量评估。
+当前 hybrid retrieval 对照在关闭 reranker、使用 `HashEmbeddingProvider` 的条件下：dense-only MRR@3 为 `0.677083`，bm25-only MRR@3 为 `1.000000`，fused MRR@3 为 `1.000000`；fused 的 exact_name 和 long_tail MRR@3 也达到 `1.000000`，并保持指标输出确定。hybrid profile 由同一门禁断言，报告按次生成而不提交入库。
+
+当前 Parent-Child retrieval 模式只让子块进入检索和排序，父块只在最终 top-k 后展开供生成使用。评估命令默认关闭父块展开，只评子块 ranked list；因此检索指标的浮动属于“子块粒度变化”，不能记为父块展开带来的提升。精确原文切片语义下冻结 MRR@3 为 `0.614583`；旧值 `0.625000` 依赖 span 错误时的 fallback 切片，现已退役。生成侧连贯性和 Context Precision 的真账留到 Ragas 质量评估。
 
 当前上下文装填只属于生成输入组装，不进入 `retrieve()`，不能被拿来声明 MRR 或 recall 提升。所有 context flag 关闭时，旧的字符制 `_build_context` 路径保持兼容；显式开启后，ContextPacker 会整块纳入或跳过，引用重新连号，精确重复默认由开关控制，可选近重复去重由独立 flag 守卫，并使用 TokenCounter 计算 token 预算。tiktoken 是可选依赖，缺失时自动使用确定性启发式兜底。对中文文本，真实 token 计数可能让 batch 变多、变小但合法；收益是避免超限请求，而不是“批数下降”。生成质量和连贯性结论仍延后到 Ragas 质量评估。
 
@@ -749,6 +707,10 @@ python -m eval.ragas_run compare --before eval/fixtures/ragas_verdicts.jsonl --a
 门禁只覆盖消费生成答案的维度：Faithfulness、Answer Relevance 和负样本弃答/虚构进入 gate，Context Precision/Recall 不消费答案、只作为 reported-only 完整输出。生成提示按问题形状校准到“答案 + 最小支撑短语”的中间量——裸答案会让判官反推问题信息不足、过度脚手架又会漂离原问——配合版本化 statement 抽取，使 16 条正样本的 Faithfulness 与 Answer Relevance median 全部达标、负样本全部弃答。这份通过门禁的 capture 已提升为正式冻结 verdict fixture（schema `ragas-verdicts-v5`，pin 生成与抽取 prompt 版本、judge model、embedding 与 gating scope），`python -m eval.ragas_run replay` 离线自证门禁通过。
 
 live 评估是受控数据出境面：正样本会把 question、生成 answer、检索 context 正文和人工 ground truth 发给外部判官；用 `gemini` provider 时 Answer Relevance 还会把文本发给 embedding endpoint，而本地 `bge` provider 不发起任何网络调用。fixture 只保存哈希和裁决，不保存评估正文。约 20 条人工样本上的四维分数只是带方差的判官估计，不是确定性事实、production 真值或质量保底；`temperature=0` 也不会消除供应商和模型漂移。
+
+## 许可证
+
+本仓库采用 [MIT License](LICENSE)。
 
 ## 代码规范
 
