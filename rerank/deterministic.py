@@ -1,8 +1,12 @@
 from collections import Counter
-from typing import List, Optional, Sequence
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from lexical import build_idf, lexical_score, tokenize
+
 from .base import RerankConfig, RerankResult, Reranker
+
+if TYPE_CHECKING:
+    from rag import RetrievedSource
 
 
 class DeterministicReranker(Reranker):
@@ -92,4 +96,3 @@ class DeterministicReranker(Reranker):
             )
             for index, candidate in enumerate(candidates[:limit])
         ]
-

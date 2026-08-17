@@ -71,7 +71,7 @@ class EmbeddingProvider(ABC):
         vectors = self.embed_texts(document.content for document in document_list)
         embedded_documents = []
 
-        for document, vector in zip(document_list, vectors):
+        for document, vector in zip(document_list, vectors, strict=True):
             metadata = dict(document.metadata)
             metadata.update(
                 {
@@ -115,5 +115,7 @@ def cosine_similarity(left: Vector, right: Vector) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
 
-    dot_product = sum(left_value * right_value for left_value, right_value in zip(left, right))
+    dot_product = sum(
+        left_value * right_value for left_value, right_value in zip(left, right, strict=True)
+    )
     return dot_product / (left_norm * right_norm)

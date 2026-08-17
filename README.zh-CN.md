@@ -1,6 +1,7 @@
 # Cognitive RAG Engine
 
 [![Offline Test Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/tests.yml)
+[![Lint Gate](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/lint.yml/badge.svg)](https://github.com/Jhy13294/cognitive-rag-engine/actions/workflows/lint.yml)
 
 ## 一句话
 

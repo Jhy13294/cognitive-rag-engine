@@ -1,12 +1,15 @@
 import random
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 import requests
 
 from logger import mask_sensitive_info, setup_logger
 
 from .base import RerankConfig, RerankResult, Reranker, RerankerError
+
+if TYPE_CHECKING:
+    from rag import RetrievedSource
 
 logger = setup_logger(__name__)
 

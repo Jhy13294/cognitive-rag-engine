@@ -1,6 +1,6 @@
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Counter as CounterType, Dict, Iterable, List, Mapping, Sequence, Set
 
 
@@ -95,8 +95,9 @@ def contiguous_overlap_bonus(query_tokens: List[str], candidate_tokens: List[str
     if len(query_tokens) < 2 or len(candidate_tokens) < 2:
         return 0.0
 
-    query_bigrams = set(zip(query_tokens, query_tokens[1:]))
-    candidate_bigrams = set(zip(candidate_tokens, candidate_tokens[1:]))
+    # Each shifted tail is intentionally one item shorter to form adjacent pairs.
+    query_bigrams = set(zip(query_tokens, query_tokens[1:]))  # noqa: B905
+    candidate_bigrams = set(zip(candidate_tokens, candidate_tokens[1:]))  # noqa: B905
     return 0.25 * len(query_bigrams & candidate_bigrams)
 
 

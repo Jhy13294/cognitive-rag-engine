@@ -12,7 +12,7 @@ from cache.redis_store import CacheSettings, RedisCacheStore
 from cache.serialization import decode_vector, encode_vector
 from config import Config
 from embeddings import EmbeddingConfig, EmbeddingProvider, HashEmbeddingProvider
-from rag import RAGPipeline, RAGResponse
+from rag import RAGPipeline
 
 Config.EMBEDDING_PROVIDER = "hash"
 

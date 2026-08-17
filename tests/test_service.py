@@ -292,7 +292,7 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
         for error, expected_status, expected_code in cases:
             with self.subTest(expected_code=expected_code):
                 state = ServiceState(
-                    pipeline_builder=lambda **kwargs: FakePipeline(error=error),
+                    pipeline_builder=lambda _error=error, **kwargs: FakePipeline(error=_error),
                     chat_client_factory=lambda: FakeChatClient(),
                 )
                 app = create_app(state)

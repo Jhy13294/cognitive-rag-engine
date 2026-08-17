@@ -146,7 +146,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         vectors = await self.async_embed_texts(document.content for document in document_list)
         embedded_documents = []
 
-        for document, vector in zip(document_list, vectors):
+        for document, vector in zip(document_list, vectors, strict=True):
             metadata = dict(document.metadata)
             metadata.update(
                 {
@@ -243,7 +243,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
 
                 except (httpx.ConnectError, httpx.ReadError, httpx.RequestError) as e:
                     last_error = OpenAIEmbeddingError(
@@ -254,7 +254,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
 
         raise last_error
 

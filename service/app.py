@@ -15,7 +15,7 @@ from cache import get_default_cache_store
 from config import Config
 from logger import setup_logger
 from observability import QueryObservation, RequestIDMiddleware, create_observability_manager
-from rag import RAGPipeline, RAGResponse, RetrievedSource
+from rag import RAGPipeline, RAGResponse
 from rag_cli import build_rag_pipeline_from_index, ingest_documents
 from vector_store import check_qdrant_connectivity
 

@@ -355,6 +355,7 @@ class RagasEvaluationTests(unittest.TestCase):
             for run, score in zip(
                 fixture["cases"][0]["runs"],
                 context_precision_runs,
+                strict=True,
             ):
                 run["context_precision"] = score
             report = self.build_report(fixture, workspace)

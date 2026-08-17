@@ -49,7 +49,7 @@ class BGEEmbeddingProviderTests(unittest.TestCase):
         vector = provider.embed_text("hi")
         self.assertEqual(len(vector), 3)
         # fastembed returns float32; compare with tolerance, not bit-exact.
-        for got, expected in zip(vector, [0.1, 0.2, 0.3]):
+        for got, expected in zip(vector, [0.1, 0.2, 0.3], strict=True):
             self.assertAlmostEqual(got, expected, places=5)
 
     def test_empty_list_returns_empty(self):

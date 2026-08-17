@@ -177,7 +177,7 @@ class APIClient:
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
 
                 except httpx.RequestError as e:
                     last_error = APIError(f"Network error: {e}", status_code=0, retryable=True, error_kind="network")
@@ -185,7 +185,7 @@ class APIClient:
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
 
         raise last_error
 
@@ -228,7 +228,7 @@ class APIClient:
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
 
                 except httpx.RequestError as e:
                     last_error = APIError(f"Network error: {e}", status_code=0, retryable=True, error_kind="network")
@@ -236,7 +236,7 @@ class APIClient:
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
 
         raise last_error
 

@@ -109,7 +109,7 @@ def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
         raise ValueError("Cosine inputs must have non-zero norms.")
     return math.fsum(
         left_value * right_value
-        for left_value, right_value in zip(left_values, right_values)
+        for left_value, right_value in zip(left_values, right_values, strict=True)
     ) / (left_norm * right_norm)
 
 
@@ -154,6 +154,7 @@ async def trace_answer_relevance_once(
             generated_questions,
             noncommittal_flags,
             generated_vectors,
+            strict=True,
         )
     ]
     all_noncommittal = all(noncommittal_flags)
@@ -218,7 +219,9 @@ async def trace_answer_relevance_repetitions(
             continue
 
         run_traces = []
-        for question, noncommittal in zip(generated_questions, noncommittal_flags):
+        for question, noncommittal in zip(
+            generated_questions, noncommittal_flags, strict=True
+        ):
             vector = generated_vectors[vector_index]
             vector_index += 1
             run_traces.append(
@@ -270,7 +273,7 @@ async def trace_semantic_baselines(
             text=text,
             cosine_to_original=cosine_similarity(vector, original_vector),
         )
-        for (kind, text), vector in zip(items, vectors)
+        for (kind, text), vector in zip(items, vectors, strict=True)
     ]
 
 

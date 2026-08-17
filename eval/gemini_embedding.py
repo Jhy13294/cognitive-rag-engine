@@ -187,7 +187,7 @@ class GeminiEmbeddingProvider:
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
-                    raise last_error
+                    raise last_error from None
         raise last_error
 
     async def _sleep_before_retry(self, attempt: int, retry_after: Optional[str] = None) -> None:

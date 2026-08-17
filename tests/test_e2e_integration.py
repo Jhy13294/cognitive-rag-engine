@@ -499,7 +499,7 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
 
         first_questions = [f"Metrics cardinality first {index} {self.case_id}?" for index in range(3)]
         second_questions = [f"Metrics cardinality second {index} {self.case_id}?" for index in range(3)]
-        for principal, question in zip(metric_principals[:3], first_questions):
+        for principal, question in zip(metric_principals[:3], first_questions, strict=True):
             response = client.post(
                 "/query",
                 json=self._query_payload(question),
@@ -509,7 +509,7 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
         metrics_after_first = client.get(Config.METRICS_PATH).text
         series_after_first = self._metric_series(metrics_after_first)
 
-        for principal, question in zip(metric_principals[3:], second_questions):
+        for principal, question in zip(metric_principals[3:], second_questions, strict=True):
             response = client.post(
                 "/query",
                 json=self._query_payload(question),

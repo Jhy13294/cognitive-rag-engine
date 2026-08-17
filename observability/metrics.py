@@ -173,8 +173,8 @@ class MetricsRegistry:
         metric_name = f"{self.namespace}_{name}"
         lines.extend((f"# HELP {metric_name} {help_text}", f"# TYPE {metric_name} histogram"))
         for labels, state in sorted(states.items()):
-            base_labels = dict(zip(label_names, labels))
-            for boundary, count in zip(state.buckets, state.bucket_counts):
+            base_labels = dict(zip(label_names, labels, strict=True))
+            for boundary, count in zip(state.buckets, state.bucket_counts, strict=True):
                 bucket_labels = dict(base_labels)
                 bucket_labels["le"] = self._format_number(boundary)
                 lines.append(f"{metric_name}_bucket{self._format_labels(bucket_labels)} {count}")
@@ -196,7 +196,7 @@ class MetricsRegistry:
         metric_name = f"{self.namespace}_{name}"
         lines.extend((f"# HELP {metric_name} {help_text}", f"# TYPE {metric_name} counter"))
         for labels, value in sorted(values.items()):
-            label_values = dict(zip(label_names, labels))
+            label_values = dict(zip(label_names, labels, strict=True))
             lines.append(f"{metric_name}{self._format_labels(label_values)} {self._format_number(value)}")
 
     def _cache_counters(

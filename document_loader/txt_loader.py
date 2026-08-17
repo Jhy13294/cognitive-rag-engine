@@ -37,7 +37,9 @@ class TXTLoader(DocumentLoader):
 
         except UnicodeDecodeError as e:
             logger.error("TXT decoding failed | error=%s", e)
-            raise ValueError(f"Cannot read file with encoding {self.encoding}. Try another encoding.")
+            raise ValueError(
+                f"Cannot read file with encoding {self.encoding}. Try another encoding."
+            ) from None
 
         except Exception as e:
             logger.error("TXT loading failed | error=%s", e)
