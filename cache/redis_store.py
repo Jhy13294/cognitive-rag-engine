@@ -83,7 +83,9 @@ class RedisCacheStore:
         return cls(
             client=None,
             settings=settings,
-            client_factory=lambda: redis_asyncio.from_url(settings.redis_url, decode_responses=False),
+            client_factory=lambda: redis_asyncio.from_url(
+                settings.redis_url, decode_responses=False
+            ),
             use_background_loop=True,
         )
 
@@ -107,7 +109,9 @@ class RedisCacheStore:
                 raw_value = raw_value.decode("utf-8")
             value = json.loads(raw_value)
         except Exception as e:
-            logger.warning("Invalid cached JSON payload; treating as miss | layer=%s | error=%s", layer, e)
+            logger.warning(
+                "Invalid cached JSON payload; treating as miss | layer=%s | error=%s", layer, e
+            )
             self.record_miss(layer)
             return None
 
@@ -315,15 +319,23 @@ class RedisCacheStore:
             return await asyncio.wait_for(result, timeout=self.settings.timeout_seconds)
         except Exception as e:
             self._increment_metric("errors")
-            logger.warning("Redis cache unavailable; fail-open as cache miss | operation=%s | error=%s", method_name, e)
+            logger.warning(
+                "Redis cache unavailable; fail-open as cache miss | operation=%s | error=%s",
+                method_name,
+                e,
+            )
             return None
 
-    async def _run_on_store_loop(self, coroutine_factory: Callable[[], Any], default: Any, operation: str) -> Any:
+    async def _run_on_store_loop(
+        self, coroutine_factory: Callable[[], Any], default: Any, operation: str
+    ) -> Any:
         if not self._use_background_loop:
             return await coroutine_factory()
         if self._closed or self._loop is None or not self._loop.is_running():
             self._increment_metric("errors")
-            logger.warning("Redis cache loop is unavailable; fail-open as cache miss | operation=%s", operation)
+            logger.warning(
+                "Redis cache loop is unavailable; fail-open as cache miss | operation=%s", operation
+            )
             return default
 
         try:
@@ -339,7 +351,11 @@ class RedisCacheStore:
             return await asyncio.wrap_future(future)
         except Exception as e:
             self._increment_metric("errors")
-            logger.warning("Redis cache background loop call failed; fail-open as cache miss | operation=%s | error=%s", operation, e)
+            logger.warning(
+                "Redis cache background loop call failed; fail-open as cache miss | operation=%s | error=%s",
+                operation,
+                e,
+            )
             return default
 
     async def _ensure_client(self) -> Any:

@@ -2,7 +2,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vector_store import QdrantVectorStore, QdrantVectorStoreError, VectorRecord, create_vector_store
+from vector_store import (
+    QdrantVectorStore,
+    QdrantVectorStoreError,
+    VectorRecord,
+    create_vector_store,
+)
 from vector_store.qdrant_store import INDEXED_PAYLOAD_FIELDS
 
 

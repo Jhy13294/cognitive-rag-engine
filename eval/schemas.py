@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-
 ALLOWED_CAPABILITIES = {"exact_name", "paraphrase", "long_tail", "negative"}
 
 

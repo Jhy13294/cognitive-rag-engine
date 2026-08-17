@@ -170,7 +170,9 @@ class InMemoryVectorStoreTests(unittest.TestCase):
             ]
         )
 
-        results = store.similarity_search([1.0, 0.0], top_k=1, metadata_filter={"acl": ["role:finance"]})
+        results = store.similarity_search(
+            [1.0, 0.0], top_k=1, metadata_filter={"acl": ["role:finance"]}
+        )
 
         self.assertEqual(results, [])
 

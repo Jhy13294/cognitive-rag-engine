@@ -2,7 +2,6 @@ import hashlib
 import json
 from typing import Any, Dict, Optional
 
-
 CACHE_KEY_VERSION = "cache-v1"
 
 

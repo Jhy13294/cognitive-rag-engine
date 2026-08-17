@@ -4,17 +4,30 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from access import build_effective_metadata_filter, create_acl_resolver_from_config, normalize_acl_values
+from access import (
+    build_effective_metadata_filter,
+    create_acl_resolver_from_config,
+    normalize_acl_values,
+)
 from cache import maybe_wrap_embedding_provider, maybe_wrap_pipeline
 from config import Config
-from document_loader import Document
-from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
+from document_loader import (
+    Document,
+    load_and_split_documents,
+    load_and_split_documents_hierarchical,
+)
 from embeddings import EmbeddingProvider, HashEmbeddingProvider, OpenAIEmbeddingProvider
-from hybrid import BM25Retriever, RRFConfig, ReciprocalRankFusion
+from hybrid import BM25Retriever, ReciprocalRankFusion, RRFConfig
 from logger import setup_logger
 from parent_store import InMemoryParentStore
 from query_rewrite import create_query_rewriter
-from rag import EmbeddingSpaceInvalidError, EmbeddingSpaceMismatchError, IndexNotReadyError, RAGPipeline, RAGResponse
+from rag import (
+    EmbeddingSpaceInvalidError,
+    EmbeddingSpaceMismatchError,
+    IndexNotReadyError,
+    RAGPipeline,
+    RAGResponse,
+)
 from rerank import create_reranker
 from tokenization import validate_tokenizer_encoding
 from vector_store import create_vector_store
@@ -61,17 +74,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="Path for ingest/oneshot or question for query.",
     )
-    parser.add_argument("-q", "--question", help="Question to answer. If omitted, interactive mode starts.")
+    parser.add_argument(
+        "-q", "--question", help="Question to answer. If omitted, interactive mode starts."
+    )
     parser.add_argument("--top-k", type=int, default=5, help="Number of retrieved chunks.")
-    parser.add_argument("--chunk-size", type=int, default=800, help="Chunk size for document splitting.")
-    parser.add_argument("--chunk-overlap", type=int, default=120, help="Chunk overlap for document splitting.")
+    parser.add_argument(
+        "--chunk-size", type=int, default=800, help="Chunk size for document splitting."
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=120, help="Chunk overlap for document splitting."
+    )
     parser.add_argument(
         "--embedding-provider",
         choices=["openai", "hash"],
         default=None,
         help="Embedding provider. Defaults to EMBEDDING_PROVIDER.",
     )
-    parser.add_argument("--embedding-dimension", type=int, default=None, help="Embedding dimension override.")
+    parser.add_argument(
+        "--embedding-dimension", type=int, default=None, help="Embedding dimension override."
+    )
     parser.add_argument(
         "--vector-store",
         choices=["memory", "qdrant"],
@@ -84,49 +105,134 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Reranker provider. Defaults to RERANK_* configuration.",
     )
-    parser.add_argument("--rerank-fetch-k", type=int, default=None, help="Dense candidate count before rerank.")
-    parser.add_argument("--hybrid", action="store_true", help="Enable dense + BM25 retrieval with RRF fusion.")
-    parser.add_argument("--hybrid-fetch-k", type=int, default=None, help="Candidate count per path before RRF fusion.")
+    parser.add_argument(
+        "--rerank-fetch-k", type=int, default=None, help="Dense candidate count before rerank."
+    )
+    parser.add_argument(
+        "--hybrid", action="store_true", help="Enable dense + BM25 retrieval with RRF fusion."
+    )
+    parser.add_argument(
+        "--hybrid-fetch-k",
+        type=int,
+        default=None,
+        help="Candidate count per path before RRF fusion.",
+    )
     parser.add_argument("--rrf-k", type=int, default=None, help="RRF rank constant.")
-    parser.add_argument("--hybrid-dense-weight", type=float, default=None, help="Dense path RRF weight.")
-    parser.add_argument("--hybrid-sparse-weight", type=float, default=None, help="BM25 path RRF weight.")
+    parser.add_argument(
+        "--hybrid-dense-weight", type=float, default=None, help="Dense path RRF weight."
+    )
+    parser.add_argument(
+        "--hybrid-sparse-weight", type=float, default=None, help="BM25 path RRF weight."
+    )
     parser.add_argument("--bm25-k1", type=float, default=None, help="BM25 k1 parameter.")
     parser.add_argument("--bm25-b", type=float, default=None, help="BM25 b parameter.")
-    parser.add_argument("--parent-child", action="store_true", help="Enable parent-child chunking and expansion.")
-    parser.add_argument("--parent-chunk-size", type=int, default=None, help="Parent chunk size for generation context.")
-    parser.add_argument("--parent-chunk-overlap", type=int, default=None, help="Parent chunk overlap.")
-    parser.add_argument("--child-chunk-size", type=int, default=None, help="Child chunk size for retrieval indexing.")
-    parser.add_argument("--child-chunk-overlap", type=int, default=None, help="Child chunk overlap.")
-    parser.add_argument("--context-packing", action="store_true", help="Enable T08 context packing.")
-    parser.add_argument("--context-dedup", action="store_true", help="Enable exact context deduplication.")
-    parser.add_argument("--context-near-dup", action="store_true", help="Enable fuzzy near-duplicate context deduplication.")
-    parser.add_argument("--context-near-dup-threshold", type=float, default=None, help="Near-duplicate threshold.")
-    parser.add_argument("--context-max-tokens", type=int, default=None, help="Maximum context tokens when packing is enabled.")
-    parser.add_argument("--tokenizer-encoding", default=None, help="Tokenizer encoding for token budgets.")
-    parser.add_argument("--multi-query", action="store_true", help="Enable query rewrite and multi-query RRF.")
+    parser.add_argument(
+        "--parent-child", action="store_true", help="Enable parent-child chunking and expansion."
+    )
+    parser.add_argument(
+        "--parent-chunk-size",
+        type=int,
+        default=None,
+        help="Parent chunk size for generation context.",
+    )
+    parser.add_argument(
+        "--parent-chunk-overlap", type=int, default=None, help="Parent chunk overlap."
+    )
+    parser.add_argument(
+        "--child-chunk-size",
+        type=int,
+        default=None,
+        help="Child chunk size for retrieval indexing.",
+    )
+    parser.add_argument(
+        "--child-chunk-overlap", type=int, default=None, help="Child chunk overlap."
+    )
+    parser.add_argument(
+        "--context-packing", action="store_true", help="Enable T08 context packing."
+    )
+    parser.add_argument(
+        "--context-dedup", action="store_true", help="Enable exact context deduplication."
+    )
+    parser.add_argument(
+        "--context-near-dup",
+        action="store_true",
+        help="Enable fuzzy near-duplicate context deduplication.",
+    )
+    parser.add_argument(
+        "--context-near-dup-threshold", type=float, default=None, help="Near-duplicate threshold."
+    )
+    parser.add_argument(
+        "--context-max-tokens",
+        type=int,
+        default=None,
+        help="Maximum context tokens when packing is enabled.",
+    )
+    parser.add_argument(
+        "--tokenizer-encoding", default=None, help="Tokenizer encoding for token budgets."
+    )
+    parser.add_argument(
+        "--multi-query", action="store_true", help="Enable query rewrite and multi-query RRF."
+    )
     parser.add_argument(
         "--query-rewrite-provider",
         choices=["deterministic", "chat"],
         default=None,
         help="Query rewrite provider. Defaults to QUERY_REWRITE_PROVIDER.",
     )
-    parser.add_argument("--query-rewrite-fixture", default=None, help="Deterministic query rewrite fixture path.")
-    parser.add_argument("--query-rewrite-num-queries", type=int, default=None, help="Total query variants including original.")
-    parser.add_argument("--query-rewrite-temperature", type=float, default=None, help="Chat query rewrite temperature.")
-    parser.add_argument("--no-query-rewrite-cache", action="store_true", help="Disable query rewrite cache.")
-    parser.add_argument("--query-rewrite-weight-original", type=float, default=None, help="Original query RRF weight.")
-    parser.add_argument("--query-rewrite-weight-variant", type=float, default=None, help="Rewritten query RRF weight.")
-    parser.add_argument("--max-context-chars", type=int, default=4000, help="Maximum context characters.")
-    parser.add_argument("--metadata-filter", help="JSON exact-match metadata filter, for example '{\"file_type\":\"txt\"}'.")
-    parser.add_argument("--principal", help="Authenticated principal used for ACL-filtered query commands.")
+    parser.add_argument(
+        "--query-rewrite-fixture", default=None, help="Deterministic query rewrite fixture path."
+    )
+    parser.add_argument(
+        "--query-rewrite-num-queries",
+        type=int,
+        default=None,
+        help="Total query variants including original.",
+    )
+    parser.add_argument(
+        "--query-rewrite-temperature",
+        type=float,
+        default=None,
+        help="Chat query rewrite temperature.",
+    )
+    parser.add_argument(
+        "--no-query-rewrite-cache", action="store_true", help="Disable query rewrite cache."
+    )
+    parser.add_argument(
+        "--query-rewrite-weight-original",
+        type=float,
+        default=None,
+        help="Original query RRF weight.",
+    )
+    parser.add_argument(
+        "--query-rewrite-weight-variant",
+        type=float,
+        default=None,
+        help="Rewritten query RRF weight.",
+    )
+    parser.add_argument(
+        "--max-context-chars", type=int, default=4000, help="Maximum context characters."
+    )
+    parser.add_argument(
+        "--metadata-filter",
+        help='JSON exact-match metadata filter, for example \'{"file_type":"txt"}\'.',
+    )
+    parser.add_argument(
+        "--principal", help="Authenticated principal used for ACL-filtered query commands."
+    )
     parser.add_argument(
         "--acl",
         action="append",
         help="ACL subject for trusted local ingest or CLI query. Repeat or pass comma-separated values.",
     )
-    parser.add_argument("--no-clean", action="store_true", help="Disable text cleaning before chunking.")
-    parser.add_argument("--non-recursive", action="store_true", help="Disable recursive directory ingestion.")
-    parser.add_argument("--show-prompt", action="store_true", help="Print the generated RAG prompt.")
+    parser.add_argument(
+        "--no-clean", action="store_true", help="Disable text cleaning before chunking."
+    )
+    parser.add_argument(
+        "--non-recursive", action="store_true", help="Disable recursive directory ingestion."
+    )
+    parser.add_argument(
+        "--show-prompt", action="store_true", help="Print the generated RAG prompt."
+    )
     return parser
 
 
@@ -139,7 +245,9 @@ def normalize_cli_command(args, parser: Optional[argparse.ArgumentParser] = None
         args.command = first
         if args.command == "query":
             if second and args.question:
-                _parser_error(parser, "query question was provided both positionally and with --question")
+                _parser_error(
+                    parser, "query question was provided both positionally and with --question"
+                )
             args.path = None
             args.question = args.question or second
         else:
@@ -263,7 +371,9 @@ def validate_query_rewrite_values(
     if weight_variant < 0:
         raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
     if weight_original < weight_variant:
-        raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+        raise ValueError(
+            "QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT."
+        )
     if weight_original + weight_variant <= 0:
         raise ValueError("At least one query rewrite weight must be greater than 0.")
 
@@ -299,7 +409,9 @@ def ingest_documents(
     acl: Optional[List[str]] = None,
 ) -> IngestResult:
     """Load, split, embed, and upsert documents into a vector store."""
-    use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+    use_parent_child = (
+        Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+    )
     loader_kwargs = build_loader_kwargs_from_config()
 
     if use_parent_child:
@@ -308,12 +420,20 @@ def ingest_documents(
             path,
             recursive=recursive,
             clean=clean,
-            parent_chunk_size=parent_chunk_size if parent_chunk_size is not None else Config.PARENT_CHUNK_SIZE,
+            parent_chunk_size=parent_chunk_size
+            if parent_chunk_size is not None
+            else Config.PARENT_CHUNK_SIZE,
             parent_chunk_overlap=(
-                parent_chunk_overlap if parent_chunk_overlap is not None else Config.PARENT_CHUNK_OVERLAP
+                parent_chunk_overlap
+                if parent_chunk_overlap is not None
+                else Config.PARENT_CHUNK_OVERLAP
             ),
-            child_chunk_size=child_chunk_size if child_chunk_size is not None else Config.CHILD_CHUNK_SIZE,
-            child_chunk_overlap=child_chunk_overlap if child_chunk_overlap is not None else Config.CHILD_CHUNK_OVERLAP,
+            child_chunk_size=child_chunk_size
+            if child_chunk_size is not None
+            else Config.CHILD_CHUNK_SIZE,
+            child_chunk_overlap=child_chunk_overlap
+            if child_chunk_overlap is not None
+            else Config.CHILD_CHUNK_OVERLAP,
             **loader_kwargs,
         )
         chunks = hierarchical.children
@@ -493,13 +613,21 @@ def build_rag_pipeline_from_records(
 ) -> RAGPipeline:
     """Assemble a RAG pipeline from already indexed vector records."""
     embedding_provider = maybe_wrap_embedding_provider(embedding_provider)
-    use_parent_child = Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
-    use_context_dedup = Config.CONTEXT_DEDUP_ENABLED if context_dedup_enabled is None else context_dedup_enabled
+    use_parent_child = (
+        Config.PARENT_CHILD_ENABLED if parent_child_enabled is None else parent_child_enabled
+    )
+    use_context_dedup = (
+        Config.CONTEXT_DEDUP_ENABLED if context_dedup_enabled is None else context_dedup_enabled
+    )
     use_context_near_dup = (
-        Config.CONTEXT_NEAR_DUP_ENABLED if context_near_dup_enabled is None else context_near_dup_enabled
+        Config.CONTEXT_NEAR_DUP_ENABLED
+        if context_near_dup_enabled is None
+        else context_near_dup_enabled
     )
     requested_context_packing = (
-        Config.CONTEXT_PACKING_ENABLED if context_packing_enabled is None else context_packing_enabled
+        Config.CONTEXT_PACKING_ENABLED
+        if context_packing_enabled is None
+        else context_packing_enabled
     )
     use_context_packing = requested_context_packing or use_context_dedup or use_context_near_dup
     selected_context_threshold = (
@@ -507,16 +635,24 @@ def build_rag_pipeline_from_records(
         if context_near_dup_threshold is not None
         else Config.CONTEXT_NEAR_DUP_THRESHOLD
     )
-    selected_context_max_tokens = context_max_tokens if context_max_tokens is not None else Config.CONTEXT_MAX_TOKENS
+    selected_context_max_tokens = (
+        context_max_tokens if context_max_tokens is not None else Config.CONTEXT_MAX_TOKENS
+    )
     selected_tokenizer_encoding = tokenizer_encoding or Config.TOKENIZER_ENCODING
-    use_query_rewrite = Config.QUERY_REWRITE_ENABLED if query_rewrite_enabled is None else query_rewrite_enabled
+    use_query_rewrite = (
+        Config.QUERY_REWRITE_ENABLED if query_rewrite_enabled is None else query_rewrite_enabled
+    )
     selected_query_rewrite_provider = query_rewrite_provider_name or Config.QUERY_REWRITE_PROVIDER
     selected_query_rewrite_fixture = query_rewrite_fixture_path or Config.QUERY_REWRITE_FIXTURE_PATH
     selected_query_rewrite_num_queries = (
-        query_rewrite_num_queries if query_rewrite_num_queries is not None else Config.QUERY_REWRITE_NUM_QUERIES
+        query_rewrite_num_queries
+        if query_rewrite_num_queries is not None
+        else Config.QUERY_REWRITE_NUM_QUERIES
     )
     selected_query_rewrite_temperature = (
-        query_rewrite_temperature if query_rewrite_temperature is not None else Config.QUERY_REWRITE_TEMPERATURE
+        query_rewrite_temperature
+        if query_rewrite_temperature is not None
+        else Config.QUERY_REWRITE_TEMPERATURE
     )
     selected_query_rewrite_cache_enabled = (
         query_rewrite_cache_enabled
@@ -586,8 +722,12 @@ def build_rag_pipeline_from_records(
             RRFConfig(
                 k=rrf_k if rrf_k is not None else Config.RRF_K,
                 weights={
-                    "dense": hybrid_dense_weight if hybrid_dense_weight is not None else Config.HYBRID_DENSE_WEIGHT,
-                    "sparse": hybrid_sparse_weight if hybrid_sparse_weight is not None else Config.HYBRID_SPARSE_WEIGHT,
+                    "dense": hybrid_dense_weight
+                    if hybrid_dense_weight is not None
+                    else Config.HYBRID_DENSE_WEIGHT,
+                    "sparse": hybrid_sparse_weight
+                    if hybrid_sparse_weight is not None
+                    else Config.HYBRID_SPARSE_WEIGHT,
                 },
             )
         )
@@ -697,7 +837,9 @@ def rebuild_parent_store_from_records(vector_records: List[VectorRecord]) -> InM
         seen_parent_ids.add(parent_id)
 
     if not parent_documents:
-        raise ValueError("Parent-child query requested but the vector index has no parent metadata.")
+        raise ValueError(
+            "Parent-child query requested but the vector index has no parent metadata."
+        )
 
     parent_store = InMemoryParentStore()
     parent_store.add_parents(parent_documents)
@@ -711,9 +853,15 @@ def validate_index_embedding_profile(
 ) -> None:
     """Validate that query embeddings match the indexed embedding space."""
     if not vector_records:
-        raise IndexNotReadyError(f"Vector store collection is empty or unavailable: {collection_name}")
+        raise IndexNotReadyError(
+            f"Vector store collection is empty or unavailable: {collection_name}"
+        )
 
-    models = {str(record.metadata.get("embedding_model")) for record in vector_records if record.metadata.get("embedding_model")}
+    models = {
+        str(record.metadata.get("embedding_model"))
+        for record in vector_records
+        if record.metadata.get("embedding_model")
+    }
     dimensions = {
         int(record.metadata.get("embedding_dimension"))
         for record in vector_records
@@ -721,13 +869,21 @@ def validate_index_embedding_profile(
     }
 
     if not models:
-        raise EmbeddingSpaceInvalidError("Vector index records are missing embedding_model metadata.")
+        raise EmbeddingSpaceInvalidError(
+            "Vector index records are missing embedding_model metadata."
+        )
     if not dimensions:
-        raise EmbeddingSpaceInvalidError("Vector index records are missing embedding_dimension metadata.")
+        raise EmbeddingSpaceInvalidError(
+            "Vector index records are missing embedding_dimension metadata."
+        )
     if len(models) > 1:
-        raise EmbeddingSpaceInvalidError(f"Vector index contains mixed embedding models: {sorted(models)}")
+        raise EmbeddingSpaceInvalidError(
+            f"Vector index contains mixed embedding models: {sorted(models)}"
+        )
     if len(dimensions) > 1:
-        raise EmbeddingSpaceInvalidError(f"Vector index contains mixed embedding dimensions: {sorted(dimensions)}")
+        raise EmbeddingSpaceInvalidError(
+            f"Vector index contains mixed embedding dimensions: {sorted(dimensions)}"
+        )
 
     indexed_model = next(iter(models))
     indexed_dimension = next(iter(dimensions))
@@ -864,6 +1020,7 @@ def build_rag_pipeline_from_path(
         max_context_chars=max_context_chars,
     )
 
+
 def create_embedding_provider(
     provider_name: Optional[str] = None,
     embedding_dimension: Optional[int] = None,
@@ -873,10 +1030,14 @@ def create_embedding_provider(
 
     if provider == "openai":
         Config.validate_embedding()
-        return maybe_wrap_embedding_provider(OpenAIEmbeddingProvider(dimensions=embedding_dimension))
+        return maybe_wrap_embedding_provider(
+            OpenAIEmbeddingProvider(dimensions=embedding_dimension)
+        )
 
     if provider == "hash":
-        return maybe_wrap_embedding_provider(HashEmbeddingProvider(dimension=embedding_dimension or 128))
+        return maybe_wrap_embedding_provider(
+            HashEmbeddingProvider(dimension=embedding_dimension or 128)
+        )
 
     raise ValueError(f"Unsupported embedding provider: {provider}")
 
@@ -917,7 +1078,9 @@ def format_sources(sources: List) -> str:
         metadata = source.metadata
         source_path = metadata.get("source", "unknown source")
         chunk_index = metadata.get("chunk_index", "unknown")
-        lines.append(f"[{source.index}] score={source.score:.4f} source={source_path} chunk={chunk_index}")
+        lines.append(
+            f"[{source.index}] score={source.score:.4f} source={source_path} chunk={chunk_index}"
+        )
 
     return "\n".join(lines)
 

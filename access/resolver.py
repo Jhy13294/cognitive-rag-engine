@@ -20,11 +20,15 @@ class StaticACLResolver:
     def allowed_acl_for_principal(self, principal: str) -> List[str]:
         """Return allowed ACL subjects or fail closed."""
         if not principal or not str(principal).strip():
-            raise ACLIdentityMissingError("Authenticated principal is required when ACL is enabled.")
+            raise ACLIdentityMissingError(
+                "Authenticated principal is required when ACL is enabled."
+            )
 
         principal_key = str(principal).strip()
         if principal_key not in self.mapping:
-            raise ACLResolutionError(f"ACL subjects are not configured for principal: {principal_key}")
+            raise ACLResolutionError(
+                f"ACL subjects are not configured for principal: {principal_key}"
+            )
 
         allowed = normalize_acl_values(self.mapping[principal_key], field_name="allowed_acl")
         if not allowed:

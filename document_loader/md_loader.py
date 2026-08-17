@@ -1,8 +1,9 @@
 import re
 from typing import Dict, List, Optional, Tuple
 
-from .base import DocumentLoader
 from logger import setup_logger
+
+from .base import DocumentLoader
 
 try:
     import yaml
@@ -122,12 +123,11 @@ class MDLoader(DocumentLoader):
             return {}, content
 
         yaml_content = match.group(1)
-        remaining_content = content[match.end():].lstrip("\n")
+        remaining_content = content[match.end() :].lstrip("\n")
         yaml_stripped = yaml_content.strip()
 
         if not yaml_stripped or all(
-            line.strip().startswith("#") or not line.strip()
-            for line in yaml_stripped.split("\n")
+            line.strip().startswith("#") or not line.strip() for line in yaml_stripped.split("\n")
         ):
             return {}, remaining_content
 
@@ -171,7 +171,9 @@ class MDLoader(DocumentLoader):
                 continue
 
             if value.startswith("[") and value.endswith("]"):
-                value = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
+                value = [
+                    item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()
+                ]
             elif value.lower() == "true":
                 value = True
             elif value.lower() == "false":
@@ -233,6 +235,7 @@ class MDLoader(DocumentLoader):
 
     def _extract_and_replace_code_blocks(self, text: str) -> str:
         """Extract fenced code blocks and replace them with placeholders."""
+
         def replace_code(match):
             language, _, index = self._record_code_block(match)
             return f"\n[Code block {index + 1}: {language}]\n"

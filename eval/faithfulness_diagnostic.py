@@ -25,7 +25,6 @@ from .ragas_live import (
 )
 from .schemas import GoldenExample
 
-
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
 DEFAULT_KNOWLEDGE_PATH = "eval/fixtures/knowledge_base"
 TARGET_QIDS: Tuple[str, ...] = ("q013",)

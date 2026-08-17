@@ -10,7 +10,12 @@ import httpx
 from access import StaticACLResolver
 from config import Config
 from logger import LOG_FORMAT, get_request_id, reset_request_id, set_request_id, setup_logger
-from observability import JSONLineAuditSink, MetricsRegistry, ObservabilityManager, StructuredAuditEmitter
+from observability import (
+    JSONLineAuditSink,
+    MetricsRegistry,
+    ObservabilityManager,
+    StructuredAuditEmitter,
+)
 from observability.factory import create_observability_manager
 from rag import RAGResponse, RetrievedSource
 
@@ -45,6 +50,7 @@ class ThrowingMetricsRegistry:
 
     def __getattr__(self, name):
         """Return a callable that raises for any registry operation."""
+
         def fail(*args, **kwargs):
             raise RuntimeError(f"metrics unavailable: {name}")
 
@@ -145,7 +151,9 @@ def make_source():
 class AuditAndMetricsUnitTests(unittest.TestCase):
     def test_logger_request_context_adds_id_without_call_site_changes(self):
         request_logger = setup_logger("tests.request_context")
-        self.assertTrue(all(handler.formatter._fmt == LOG_FORMAT for handler in request_logger.handlers))
+        self.assertTrue(
+            all(handler.formatter._fmt == LOG_FORMAT for handler in request_logger.handlers)
+        )
         token = set_request_id("request-log")
         try:
             with self.assertLogs("tests.request_context", level="INFO") as captured:
@@ -332,7 +340,9 @@ class AuditAndMetricsUnitTests(unittest.TestCase):
             "rag_cache_operations_total",
         ):
             self.assertIn(metric_name, payload)
-        self.assertIn('rag_retrieval_score_bucket{route="query",retrieval_mode="dense",le="0.5"} 1', payload)
+        self.assertIn(
+            'rag_retrieval_score_bucket{route="query",retrieval_mode="dense",le="0.5"} 1', payload
+        )
         self.assertIn('rag_cache_operations_total{cache_layer="L3",outcome="hit"} 4', payload)
         labels = {label for names in registry.label_names().values() for label in names}
         self.assertTrue(labels.isdisjoint({"principal", "request_id", "query", "source_id"}))

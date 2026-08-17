@@ -17,10 +17,10 @@ from .loader import (
     load_document,
     load_documents,
 )
+from .md_loader import MDLoader
+from .pdf_loader import PDFLoader
 from .txt_loader import TXTLoader
 from .word_loader import WordLoader
-from .pdf_loader import PDFLoader
-from .md_loader import MDLoader
 
 __all__ = [
     "Document",

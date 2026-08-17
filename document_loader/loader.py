@@ -2,14 +2,15 @@ import inspect
 from pathlib import Path
 from typing import Iterable, List, Optional, Type
 
+from logger import setup_logger
+from text_cleaner import TextCleaner
+
 from .base import Document, DocumentLoader
 from .chunking import ParentChildSplitResult, ParentChildSplitter, TextSplitter
 from .md_loader import MDLoader
 from .pdf_loader import PDFLoader
 from .txt_loader import TXTLoader
 from .word_loader import WordLoader
-from logger import setup_logger
-from text_cleaner import TextCleaner
 
 logger = setup_logger(__name__)
 
@@ -47,7 +48,9 @@ def get_document_loader(file_path: str, **loader_kwargs) -> DocumentLoader:
 
     if not loader_class:
         supported = ", ".join(get_supported_extensions())
-        raise ValueError(f"Unsupported file extension: {extension}. Supported extensions: {supported}")
+        raise ValueError(
+            f"Unsupported file extension: {extension}. Supported extensions: {supported}"
+        )
 
     logger.debug("Selected document loader | path=%s | loader=%s", path, loader_class.__name__)
     return loader_class(str(path), **_filter_loader_kwargs(loader_class, loader_kwargs))
@@ -67,7 +70,8 @@ def _filter_loader_kwargs(loader_class: Type[DocumentLoader], loader_kwargs: dic
         parameter.name
         for parameter in parameters
         if parameter.name != "self"
-        and parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+        and parameter.kind
+        in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
     }
     return {key: value for key, value in loader_kwargs.items() if key in accepted}
 
@@ -122,7 +126,9 @@ def iter_supported_files(path: str, recursive: bool = True) -> Iterable[Path]:
             yield candidate
 
 
-def load_documents(path: str, recursive: bool = True, clean: bool = False, **loader_kwargs) -> List[Document]:
+def load_documents(
+    path: str, recursive: bool = True, clean: bool = False, **loader_kwargs
+) -> List[Document]:
     """Load all supported documents from a file or directory path."""
     documents = []
     for file_path in iter_supported_files(path, recursive=recursive):

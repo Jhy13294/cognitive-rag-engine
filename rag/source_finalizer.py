@@ -81,7 +81,9 @@ class SourceFinalizer:
                     "child_start_char": source.metadata.get("start_char"),
                     "child_end_char": source.metadata.get("end_char"),
                     "parent_id": parent.id,
-                    "parent_index": parent.metadata.get("parent_index", source.metadata.get("parent_index")),
+                    "parent_index": parent.metadata.get(
+                        "parent_index", source.metadata.get("parent_index")
+                    ),
                     "parent_start_char": parent.metadata.get("start_char"),
                     "parent_end_char": parent.metadata.get("end_char"),
                     "parent_expanded": True,

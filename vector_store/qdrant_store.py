@@ -138,7 +138,11 @@ def check_qdrant_connectivity(
 
     client_kwargs = {"api_key": api_key, "timeout": timeout}
     client_kwargs = {key: value for key, value in client_kwargs.items() if value is not None}
-    client = QdrantClient(url=url, **client_kwargs) if url else QdrantClient(host=host, port=port, **client_kwargs)
+    client = (
+        QdrantClient(url=url, **client_kwargs)
+        if url
+        else QdrantClient(host=host, port=port, **client_kwargs)
+    )
 
     try:
         client.get_collections()
@@ -328,7 +332,9 @@ class QdrantVectorStore(VectorStore):
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
         if not hasattr(self._client, "scroll"):
-            raise QdrantVectorStoreError("Qdrant client does not support scroll; cannot list records.")
+            raise QdrantVectorStoreError(
+                "Qdrant client does not support scroll; cannot list records."
+            )
 
         records: List[VectorRecord] = []
         offset = None
@@ -545,7 +551,9 @@ class QdrantVectorStore(VectorStore):
         next_offset = getattr(scroll_result, "next_page_offset", None)
         return list(points or []), next_offset
 
-    def _payload_to_record(self, point_id: Any, payload: Optional[Dict], embedding: Optional[Vector] = None) -> VectorRecord:
+    def _payload_to_record(
+        self, point_id: Any, payload: Optional[Dict], embedding: Optional[Vector] = None
+    ) -> VectorRecord:
         """Restore a VectorRecord from Qdrant payload fields."""
         metadata = dict(payload or {})
         content = metadata.pop("content", "")
@@ -609,7 +617,9 @@ class QdrantVectorStore(VectorStore):
             return -raw_score
         return raw_score
 
-    def _call_with_retries(self, operation_name: str, operation: Callable[..., T], *args, **kwargs) -> T:
+    def _call_with_retries(
+        self, operation_name: str, operation: Callable[..., T], *args, **kwargs
+    ) -> T:
         """Run a Qdrant operation with exponential backoff retries."""
         last_error = None
         for attempt in range(self.max_retries + 1):

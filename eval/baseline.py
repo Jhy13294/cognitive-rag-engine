@@ -3,7 +3,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from cache import maybe_wrap_embedding_provider, maybe_wrap_pipeline
 from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
 from embeddings import HashEmbeddingProvider
-from hybrid import BM25Retriever, RRFConfig, RankedRecord, ReciprocalRankFusion
+from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion, RRFConfig
 from logger import setup_logger
 from parent_store import InMemoryParentStore
 from query_rewrite import create_query_rewriter, normalize_query_variants
@@ -227,7 +227,9 @@ def retrieve_bm25_multi_query(
     for index in range(1, len(variants)):
         weights[f"q{index}"] = weight_variant
 
-    fused_records = ReciprocalRankFusion(RRFConfig(k=rrf_k, weights=weights)).fuse(ranked_lists, top_k=top_k)
+    fused_records = ReciprocalRankFusion(RRFConfig(k=rrf_k, weights=weights)).fuse(
+        ranked_lists, top_k=top_k
+    )
     sources = ranked_records_to_sources(fused_records)
     for source in sources:
         source.metadata["query_rewrite_enabled"] = True

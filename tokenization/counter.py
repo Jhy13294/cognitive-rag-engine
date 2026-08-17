@@ -81,8 +81,7 @@ def validate_tokenizer_encoding(encoding_name: str) -> None:
         raise ValueError("TOKENIZER_ENCODING is required.")
     if encoding_name not in KNOWN_TOKENIZER_ENCODINGS:
         raise ValueError(
-            "TOKENIZER_ENCODING must be one of: "
-            + ", ".join(sorted(KNOWN_TOKENIZER_ENCODINGS))
+            "TOKENIZER_ENCODING must be one of: " + ", ".join(sorted(KNOWN_TOKENIZER_ENCODINGS))
         )
 
 

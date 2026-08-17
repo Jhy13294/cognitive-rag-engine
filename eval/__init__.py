@@ -8,4 +8,3 @@ __all__ = [
     "evaluate_retriever",
     "load_golden_set",
 ]
-

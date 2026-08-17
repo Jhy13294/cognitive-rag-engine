@@ -127,7 +127,9 @@ class MySQLACLResolverIntegrationTests(unittest.TestCase):
         if not document_ids:
             return
         placeholders = ", ".join(["%s"] * len(document_ids))
-        cursor.execute(f"DELETE FROM acl_binding WHERE document_id IN ({placeholders})", document_ids)
+        cursor.execute(
+            f"DELETE FROM acl_binding WHERE document_id IN ({placeholders})", document_ids
+        )
         cursor.execute(f"DELETE FROM chunk WHERE document_id IN ({placeholders})", document_ids)
         cursor.execute(f"DELETE FROM document WHERE id IN ({placeholders})", document_ids)
 
@@ -187,22 +189,42 @@ class MySQLACLResolverIntegrationTests(unittest.TestCase):
         """Resolved real-MySQL ACL must actually gate retrieval (no leak)."""
         resolver = self._resolver()
         allowed_acl = resolver.allowed_acl_for_principal("acl_it_alice")  # finance, admin
-        effective = build_effective_metadata_filter(None, allowed_acl, metadata_key="acl", default_deny=True)
+        effective = build_effective_metadata_filter(
+            None, allowed_acl, metadata_key="acl", default_deny=True
+        )
 
         store = InMemoryVectorStore()
-        store.add_records([
-            VectorRecord(id="finance-doc", content="finance", embedding=[1.0, 0.0],
-                         metadata={"acl": ["role:finance"], "source": "fin.md"}),
-            VectorRecord(id="secret-doc", content="secret", embedding=[0.99, 0.14],
-                         metadata={"acl": ["role:secret"], "source": "sec.md"}),
-        ])
+        store.add_records(
+            [
+                VectorRecord(
+                    id="finance-doc",
+                    content="finance",
+                    embedding=[1.0, 0.0],
+                    metadata={"acl": ["role:finance"], "source": "fin.md"},
+                ),
+                VectorRecord(
+                    id="secret-doc",
+                    content="secret",
+                    embedding=[0.99, 0.14],
+                    metadata={"acl": ["role:secret"], "source": "sec.md"},
+                ),
+            ]
+        )
 
-        ids = [r.record.id for r in store.similarity_search([1.0, 0.0], top_k=5, metadata_filter=effective)]
+        ids = [
+            r.record.id
+            for r in store.similarity_search([1.0, 0.0], top_k=5, metadata_filter=effective)
+        ]
         self.assertEqual(ids, ["finance-doc"])
 
         bob_acl = resolver.allowed_acl_for_principal("acl_it_bob")  # legal only
-        bob_effective = build_effective_metadata_filter(None, bob_acl, metadata_key="acl", default_deny=True)
-        bob_ids = [r.record.id for r in store.similarity_search([1.0, 0.0], top_k=5, metadata_filter=bob_effective)]
+        bob_effective = build_effective_metadata_filter(
+            None, bob_acl, metadata_key="acl", default_deny=True
+        )
+        bob_ids = [
+            r.record.id
+            for r in store.similarity_search([1.0, 0.0], top_k=5, metadata_filter=bob_effective)
+        ]
         self.assertEqual(bob_ids, [])
 
 

@@ -1,6 +1,6 @@
 import unittest
 
-from hybrid import BM25Retriever, RRFConfig, RankedRecord, ReciprocalRankFusion
+from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion, RRFConfig
 from lexical import bm25_score, build_bm25_index, tokenize
 from vector_store import VectorRecord
 
@@ -75,12 +75,20 @@ class HybridRetrievalTests(unittest.TestCase):
 
     def test_rrf_merges_dense_and_sparse_by_record_id(self):
         dense = [
-            RankedRecord(id="shared", score=0.9, content="dense shared", metadata={"source": "a.md"}),
-            RankedRecord(id="dense-only", score=0.8, content="dense only", metadata={"source": "b.md"}),
+            RankedRecord(
+                id="shared", score=0.9, content="dense shared", metadata={"source": "a.md"}
+            ),
+            RankedRecord(
+                id="dense-only", score=0.8, content="dense only", metadata={"source": "b.md"}
+            ),
         ]
         sparse = [
-            RankedRecord(id="sparse-only", score=3.0, content="sparse only", metadata={"source": "c.md"}),
-            RankedRecord(id="shared", score=2.0, content="sparse shared", metadata={"source": "a.md"}),
+            RankedRecord(
+                id="sparse-only", score=3.0, content="sparse only", metadata={"source": "c.md"}
+            ),
+            RankedRecord(
+                id="shared", score=2.0, content="sparse shared", metadata={"source": "a.md"}
+            ),
         ]
         fusion = ReciprocalRankFusion(RRFConfig(k=60, weights={"dense": 1.0, "sparse": 1.0}))
 

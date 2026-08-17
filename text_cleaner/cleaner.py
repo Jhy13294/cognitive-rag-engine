@@ -60,7 +60,9 @@ class TextCleaner:
 
     def _fix_line_breaks(self, text: str) -> str:
         """Merge likely accidental line breaks from extracted documents."""
-        text = re.sub(r"(?<=[\u4e00-\u9fffA-Za-z0-9，,；;：:])\n(?=[\u4e00-\u9fffA-Za-z0-9])", "", text)
+        text = re.sub(
+            r"(?<=[\u4e00-\u9fffA-Za-z0-9，,；;：:])\n(?=[\u4e00-\u9fffA-Za-z0-9])", "", text
+        )
         text = re.sub(r"(?<=-)\n(?=[A-Za-z])", "", text)
         return text
 

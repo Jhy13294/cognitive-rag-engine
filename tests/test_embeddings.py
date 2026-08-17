@@ -11,7 +11,6 @@ from embeddings import (
     cosine_similarity,
     normalize_vector,
 )
-
 from tests.test_document_ingestion import FIXTURES_DIR
 
 
@@ -265,7 +264,9 @@ class OpenAIEmbeddingProviderTests(unittest.TestCase):
         )
         provider = self.build_provider(max_retries=1, dimensions=4)
 
-        with patch("embeddings.openai_provider.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch(
+            "embeddings.openai_provider.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
             vector = provider.embed_text("retry me")
 
         self.assertEqual(vector, [1.0, 1.0, 1.0, 1.0])

@@ -9,7 +9,6 @@ import httpx
 from api_client import run_async_blocking
 from logger import mask_sensitive_info, setup_logger
 
-
 logger = setup_logger(__name__)
 
 
@@ -56,7 +55,9 @@ class GeminiEmbeddingProvider:
         if dimension <= 0:
             raise ValueError("Gemini embedding dimension must be greater than 0.")
         if batch_size <= 0 or batch_size > self.MAX_BATCH_SIZE:
-            raise ValueError(f"Gemini embedding batch_size must be between 1 and {self.MAX_BATCH_SIZE}.")
+            raise ValueError(
+                f"Gemini embedding batch_size must be between 1 and {self.MAX_BATCH_SIZE}."
+            )
         if timeout <= 0:
             raise ValueError("Gemini embedding timeout must be greater than 0.")
         if max_retries < 0:

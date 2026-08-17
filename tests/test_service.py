@@ -6,15 +6,19 @@ from dataclasses import dataclass
 
 import httpx
 
-from api_client import APIError
 from access import ACLAccessError, StaticACLResolver
+from api_client import APIError
 from config import Config
-from rag import EmbeddingSpaceMismatchError, IndexNotReadyError
-from rag import RAGResponse, RetrievedSource
+from rag import EmbeddingSpaceMismatchError, IndexNotReadyError, RAGResponse, RetrievedSource
 
 Config.EMBEDDING_PROVIDER = "hash"
 
-from service.app import ServiceState, create_app, resolve_request_metadata_filter, stream_query_events
+from service.app import (
+    ServiceState,
+    create_app,
+    resolve_request_metadata_filter,
+    stream_query_events,
+)
 from service.models import QueryRequest
 
 
@@ -147,7 +151,9 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(ready.status_code, 200)
             self.assertEqual(ready.json()["status"], "ready")
-            generation = next(item for item in ready.json()["dependencies"] if item["name"] == "generation")
+            generation = next(
+                item for item in ready.json()["dependencies"] if item["name"] == "generation"
+            )
             self.assertEqual(generation["status"], "down")
             self.assertFalse(generation["required"])
             self.assertEqual(health.status_code, 200)
@@ -277,15 +283,31 @@ class FastAPIServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_error_mapping_is_sanitized(self):
         cases = [
-            (IndexNotReadyError("Vector store collection is empty or unavailable: qa"), 409, "index_not_ready"),
+            (
+                IndexNotReadyError("Vector store collection is empty or unavailable: qa"),
+                409,
+                "index_not_ready",
+            ),
             (
                 EmbeddingSpaceMismatchError("Embedding dimension mismatch: indexed=8 requested=4"),
                 422,
                 "embedding_space_mismatch",
             ),
-            (APIError("Rate limit exceeded", status_code=429, retryable=True), 429, "upstream_rate_limited"),
-            (APIError("Authentication failed for sk-secret", status_code=401), 502, "upstream_auth_failed"),
-            (APIError("Request timed out", status_code=0, retryable=True, error_kind="timeout"), 504, "upstream_timeout"),
+            (
+                APIError("Rate limit exceeded", status_code=429, retryable=True),
+                429,
+                "upstream_rate_limited",
+            ),
+            (
+                APIError("Authentication failed for sk-secret", status_code=401),
+                502,
+                "upstream_auth_failed",
+            ),
+            (
+                APIError("Request timed out", status_code=0, retryable=True, error_kind="timeout"),
+                504,
+                "upstream_timeout",
+            ),
             (RuntimeError("boom sk-secret traceback"), 500, "internal_error"),
         ]
 

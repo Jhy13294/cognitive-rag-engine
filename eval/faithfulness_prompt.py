@@ -66,9 +66,7 @@ def preserve_clause_scoped_qualifier(
         return list(statements)
 
     sentence = sentences[0]
-    match = _COORDINATED_CLAUSES.match(
-        _CITATION_SUFFIX.sub("", sentence).rstrip(".!?")
-    )
+    match = _COORDINATED_CLAUSES.match(_CITATION_SUFFIX.sub("", sentence).rstrip(".!?"))
     if match is None:
         return list(statements)
 

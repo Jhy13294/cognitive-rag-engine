@@ -267,10 +267,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         if retry_after:
             delay = float(retry_after)
         else:
-            delay = min(self.base_delay * (2 ** attempt), self.max_delay)
+            delay = min(self.base_delay * (2**attempt), self.max_delay)
             delay += random.uniform(0, delay * 0.1)
 
-        logger.warning("Retrying OpenAI embedding request | attempt=%s | delay=%.2fs", attempt + 1, delay)
+        logger.warning(
+            "Retrying OpenAI embedding request | attempt=%s | delay=%.2fs", attempt + 1, delay
+        )
         await asyncio.sleep(delay)
 
     def _extract_vectors(self, response_data: Dict, expected_count: int) -> List[Vector]:
@@ -288,7 +290,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         for item in sorted(data, key=lambda value: value.get("index", 0)):
             vector = item.get("embedding")
             if not isinstance(vector, list):
-                raise OpenAIEmbeddingError("Invalid OpenAI embeddings response: embedding is not a list")
+                raise OpenAIEmbeddingError(
+                    "Invalid OpenAI embeddings response: embedding is not a list"
+                )
             self._validate_vector(vector)
             vectors.append(vector)
 

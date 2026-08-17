@@ -9,8 +9,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from api_client import APIClient
 from access import ACLAccessError, build_effective_metadata_filter, create_acl_resolver_from_config
+from api_client import APIClient
 from cache import get_default_cache_store
 from config import Config
 from logger import setup_logger
@@ -140,7 +140,11 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         async def metrics() -> PlainTextResponse:
             """Expose bounded-label metrics in Prometheus text format."""
             observability = get_state(app).observability
-            payload = observability.render_metrics() if observability is not None else "# metrics unavailable\n"
+            payload = (
+                observability.render_metrics()
+                if observability is not None
+                else "# metrics unavailable\n"
+            )
             return PlainTextResponse(
                 payload,
                 media_type="text/plain; version=0.0.4",
@@ -185,7 +189,9 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         observation = start_query_observation(app, http_request, request, route="query")
         try:
             principal = extract_trusted_principal(http_request, request.principal)
-            metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request, principal)
+            metadata_filter = await asyncio.to_thread(
+                resolve_request_metadata_filter, app, request, principal
+            )
             pipeline = await get_or_build_pipeline(app, request)
             bind_query_observation(app, observation, pipeline)
             response = await asyncio.to_thread(
@@ -219,7 +225,9 @@ def create_app(state: Optional[ServiceState] = None) -> FastAPI:
         observation = start_query_observation(app, http_request, request, route="query_stream")
         try:
             principal = extract_trusted_principal(http_request, request.principal)
-            metadata_filter = await asyncio.to_thread(resolve_request_metadata_filter, app, request, principal)
+            metadata_filter = await asyncio.to_thread(
+                resolve_request_metadata_filter, app, request, principal
+            )
             pipeline = await get_or_build_pipeline(app, request)
             bind_query_observation(app, observation, pipeline)
         except HTTPException as error:
@@ -269,8 +277,7 @@ async def build_readiness_report(service_state: ServiceState) -> ReadinessRespon
     dependencies = list(await asyncio.gather(*probes)) if probes else []
     dependencies.append(generation_dependency_status())
     required_down = any(
-        dependency.required and dependency.status != "up"
-        for dependency in dependencies
+        dependency.required and dependency.status != "up" for dependency in dependencies
     )
     return ReadinessResponse(
         status="not_ready" if required_down else "ready",
@@ -460,7 +467,9 @@ async def stream_query_events(
             raise ValueError("Configured chat client does not support streaming.")
 
         answer_parts = []
-        async for token in pipeline.chat_client.stream_chat(prompt, system_prompt=pipeline.system_prompt):
+        async for token in pipeline.chat_client.stream_chat(
+            prompt, system_prompt=pipeline.system_prompt
+        ):
             answer_parts.append(token)
             yield sse_event("token", {"delta": token})
 
@@ -512,7 +521,9 @@ def start_query_observation(
 
     request_id = getattr(http_request.state, "request_id", None) or uuid.uuid4().hex
     principal = http_request.headers.get(Config.ACL_PRINCIPAL_HEADER) or request.principal
-    retrieval_mode = "multi_query" if request.multi_query else "hybrid" if request.hybrid else "dense"
+    retrieval_mode = (
+        "multi_query" if request.multi_query else "hybrid" if request.hybrid else "dense"
+    )
     try:
         return observability.start_query(
             request_id=request_id,
@@ -531,7 +542,9 @@ def start_query_observation(
         return None
 
 
-def bind_query_observation(app: FastAPI, observation: Optional[QueryObservation], pipeline: Any) -> None:
+def bind_query_observation(
+    app: FastAPI, observation: Optional[QueryObservation], pipeline: Any
+) -> None:
     """Bind an existing pipeline to observation state fail-open."""
     if observation is None:
         return
@@ -614,7 +627,9 @@ def query_cache_key(request: QueryRequest) -> Tuple:
     return tuple(sorted(payload.items()))
 
 
-def resolve_request_metadata_filter(app: FastAPI, request: QueryRequest, principal: Optional[str] = None) -> Optional[Dict]:
+def resolve_request_metadata_filter(
+    app: FastAPI, request: QueryRequest, principal: Optional[str] = None
+) -> Optional[Dict]:
     """Return the effective server-enforced metadata filter for a query."""
     if not Config.ACL_ENABLED:
         return request.metadata_filter
@@ -635,7 +650,9 @@ def resolve_request_metadata_filter(app: FastAPI, request: QueryRequest, princip
     )
 
 
-def extract_trusted_principal(http_request: Request, body_principal: Optional[str] = None) -> Optional[str]:
+def extract_trusted_principal(
+    http_request: Request, body_principal: Optional[str] = None
+) -> Optional[str]:
     """Extract principal from the trusted upstream header, with explicit local fallback only."""
     if not Config.ACL_ENABLED:
         return body_principal

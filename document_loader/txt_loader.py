@@ -1,7 +1,8 @@
 from typing import Dict
 
-from .base import DocumentLoader
 from logger import setup_logger
+
+from .base import DocumentLoader
 
 logger = setup_logger(__name__)
 

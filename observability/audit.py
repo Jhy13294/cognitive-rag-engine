@@ -76,7 +76,9 @@ class JSONLineAuditSink:
         self._queue.put(self._sentinel)
         self._worker.join(timeout=5.0)
         if self._worker.is_alive():
-            logger.warning("Audit worker did not stop cleanly | alert_code=audit_worker_shutdown_timeout")
+            logger.warning(
+                "Audit worker did not stop cleanly | alert_code=audit_worker_shutdown_timeout"
+            )
             return
         self._handler.close()
 
@@ -187,7 +189,9 @@ class StructuredAuditEmitter:
         source_ids = [self._source_id(source) for source in sources]
         record = {
             "request_id": request_id,
-            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "ts": datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
             "route": route,
             "principal_id": self._principal_id(principal),
             "query_hash": self._digest("query", question),

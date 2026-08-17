@@ -4,13 +4,13 @@ from access import (
     ACLDeniedError,
     ACLIdentityMissingError,
     ACLResolutionError,
+    MySQLACLResolver,
     StaticACLResolver,
     build_acl_filter,
     build_effective_metadata_filter,
     merge_metadata_filters,
     metadata_matches,
     normalize_acl_values,
-    MySQLACLResolver,
 )
 
 
@@ -78,7 +78,9 @@ class StaticACLResolverTests(unittest.TestCase):
     def test_static_resolver_returns_normalized_acl_subjects(self):
         resolver = StaticACLResolver({"alice": ["role:finance", " role:admin "]})
 
-        self.assertEqual(resolver.allowed_acl_for_principal("alice"), ["role:admin", "role:finance"])
+        self.assertEqual(
+            resolver.allowed_acl_for_principal("alice"), ["role:admin", "role:finance"]
+        )
 
     def test_static_resolver_fails_closed_without_identity(self):
         resolver = StaticACLResolver({"alice": ["role:finance"]})

@@ -30,9 +30,11 @@ from .context_packing import ContextPacker
 from .models import ChatClient, RAGResponse, RetrievedSource, extract_chat_content
 from .prompt_builder import (
     CANONICAL_ABSTENTION_RESPONSE,
-    DEFAULT_SYSTEM_PROMPT as _DEFAULT_SYSTEM_PROMPT,
     RAG_SYSTEM_PROMPT_VERSION,
     PromptBuilder,
+)
+from .prompt_builder import (
+    DEFAULT_SYSTEM_PROMPT as _DEFAULT_SYSTEM_PROMPT,
 )
 from .question_classifier import (
     ACTION_LIST_MARKERS,
@@ -138,7 +140,9 @@ class RAGPipeline:
         if query_rewrite_weight_original < 0 or query_rewrite_weight_variant < 0:
             raise ValueError("query rewrite weights must be non-negative")
         if query_rewrite_weight_original < query_rewrite_weight_variant:
-            raise ValueError("query_rewrite_weight_original must be greater than or equal to query_rewrite_weight_variant")
+            raise ValueError(
+                "query_rewrite_weight_original must be greater than or equal to query_rewrite_weight_variant"
+            )
 
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
@@ -214,7 +218,9 @@ class RAGPipeline:
         raw_response = self.chat_client.chat(prompt, system_prompt=self.system_prompt)
         answer = extract_chat_content(raw_response)
 
-        logger.info("RAG answer generated | sources=%s | answer_chars=%s", len(used_sources), len(answer))
+        logger.info(
+            "RAG answer generated | sources=%s | answer_chars=%s", len(used_sources), len(answer)
+        )
         return RAGResponse(
             question=question,
             answer=answer,

@@ -4,7 +4,6 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-
 REQUEST_DURATION_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 RETRIEVAL_SCORE_BUCKETS = (-1.0, -0.5, 0.0, 0.25, 0.5, 0.75, 0.9, 1.0)
 
@@ -17,7 +16,14 @@ METRIC_LABEL_NAMES = {
 }
 
 ALLOWED_ROUTES = {"query", "query_stream"}
-ALLOWED_OUTCOMES = {"success", "empty", "acl_denied", "client_error", "server_error", "stream_error"}
+ALLOWED_OUTCOMES = {
+    "success",
+    "empty",
+    "acl_denied",
+    "client_error",
+    "server_error",
+    "stream_error",
+}
 ALLOWED_RETRIEVAL_MODES = {"dense", "hybrid", "multi_query"}
 ALLOWED_TOKEN_KINDS = {"embedding", "chat"}
 ALLOWED_TOKEN_SOURCES = {"reported", "estimated"}
@@ -52,7 +58,9 @@ class MetricsRegistry:
     def __init__(self, namespace: str = "rag"):
         """Initialize an empty in-process registry."""
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", namespace or "") is None:
-            raise ValueError("Metrics namespace must contain only letters, numbers, and underscores.")
+            raise ValueError(
+                "Metrics namespace must contain only letters, numbers, and underscores."
+            )
         self.namespace = namespace
         self._lock = threading.Lock()
         self._request_duration: Dict[Tuple[str, str], HistogramState] = {}
@@ -105,12 +113,10 @@ class MetricsRegistry:
         """Render all core metrics in Prometheus text exposition format."""
         with self._lock:
             request_duration = {
-                key: self._copy_histogram(state)
-                for key, state in self._request_duration.items()
+                key: self._copy_histogram(state) for key, state in self._request_duration.items()
             }
             retrieval_scores = {
-                key: self._copy_histogram(state)
-                for key, state in self._retrieval_scores.items()
+                key: self._copy_histogram(state) for key, state in self._retrieval_scores.items()
             }
             token_usage = dict(self._token_usage)
             empty_retrieval = dict(self._empty_retrieval)
@@ -180,8 +186,12 @@ class MetricsRegistry:
                 lines.append(f"{metric_name}_bucket{self._format_labels(bucket_labels)} {count}")
             infinite_labels = dict(base_labels)
             infinite_labels["le"] = "+Inf"
-            lines.append(f"{metric_name}_bucket{self._format_labels(infinite_labels)} {state.count}")
-            lines.append(f"{metric_name}_sum{self._format_labels(base_labels)} {self._format_number(state.total)}")
+            lines.append(
+                f"{metric_name}_bucket{self._format_labels(infinite_labels)} {state.count}"
+            )
+            lines.append(
+                f"{metric_name}_sum{self._format_labels(base_labels)} {self._format_number(state.total)}"
+            )
             lines.append(f"{metric_name}_count{self._format_labels(base_labels)} {state.count}")
 
     def _render_counter(
@@ -197,7 +207,9 @@ class MetricsRegistry:
         lines.extend((f"# HELP {metric_name} {help_text}", f"# TYPE {metric_name} counter"))
         for labels, value in sorted(values.items()):
             label_values = dict(zip(label_names, labels, strict=True))
-            lines.append(f"{metric_name}{self._format_labels(label_values)} {self._format_number(value)}")
+            lines.append(
+                f"{metric_name}{self._format_labels(label_values)} {self._format_number(value)}"
+            )
 
     def _cache_counters(
         self,

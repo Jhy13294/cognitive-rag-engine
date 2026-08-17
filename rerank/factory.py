@@ -50,4 +50,3 @@ def _override(overrides: dict, key: str, default):
     """Return an override value when it is explicitly provided."""
     value = overrides.get(key)
     return default if value is None else value
-

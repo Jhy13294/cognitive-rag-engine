@@ -175,7 +175,9 @@ class RetrievalEvaluationTests(unittest.TestCase):
         good_report = evaluate_retriever(good_retrieve, examples, k_values=[1])
         bad_report = evaluate_retriever(bad_retrieve, examples, k_values=[1])
 
-        self.assertGreater(good_report["metrics"]["1"]["hit_rate"], bad_report["metrics"]["1"]["hit_rate"])
+        self.assertGreater(
+            good_report["metrics"]["1"]["hit_rate"], bad_report["metrics"]["1"]["hit_rate"]
+        )
         self.assertGreater(good_report["metrics"]["1"]["mrr"], bad_report["metrics"]["1"]["mrr"])
 
     def test_hash_baseline_is_deterministic(self):
@@ -193,8 +195,12 @@ class RetrievalEvaluationTests(unittest.TestCase):
             embedding_dimension=64,
         )
 
-        report_one = evaluate_retriever(retrieve_one, examples, k_values=[3, 5, 10], metadata=metadata_one)
-        report_two = evaluate_retriever(retrieve_two, examples, k_values=[3, 5, 10], metadata=metadata_two)
+        report_one = evaluate_retriever(
+            retrieve_one, examples, k_values=[3, 5, 10], metadata=metadata_one
+        )
+        report_two = evaluate_retriever(
+            retrieve_two, examples, k_values=[3, 5, 10], metadata=metadata_two
+        )
 
         self.assertEqual(report_one["metrics"], report_two["metrics"])
         self.assertEqual(report_one["by_capability"], report_two["by_capability"])
@@ -321,8 +327,12 @@ class RetrievalEvaluationTests(unittest.TestCase):
             query_rewrite_weight_variant=0.7,
         )
 
-        single_report = evaluate_retriever(single_retrieve, examples, k_values=[3], metadata=single_metadata)
-        multi_report = evaluate_retriever(multi_retrieve, examples, k_values=[3], metadata=multi_metadata)
+        single_report = evaluate_retriever(
+            single_retrieve, examples, k_values=[3], metadata=single_metadata
+        )
+        multi_report = evaluate_retriever(
+            multi_retrieve, examples, k_values=[3], metadata=multi_metadata
+        )
 
         single_capability = single_report["by_capability"]
         multi_capability = multi_report["by_capability"]
@@ -346,7 +356,9 @@ class RetrievalEvaluationTests(unittest.TestCase):
     def test_eval_run_report_contains_relevant_list_schema(self):
         examples = load_golden_set("eval/golden_set.jsonl")
         report = evaluate_retriever(
-            lambda question, top_k: [make_source("eval/fixtures/knowledge_base/employee-handbook.md")],
+            lambda question, top_k: [
+                make_source("eval/fixtures/knowledge_base/employee-handbook.md")
+            ],
             examples[:1],
             k_values=[1],
         )

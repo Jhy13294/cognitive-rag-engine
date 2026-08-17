@@ -17,7 +17,9 @@ def to_http_exception(error: Exception) -> HTTPException:
     if status_code >= 500:
         logger.error("HTTP service error | code=%s | error_type=%s", code, type(error).__name__)
     else:
-        logger.warning("HTTP request rejected | code=%s | error_type=%s", code, type(error).__name__)
+        logger.warning(
+            "HTTP request rejected | code=%s | error_type=%s", code, type(error).__name__
+        )
 
     return HTTPException(
         status_code=status_code,

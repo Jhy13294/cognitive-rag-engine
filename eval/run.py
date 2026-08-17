@@ -7,11 +7,11 @@ from typing import Dict, List, Optional
 
 from config import Config
 from rerank import create_reranker
+
 from .baseline import build_hash_retriever
 from .golden import load_golden_set
 from .metrics import evaluate_retriever
 from .reporting import render_markdown_report, write_reports
-
 
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
 DEFAULT_KNOWLEDGE_PATH = "eval/fixtures/knowledge_base"
@@ -27,13 +27,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Build the retrieval-evaluation CLI parser."""
     parser = argparse.ArgumentParser(description="Run deterministic retrieval evaluation.")
     parser.add_argument("--golden-set", default=DEFAULT_GOLDEN_SET, help="JSONL golden set path.")
-    parser.add_argument("--knowledge-path", default=DEFAULT_KNOWLEDGE_PATH, help="Knowledge fixture path.")
-    parser.add_argument("--report-dir", default=DEFAULT_REPORT_DIR, help="Directory for report artifacts.")
+    parser.add_argument(
+        "--knowledge-path", default=DEFAULT_KNOWLEDGE_PATH, help="Knowledge fixture path."
+    )
+    parser.add_argument(
+        "--report-dir", default=DEFAULT_REPORT_DIR, help="Directory for report artifacts."
+    )
     parser.add_argument("--k", nargs="+", type=int, default=[3, 5, 10], help="K values to report.")
-    parser.add_argument("--chunk-size", type=int, default=500, help="Chunk size for baseline indexing.")
-    parser.add_argument("--chunk-overlap", type=int, default=80, help="Chunk overlap for baseline indexing.")
-    parser.add_argument("--embedding-dimension", type=int, default=64, help="Hash embedding dimension.")
-    parser.add_argument("--match-scope", choices=["source", "chunk"], default="source", help="Hit matching scope.")
+    parser.add_argument(
+        "--chunk-size", type=int, default=500, help="Chunk size for baseline indexing."
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=80, help="Chunk overlap for baseline indexing."
+    )
+    parser.add_argument(
+        "--embedding-dimension", type=int, default=64, help="Hash embedding dimension."
+    )
+    parser.add_argument(
+        "--match-scope", choices=["source", "chunk"], default="source", help="Hit matching scope."
+    )
     parser.add_argument(
         "--retrieval-mode",
         choices=["dense", "bm25", "hybrid"],
@@ -45,7 +57,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run dense-only, bm25-only, and fused reports with reranker disabled.",
     )
-    parser.add_argument("--hybrid-fetch-k", type=int, default=30, help="Candidate count per path before RRF fusion.")
+    parser.add_argument(
+        "--hybrid-fetch-k", type=int, default=30, help="Candidate count per path before RRF fusion."
+    )
     parser.add_argument("--rrf-k", type=int, default=Config.RRF_K, help="RRF rank constant.")
     parser.add_argument(
         "--hybrid-dense-weight",
@@ -72,14 +86,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Compatibility flag; parent expansion is disabled by default for retrieval metrics.",
     )
-    parser.add_argument("--parent-chunk-size", type=int, default=Config.PARENT_CHUNK_SIZE, help="Parent chunk size.")
+    parser.add_argument(
+        "--parent-chunk-size", type=int, default=Config.PARENT_CHUNK_SIZE, help="Parent chunk size."
+    )
     parser.add_argument(
         "--parent-chunk-overlap",
         type=int,
         default=Config.PARENT_CHUNK_OVERLAP,
         help="Parent chunk overlap.",
     )
-    parser.add_argument("--child-chunk-size", type=int, default=Config.CHILD_CHUNK_SIZE, help="Child chunk size.")
+    parser.add_argument(
+        "--child-chunk-size", type=int, default=Config.CHILD_CHUNK_SIZE, help="Child chunk size."
+    )
     parser.add_argument(
         "--child-chunk-overlap",
         type=int,
@@ -92,9 +110,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="none",
         help="Optional reranker provider for retrieval evaluation.",
     )
-    parser.add_argument("--rerank-fetch-k", type=int, default=30, help="Dense candidate count before rerank.")
-    parser.add_argument("--rerank-top-n", type=int, default=5, help="Default number of reranked candidates.")
-    parser.add_argument("--multi-query", action="store_true", help="Enable deterministic query rewrite and multi-query RRF.")
+    parser.add_argument(
+        "--rerank-fetch-k", type=int, default=30, help="Dense candidate count before rerank."
+    )
+    parser.add_argument(
+        "--rerank-top-n", type=int, default=5, help="Default number of reranked candidates."
+    )
+    parser.add_argument(
+        "--multi-query",
+        action="store_true",
+        help="Enable deterministic query rewrite and multi-query RRF.",
+    )
     parser.add_argument(
         "--query-rewrite-provider",
         choices=["deterministic", "chat"],
@@ -140,8 +166,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=Config.QUERY_REWRITE_WEIGHT_VARIANT,
         help="Cross-query RRF weight for rewritten query paths.",
     )
-    parser.add_argument("--fail-under-hit-rate", type=float, default=None, help="Fail if any hit_rate@k is below this value.")
-    parser.add_argument("--no-write-report", action="store_true", help="Print only; do not write report files.")
+    parser.add_argument(
+        "--fail-under-hit-rate",
+        type=float,
+        default=None,
+        help="Fail if any hit_rate@k is below this value.",
+    )
+    parser.add_argument(
+        "--no-write-report", action="store_true", help="Print only; do not write report files."
+    )
     parser.add_argument("--quiet", action="store_true", help="Do not print the Markdown report.")
     return parser
 
@@ -236,7 +269,8 @@ def main(argv: List[str] = None) -> int:
 
     if args.fail_under_hit_rate is not None:
         failed = [
-            k for k, values in report["metrics"].items()
+            k
+            for k, values in report["metrics"].items()
             if values["hit_rate"] < args.fail_under_hit_rate
         ]
         if failed:
@@ -264,7 +298,9 @@ def validate_query_rewrite_args(args) -> None:
     if args.query_rewrite_weight_variant < 0:
         raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
     if args.query_rewrite_weight_original < args.query_rewrite_weight_variant:
-        raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+        raise ValueError(
+            "QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT."
+        )
     if args.query_rewrite_weight_original + args.query_rewrite_weight_variant <= 0:
         raise ValueError("At least one query rewrite weight must be greater than 0.")
 

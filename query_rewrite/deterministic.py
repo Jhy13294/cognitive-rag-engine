@@ -35,7 +35,12 @@ class DeterministicQueryRewriter(QueryRewriter):
         if self.config.cache_enabled:
             self._cache[cache_key] = list(variants)
 
-        logger.info("Query rewritten | provider=%s | original=%s | variants=%s", self.model_name, question, variants)
+        logger.info(
+            "Query rewritten | provider=%s | original=%s | variants=%s",
+            self.model_name,
+            question,
+            variants,
+        )
         return variants
 
     def _cache_key(self, question: str) -> str:
@@ -67,9 +72,13 @@ class DeterministicQueryRewriter(QueryRewriter):
                 question = str(payload.get("question", "")).strip()
                 raw_variants = payload.get("rewrites", payload.get("variants", []))
                 if not question:
-                    raise ValueError(f"Missing question in query rewrite fixture line {line_number}")
+                    raise ValueError(
+                        f"Missing question in query rewrite fixture line {line_number}"
+                    )
                 if not isinstance(raw_variants, list):
-                    raise ValueError(f"Query rewrite fixture line {line_number} must contain a list of rewrites")
+                    raise ValueError(
+                        f"Query rewrite fixture line {line_number} must contain a list of rewrites"
+                    )
                 rewrites[_question_key(question)] = [str(item) for item in raw_variants]
 
         return rewrites

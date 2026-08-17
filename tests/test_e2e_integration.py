@@ -180,11 +180,12 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
         cls.qdrant_store = cls._build_qdrant_store(recreate=True)
         cls.redis_client = cls._build_sync_redis_client()
 
+        from fastapi.testclient import TestClient
+
+        from cache import reset_default_cache_store
+        from rag_cli import build_rag_pipeline_from_index
         from service.app import ServiceState, create_app, resolve_request_metadata_filter
         from service.models import QueryRequest
-        from fastapi.testclient import TestClient
-        from rag_cli import build_rag_pipeline_from_index
-        from cache import reset_default_cache_store
 
         cls.ServiceState = ServiceState
         cls.create_app = staticmethod(create_app)
@@ -366,7 +367,9 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
         token_total_after = self._chat_token_total(client)
         self.assertEqual(token_total_after, token_total_before)
         replay_records = self._audit_records()[-parallel_count:]
-        self.assertEqual([record["cache_outcome"] for record in replay_records], ["hit_l3"] * parallel_count)
+        self.assertEqual(
+            [record["cache_outcome"] for record in replay_records], ["hit_l3"] * parallel_count
+        )
 
     def test_hybrid_multi_query_respects_acl_on_dense_and_bm25_paths(self) -> None:
         client, _app, _state = self._build_client()
@@ -463,7 +466,9 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
         self.assertEqual(events[0][0], "sources")
         self.assertTrue(events[0][1].get("cached"))
         self.assertTrue(events[0][1].get("stream_replay"))
-        streamed_answer = "".join(payload.get("delta", "") for name, payload in events if name == "token")
+        streamed_answer = "".join(
+            payload.get("delta", "") for name, payload in events if name == "token"
+        )
         self.assertEqual(streamed_answer, cached_answer)
         self.assertTrue(events[-1][1].get("cached"))
 
@@ -495,10 +500,16 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
             acl=["role:legal"],
         )
         metric_principals = [self._principal(f"metrics{i}") for i in range(6)]
-        self._seed_principal_memberships([(principal, "role:legal") for principal in metric_principals])
+        self._seed_principal_memberships(
+            [(principal, "role:legal") for principal in metric_principals]
+        )
 
-        first_questions = [f"Metrics cardinality first {index} {self.case_id}?" for index in range(3)]
-        second_questions = [f"Metrics cardinality second {index} {self.case_id}?" for index in range(3)]
+        first_questions = [
+            f"Metrics cardinality first {index} {self.case_id}?" for index in range(3)
+        ]
+        second_questions = [
+            f"Metrics cardinality second {index} {self.case_id}?" for index in range(3)
+        ]
         for principal, question in zip(metric_principals[:3], first_questions, strict=True):
             response = client.post(
                 "/query",
@@ -678,17 +689,25 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
         if not kb_ids:
             return
         placeholders = ", ".join(["%s"] * len(kb_ids))
-        cursor.execute(f"SELECT id FROM document WHERE knowledge_base_id IN ({placeholders})", kb_ids)
+        cursor.execute(
+            f"SELECT id FROM document WHERE knowledge_base_id IN ({placeholders})", kb_ids
+        )
         doc_ids = [row[0] for row in cursor.fetchall()]
         if doc_ids:
             doc_placeholders = ", ".join(["%s"] * len(doc_ids))
-            cursor.execute(f"SELECT id FROM chunk WHERE document_id IN ({doc_placeholders})", doc_ids)
+            cursor.execute(
+                f"SELECT id FROM chunk WHERE document_id IN ({doc_placeholders})", doc_ids
+            )
             chunk_ids = [row[0] for row in cursor.fetchall()]
             if chunk_ids:
                 chunk_placeholders = ", ".join(["%s"] * len(chunk_ids))
-                cursor.execute(f"DELETE FROM acl_binding WHERE chunk_id IN ({chunk_placeholders})", chunk_ids)
+                cursor.execute(
+                    f"DELETE FROM acl_binding WHERE chunk_id IN ({chunk_placeholders})", chunk_ids
+                )
                 cursor.execute(f"DELETE FROM chunk WHERE id IN ({chunk_placeholders})", chunk_ids)
-            cursor.execute(f"DELETE FROM acl_binding WHERE document_id IN ({doc_placeholders})", doc_ids)
+            cursor.execute(
+                f"DELETE FROM acl_binding WHERE document_id IN ({doc_placeholders})", doc_ids
+            )
             cursor.execute(f"DELETE FROM document WHERE id IN ({doc_placeholders})", doc_ids)
         cursor.execute(f"DELETE FROM knowledge_base WHERE id IN ({placeholders})", kb_ids)
 
@@ -705,13 +724,22 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
             doc_ids = [row[0] for row in cursor.fetchall()]
             if doc_ids:
                 placeholders = ", ".join(["%s"] * len(doc_ids))
-                cursor.execute(f"SELECT id FROM chunk WHERE document_id IN ({placeholders})", doc_ids)
+                cursor.execute(
+                    f"SELECT id FROM chunk WHERE document_id IN ({placeholders})", doc_ids
+                )
                 chunk_ids = [row[0] for row in cursor.fetchall()]
                 if chunk_ids:
                     chunk_placeholders = ", ".join(["%s"] * len(chunk_ids))
-                    cursor.execute(f"DELETE FROM acl_binding WHERE chunk_id IN ({chunk_placeholders})", chunk_ids)
-                    cursor.execute(f"DELETE FROM chunk WHERE id IN ({chunk_placeholders})", chunk_ids)
-                cursor.execute(f"DELETE FROM acl_binding WHERE document_id IN ({placeholders})", doc_ids)
+                    cursor.execute(
+                        f"DELETE FROM acl_binding WHERE chunk_id IN ({chunk_placeholders})",
+                        chunk_ids,
+                    )
+                    cursor.execute(
+                        f"DELETE FROM chunk WHERE id IN ({chunk_placeholders})", chunk_ids
+                    )
+                cursor.execute(
+                    f"DELETE FROM acl_binding WHERE document_id IN ({placeholders})", doc_ids
+                )
                 cursor.execute(f"DELETE FROM document WHERE id IN ({placeholders})", doc_ids)
             connection.commit()
         finally:
@@ -855,7 +883,10 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
 
     @staticmethod
     def _response_has_source(response_body: Dict[str, Any], source_path: str) -> bool:
-        return any(source.get("metadata", {}).get("source") == source_path for source in response_body.get("sources", []))
+        return any(
+            source.get("metadata", {}).get("source") == source_path
+            for source in response_body.get("sources", [])
+        )
 
     @staticmethod
     def _layer_count(stats: Dict[str, Any], section: str, layer: str) -> int:
@@ -904,7 +935,9 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, stderr)
         return int(stdout.strip().splitlines()[-1]), int(process.pid)
 
-    def _post_stream(self, client, payload: Dict[str, Any], *, principal: str) -> List[Tuple[str, Dict[str, Any]]]:
+    def _post_stream(
+        self, client, payload: Dict[str, Any], *, principal: str
+    ) -> List[Tuple[str, Dict[str, Any]]]:
         with client.stream(
             "POST",
             "/query/stream",
@@ -942,7 +975,9 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
                 records.append(json.loads(line))
         return records
 
-    def _wait_for_audit_records(self, expected_count: int, timeout_seconds: float = 3.0) -> List[Dict[str, Any]]:
+    def _wait_for_audit_records(
+        self, expected_count: int, timeout_seconds: float = 3.0
+    ) -> List[Dict[str, Any]]:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             records = self._audit_records()
@@ -982,7 +1017,7 @@ class E2ECollaborationIntegrationTests(unittest.TestCase):
             "source": ALLOWED_TOKEN_SOURCES,
             "cache_layer": {"L1", "L2", "L3"},
         }
-        label_pattern = re.compile(r'\{([^}]*)\}')
+        label_pattern = re.compile(r"\{([^}]*)\}")
         for line in metrics_text.splitlines():
             if not line or line.startswith("#"):
                 continue

@@ -49,16 +49,28 @@ class ChatQueryRewriter(QueryRewriter):
             parsed_variants = _parse_variants(raw_text)
             variants = normalize_query_variants(question, parsed_variants, self.config.num_queries)
             if len(variants) <= 1:
-                logger.warning("Chat query rewrite returned no variants; using original query | question=%s", question)
+                logger.warning(
+                    "Chat query rewrite returned no variants; using original query | question=%s",
+                    question,
+                )
                 variants = [str(question).strip()]
         except Exception as e:
-            logger.warning("Chat query rewrite failed; using original query | error=%s | question=%s", e, question)
+            logger.warning(
+                "Chat query rewrite failed; using original query | error=%s | question=%s",
+                e,
+                question,
+            )
             variants = [str(question).strip()]
 
         if self.config.cache_enabled:
             self._cache[cache_key] = list(variants)
 
-        logger.info("Query rewritten | provider=%s | original=%s | variants=%s", self.model_name, question, variants)
+        logger.info(
+            "Query rewritten | provider=%s | original=%s | variants=%s",
+            self.model_name,
+            question,
+            variants,
+        )
         return variants
 
     def _build_prompt(self, question: str) -> str:

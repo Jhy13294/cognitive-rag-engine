@@ -76,9 +76,7 @@ def evaluate_retriever(
         "metadata": metadata or {},
         "k_values": normalized_k_values,
         "match_scope": match_scope,
-        "metrics": {
-            str(k): summarize_cases(cases, str(k)) for k in normalized_k_values
-        },
+        "metrics": {str(k): summarize_cases(cases, str(k)) for k in normalized_k_values},
         "by_capability": summarize_by_capability(cases, normalized_k_values),
         "cases": cases,
         "low_recall_cases_by_k": {
@@ -131,7 +129,9 @@ def evaluate_case_at_k(
             "negative_empty": is_empty,
             "negative_false_recall": not is_empty,
             "retrieved": retrieved_items,
-            "miss_reason": "Negative query returned no results." if is_empty else "Negative query returned non-empty retrieval results.",
+            "miss_reason": "Negative query returned no results."
+            if is_empty
+            else "Negative query returned non-empty retrieval results.",
         }
 
     first_hit_rank = None
@@ -177,7 +177,9 @@ def summarize_cases(cases: Sequence[Dict], k_key: str) -> Dict:
     mrr = _mean(item["reciprocal_rank"] for item in positive)
     recall = _mean(item["recall"] for item in positive)
     negative_empty_rate = _mean(1.0 if item["negative_empty"] else 0.0 for item in negative)
-    negative_false_recall_rate = _mean(1.0 if item["negative_false_recall"] else 0.0 for item in negative)
+    negative_false_recall_rate = _mean(
+        1.0 if item["negative_false_recall"] else 0.0 for item in negative
+    )
 
     return {
         "query_count": len(cases),
@@ -197,9 +199,7 @@ def summarize_by_capability(cases: Sequence[Dict], k_values: Sequence[int]) -> D
     grouped = {}
     for capability in capabilities:
         capability_cases = [case for case in cases if case["capability"] == capability]
-        grouped[capability] = {
-            str(k): summarize_cases(capability_cases, str(k)) for k in k_values
-        }
+        grouped[capability] = {str(k): summarize_cases(capability_cases, str(k)) for k in k_values}
     return grouped
 
 
@@ -227,11 +227,12 @@ def low_recall_cases(cases: Sequence[Dict], k_key: str) -> List[Dict]:
     return low_cases
 
 
-def relevant_keys_for(items: Sequence[RelevantItem], match_scope: str) -> Set[Tuple[str, Optional[int]]]:
+def relevant_keys_for(
+    items: Sequence[RelevantItem], match_scope: str
+) -> Set[Tuple[str, Optional[int]]]:
     """Build match keys from manually labeled relevant items."""
     return {
-        make_match_key(item.source, item.chunk_index, match_scope=match_scope)
-        for item in items
+        make_match_key(item.source, item.chunk_index, match_scope=match_scope) for item in items
     }
 
 
@@ -244,7 +245,9 @@ def retrieved_key_for(item: Dict, match_scope: str) -> Tuple[str, Optional[int]]
     )
 
 
-def make_match_key(source: str, chunk_index: Optional[int], match_scope: str) -> Tuple[str, Optional[int]]:
+def make_match_key(
+    source: str, chunk_index: Optional[int], match_scope: str
+) -> Tuple[str, Optional[int]]:
     """Create a source-level or chunk-level match key."""
     normalized_source = normalize_source(source)
     if match_scope == "source" or chunk_index is None:

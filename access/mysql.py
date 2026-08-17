@@ -1,7 +1,12 @@
 from typing import Callable, List, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .filters import ACLConfigurationError, ACLIdentityMissingError, ACLResolutionError, normalize_acl_values
+from .filters import (
+    ACLConfigurationError,
+    ACLIdentityMissingError,
+    ACLResolutionError,
+    normalize_acl_values,
+)
 
 MYSQL_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS knowledge_base (
@@ -77,7 +82,9 @@ class MySQLACLResolver:
     def allowed_acl_for_principal(self, principal: str) -> List[str]:
         """Return the ACL subjects granted to a principal."""
         if not principal or not str(principal).strip():
-            raise ACLIdentityMissingError("Authenticated principal is required when ACL is enabled.")
+            raise ACLIdentityMissingError(
+                "Authenticated principal is required when ACL is enabled."
+            )
 
         connection = None
         cursor = None
@@ -93,7 +100,9 @@ class MySQLACLResolver:
                 """,
                 (str(principal).strip(),),
             )
-            allowed = normalize_acl_values([row[0] for row in cursor.fetchall()], field_name="allowed_acl")
+            allowed = normalize_acl_values(
+                [row[0] for row in cursor.fetchall()], field_name="allowed_acl"
+            )
         except ACLConfigurationError:
             raise
         except Exception as e:
@@ -133,11 +142,15 @@ class MySQLACLResolver:
                 """,
                 (str(source).strip(), str(source).strip()),
             )
-            acl_values = normalize_acl_values([row[0] for row in cursor.fetchall()], field_name="source_acl")
+            acl_values = normalize_acl_values(
+                [row[0] for row in cursor.fetchall()], field_name="source_acl"
+            )
         except ACLConfigurationError:
             raise
         except Exception as e:
-            raise ACLResolutionError("Failed to resolve source ACL bindings from MySQL metadata.") from e
+            raise ACLResolutionError(
+                "Failed to resolve source ACL bindings from MySQL metadata."
+            ) from e
         finally:
             if cursor is not None:
                 cursor.close()
@@ -179,7 +192,9 @@ class MySQLACLResolver:
         try:
             import mysql.connector
         except ModuleNotFoundError as e:
-            raise ACLConfigurationError("mysql-connector-python is required for MySQL ACL resolution.") from e
+            raise ACLConfigurationError(
+                "mysql-connector-python is required for MySQL ACL resolution."
+            ) from e
 
         options = self._connection_options()
         if extra_options:
@@ -192,7 +207,9 @@ class MySQLACLResolver:
             return _parse_mysql_url(self.metadata_db_url)
 
         if not self.host or not self.user or not self.database:
-            raise ACLConfigurationError("MySQL ACL configuration requires METADATA_DB_URL or MYSQL_HOST/USER/DATABASE.")
+            raise ACLConfigurationError(
+                "MySQL ACL configuration requires METADATA_DB_URL or MYSQL_HOST/USER/DATABASE."
+            )
 
         return {
             "host": self.host,

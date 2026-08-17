@@ -22,7 +22,6 @@ from document_loader import (
     load_documents,
 )
 
-
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
@@ -326,7 +325,9 @@ class GeneratedDocumentLoaderTests(unittest.TestCase):
             self._write_scanned_pdf(path, "SCANNEDTOKEN002")
             loader = PDFLoader(str(path), ocr_enabled=True)
 
-            with mock.patch.object(loader, "_get_ocr_engine", side_effect=ImportError("rapidocr missing")):
+            with mock.patch.object(
+                loader, "_get_ocr_engine", side_effect=ImportError("rapidocr missing")
+            ):
                 with self.assertRaisesRegex(ImportError, "rapidocr missing"):
                     loader.load()
 
@@ -365,7 +366,9 @@ class GeneratedDocumentLoaderTests(unittest.TestCase):
                 open_calls.append(open_path)
                 return fake_pdf
 
-            with mock.patch.dict(sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}):
+            with mock.patch.dict(
+                sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}
+            ):
                 loader = PDFLoader(str(path), extract_tables=True)
                 content = loader.load()
 
@@ -397,7 +400,9 @@ class GeneratedDocumentLoaderTests(unittest.TestCase):
                 open_calls.append(open_path)
                 raise AssertionError("pdfplumber should not be opened")
 
-            with mock.patch.dict(sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}):
+            with mock.patch.dict(
+                sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}
+            ):
                 loader = PDFLoader(str(path), extract_tables=False)
                 content = loader.load()
 

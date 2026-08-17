@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, List, Optional, Sequence
 
 from lexical import build_idf, lexical_score, tokenize
 
-from .base import RerankConfig, RerankResult, Reranker
+from .base import RerankConfig, Reranker, RerankResult
 
 if TYPE_CHECKING:
     from rag import RetrievedSource
@@ -81,7 +81,9 @@ class DeterministicReranker(Reranker):
         scored_results.sort(key=lambda result: (-result.score, result.index))
         return scored_results[:limit]
 
-    def _dense_order(self, candidates: Sequence["RetrievedSource"], limit: int) -> List[RerankResult]:
+    def _dense_order(
+        self, candidates: Sequence["RetrievedSource"], limit: int
+    ) -> List[RerankResult]:
         """Return candidates in original dense order when the query has no tokens."""
         return [
             RerankResult(

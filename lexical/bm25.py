@@ -1,7 +1,8 @@
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Counter as CounterType, Dict, Iterable, List, Mapping, Sequence, Set
+from typing import Counter as CounterType
+from typing import Dict, Iterable, List, Mapping, Sequence, Set
 
 
 @dataclass
@@ -126,7 +127,9 @@ def bm25_score(
         if frequency <= 0:
             continue
         document_frequency = index.document_frequencies.get(token, 0)
-        idf = math.log(1.0 + (index.document_count - document_frequency + 0.5) / (document_frequency + 0.5))
+        idf = math.log(
+            1.0 + (index.document_count - document_frequency + 0.5) / (document_frequency + 0.5)
+        )
         denominator = frequency + k1 * (1.0 - b + b * (document_length / average_length))
         score += idf * ((frequency * (k1 + 1.0)) / denominator)
 

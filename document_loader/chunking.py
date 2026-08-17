@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Iterable, List, Tuple
 
-from .base import Document
 from logger import setup_logger
+
+from .base import Document
 
 logger = setup_logger(__name__)
 
@@ -48,7 +49,7 @@ class TextSplitter:
 
         spans = self._split_text_spans(text)
         logger.debug("Text split completed | chunks=%s", len(spans))
-        return [text[span.start:span.end] for span in spans]
+        return [text[span.start : span.end] for span in spans]
 
     def split_document(self, document: Document) -> List[Document]:
         """Split a Document while preserving and extending metadata."""
@@ -56,7 +57,7 @@ class TextSplitter:
         documents = []
 
         for index, span in enumerate(spans):
-            chunk = document.content[span.start:span.end]
+            chunk = document.content[span.start : span.end]
 
             metadata = dict(document.metadata)
             metadata.update(
@@ -341,7 +342,9 @@ def split_text(text: str, chunk_size: int = 800, chunk_overlap: int = 120) -> Li
     return TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap).split_text(text)
 
 
-def split_document(document: Document, chunk_size: int = 800, chunk_overlap: int = 120) -> List[Document]:
+def split_document(
+    document: Document, chunk_size: int = 800, chunk_overlap: int = 120
+) -> List[Document]:
     """Split a Document with default splitter settings."""
     return TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap).split_document(document)
 

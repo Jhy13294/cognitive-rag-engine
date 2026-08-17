@@ -64,12 +64,14 @@ def render_markdown_report(report: Dict) -> str:
 
     lines.extend(["", "## Capability Metrics", ""])
     for capability, per_k in report.get("by_capability", {}).items():
-        lines.extend([
-            f"### {capability}",
-            "",
-            "| k | query_count | hit_rate | MRR | recall | negative_empty_rate | negative_false_recall_rate |",
-            "|---|---:|---:|---:|---:|---:|---:|",
-        ])
+        lines.extend(
+            [
+                f"### {capability}",
+                "",
+                "| k | query_count | hit_rate | MRR | recall | negative_empty_rate | negative_false_recall_rate |",
+                "|---|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
         for k, values in per_k.items():
             lines.append(
                 "| {k} | {query_count} | {hit_rate:.6f} | {mrr:.6f} | {recall:.6f} | {neg_empty:.6f} | {neg_false:.6f} |".format(
@@ -96,15 +98,17 @@ def render_markdown_report(report: Dict) -> str:
             continue
 
         for case in low_cases:
-            lines.extend([
-                f"#### {case['qid']} ({case['capability']})",
-                "",
-                f"- question: {case['question']}",
-                f"- relevant: `{json.dumps(case['relevant'], ensure_ascii=False)}`",
-                f"- first_hit_rank: `{case['first_hit_rank'] if case['first_hit_rank'] is not None else 'miss'}`",
-                f"- miss_reason: {case['miss_reason']}",
-                "- retrieved:",
-            ])
+            lines.extend(
+                [
+                    f"#### {case['qid']} ({case['capability']})",
+                    "",
+                    f"- question: {case['question']}",
+                    f"- relevant: `{json.dumps(case['relevant'], ensure_ascii=False)}`",
+                    f"- first_hit_rank: `{case['first_hit_rank'] if case['first_hit_rank'] is not None else 'miss'}`",
+                    f"- miss_reason: {case['miss_reason']}",
+                    "- retrieved:",
+                ]
+            )
             for item in case.get("retrieved", []):
                 lines.append(
                     "  - source={source}; chunk={chunk}; score={score:.6f}; preview={preview}".format(
@@ -163,13 +167,15 @@ def render_hybrid_comparison_report(report: Dict) -> str:
                 )
             )
 
-    lines.extend([
-        "",
-        "## Capability MRR",
-        "",
-        "| mode | k | exact_name MRR | long_tail MRR |",
-        "|---|---:|---:|---:|",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Capability MRR",
+            "",
+            "| mode | k | exact_name MRR | long_tail MRR |",
+            "|---|---:|---:|---:|",
+        ]
+    )
     for mode, values in comparison.items():
         for k in k_values:
             exact_name = values.get("exact_name", {}).get(k, {})
@@ -191,7 +197,9 @@ def insert_parent_child_metadata(lines, metadata: Dict, after: str) -> None:
     if "parent_child_enabled" not in metadata:
         return
 
-    insert_at = next((index + 1 for index, line in enumerate(lines) if line.startswith(after)), len(lines))
+    insert_at = next(
+        (index + 1 for index, line in enumerate(lines) if line.startswith(after)), len(lines)
+    )
     parent_lines = [
         f"- parent_child_enabled: `{metadata.get('parent_child_enabled')}`",
         f"- expand_parent_context: `{metadata.get('expand_parent_context')}`",
@@ -208,7 +216,9 @@ def insert_query_rewrite_metadata(lines, metadata: Dict, after: str) -> None:
     if "query_rewrite_enabled" not in metadata:
         return
 
-    insert_at = next((index + 1 for index, line in enumerate(lines) if line.startswith(after)), len(lines))
+    insert_at = next(
+        (index + 1 for index, line in enumerate(lines) if line.startswith(after)), len(lines)
+    )
     rewrite_lines = [
         f"- query_rewrite_enabled: `{metadata.get('query_rewrite_enabled')}`",
         f"- query_rewrite_provider: `{metadata.get('query_rewrite_provider')}`",

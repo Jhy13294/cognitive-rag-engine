@@ -1,6 +1,6 @@
 from .bm25_retriever import BM25Retriever
 from .models import RankedRecord
-from .rrf import RRFConfig, ReciprocalRankFusion
+from .rrf import ReciprocalRankFusion, RRFConfig
 
 __all__ = [
     "BM25Retriever",

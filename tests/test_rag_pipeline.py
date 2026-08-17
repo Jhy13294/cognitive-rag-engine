@@ -4,7 +4,6 @@ from dataclasses import asdict
 from document_loader import load_and_split_document
 from embeddings import HashEmbeddingProvider
 from rag import RAGPipeline
-from rerank import RerankConfig, RerankResult, Reranker
 from rag.pipeline import (
     CANONICAL_ABSTENTION_RESPONSE,
     extract_chat_content,
@@ -14,6 +13,7 @@ from rag.pipeline import (
     is_scenario_procedure_question,
     is_source_relevance_question,
 )
+from rerank import RerankConfig, Reranker, RerankResult
 from tests.test_document_ingestion import FIXTURES_DIR
 from vector_store import InMemoryVectorStore
 
@@ -116,7 +116,9 @@ class RAGPipelineTests(unittest.TestCase):
         pipeline, _ = build_test_pipeline()
         sources = pipeline.retrieve("What is this project?", top_k=1)
         scenario_question = "A new employee arrives late and the building badge is not ready. Where is the workaround?"
-        paraphrase_question = "How quickly should the team declare the most serious customer-impacting incident?"
+        paraphrase_question = (
+            "How quickly should the team declare the most serious customer-impacting incident?"
+        )
 
         scenario_prompt = pipeline.build_prompt(scenario_question, sources)
         paraphrase_prompt = pipeline.build_prompt(paraphrase_question, sources)
@@ -184,8 +186,12 @@ class RAGPipelineTests(unittest.TestCase):
         self.assertIn("which sources or documents are relevant", source_relevance_prompt)
         self.assertIn("source names may be the main answer", source_relevance_prompt)
         self.assertIn("Do not answer with only citation numbers", source_relevance_prompt)
-        self.assertNotIn("When the question does not ask for source or document names", source_relevance_prompt)
-        self.assertIn("tool, service, or workflow satisfies a described responsibility", service_prompt)
+        self.assertNotIn(
+            "When the question does not ask for source or document names", source_relevance_prompt
+        )
+        self.assertIn(
+            "tool, service, or workflow satisfies a described responsibility", service_prompt
+        )
         self.assertIn("preserves the requested responsibility", service_prompt)
         self.assertIn("Do not answer with only the entity name", service_prompt)
         self.assertIn("do not list adjacent responsibilities", service_prompt)
@@ -223,7 +229,9 @@ class RAGPipelineTests(unittest.TestCase):
             )
         )
         self.assertTrue(
-            is_action_list_question("What should a new engineer complete in the first few business days?")
+            is_action_list_question(
+                "What should a new engineer complete in the first few business days?"
+            )
         )
         self.assertTrue(
             is_action_list_question("Who must approve an expensive invoice above the threshold?")
@@ -247,7 +255,9 @@ class RAGPipelineTests(unittest.TestCase):
         pipeline.answer("What is not covered by the knowledge base?")
 
         system_prompt = chat_client.calls[0]["system_prompt"]
-        self.assertIn(f'begin with exactly this sentence: "{CANONICAL_ABSTENTION_RESPONSE}"', system_prompt)
+        self.assertIn(
+            f'begin with exactly this sentence: "{CANONICAL_ABSTENTION_RESPONSE}"', system_prompt
+        )
         self.assertIn("directly supported", system_prompt)
         self.assertIn("do not supply an unsupported answer", system_prompt)
         self.assertIn("Match the scope and wording of the user's question", system_prompt)
@@ -277,7 +287,10 @@ class RAGPipelineTests(unittest.TestCase):
         dense_sources = dense_pipeline.retrieve("What is this project?", top_k=3)
         default_sources = default_pipeline.retrieve("What is this project?", top_k=3)
 
-        self.assertEqual([asdict(source) for source in dense_sources], [asdict(source) for source in default_sources])
+        self.assertEqual(
+            [asdict(source) for source in dense_sources],
+            [asdict(source) for source in default_sources],
+        )
 
     def test_retrieve_applies_reranker_and_preserves_dense_observability(self):
         pipeline, _ = build_test_pipeline()
@@ -302,7 +315,10 @@ class RAGPipelineTests(unittest.TestCase):
 
         fallback_sources = pipeline.retrieve("What is this project?", top_k=2)
 
-        self.assertEqual([asdict(source) for source in fallback_sources], [asdict(source) for source in dense_sources])
+        self.assertEqual(
+            [asdict(source) for source in fallback_sources],
+            [asdict(source) for source in dense_sources],
+        )
 
     def test_prompt_context_is_bounded(self):
         pipeline, _ = build_test_pipeline()

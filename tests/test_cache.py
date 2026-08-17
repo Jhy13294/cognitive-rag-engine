@@ -97,7 +97,9 @@ class CountingVectorStore(InMemoryVectorStore):
 
     def similarity_search(self, query_embedding, top_k=5, metadata_filter=None):
         self.search_calls += 1
-        return super().similarity_search(query_embedding, top_k=top_k, metadata_filter=metadata_filter)
+        return super().similarity_search(
+            query_embedding, top_k=top_k, metadata_filter=metadata_filter
+        )
 
 
 class CountingChatClient:
@@ -179,7 +181,9 @@ def build_cached_pipeline(cache_store=None):
         top_k=1,
         max_context_chars=1000,
     )
-    cached = CachingRAGPipeline(pipeline, cache_store or build_cache_store(), corpus_identity="unit-corpus")
+    cached = CachingRAGPipeline(
+        pipeline, cache_store or build_cache_store(), corpus_identity="unit-corpus"
+    )
     return cached, provider, vector_store, chat_client
 
 
@@ -278,7 +282,9 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
         cached_response = pipeline.answer("alpha", top_k=1)
         chat.stream_calls = 0
         app = create_app(ServiceState(cache_store=pipeline._cache_store))
-        iterator = stream_query_events(app, QueryRequest(question="alpha", top_k=1), pipeline=pipeline)
+        iterator = stream_query_events(
+            app, QueryRequest(question="alpha", top_k=1), pipeline=pipeline
+        )
 
         first_event = await iterator.__anext__()
         second_event = await iterator.__anext__()
@@ -355,7 +361,9 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
             await client.delete(version_key, json_key, bytes_key)
             await client.aclose()
 
-    @unittest.skipUnless(os.getenv("REDIS_URL"), "REDIS_URL is not set; live Redis cross-loop test is gated")
+    @unittest.skipUnless(
+        os.getenv("REDIS_URL"), "REDIS_URL is not set; live Redis cross-loop test is gated"
+    )
     async def test_live_redis_cross_loop_sync_calls_hit_l1_l2_l3_without_errors(self):
         try:
             import redis  # noqa: F401
@@ -419,7 +427,10 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(final_stats["hits"]["l2"], 1)
             self.assertGreaterEqual(final_stats["hits"]["l3"], 1)
             self.assertEqual(final_stats["errors"], 0)
-            self.assertEqual(final_stats["background_loop_thread_id"], stats_after_l1["background_loop_thread_id"])
+            self.assertEqual(
+                final_stats["background_loop_thread_id"],
+                stats_after_l1["background_loop_thread_id"],
+            )
         finally:
             await store.aclose()
             await delete_redis_namespace(redis_url, namespace)

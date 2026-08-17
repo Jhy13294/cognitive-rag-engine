@@ -109,7 +109,9 @@ def build_pipeline(query_rewriter=None, enabled=False):
 
 class QueryRewriteTests(unittest.TestCase):
     def test_normalize_query_variants_keeps_original_first_and_dedupes(self):
-        variants = normalize_query_variants("Original Question", ["variant", " original question ", "variant"], 3)
+        variants = normalize_query_variants(
+            "Original Question", ["variant", " original question ", "variant"], 3
+        )
 
         self.assertEqual(variants, ["Original Question", "variant"])
 
@@ -196,7 +198,10 @@ class QueryRewriteTests(unittest.TestCase):
         baseline_sources = baseline.retrieve("original question", top_k=2)
         fallback_sources = failing.retrieve("original question", top_k=2)
 
-        self.assertEqual([asdict(source) for source in fallback_sources], [asdict(source) for source in baseline_sources])
+        self.assertEqual(
+            [asdict(source) for source in fallback_sources],
+            [asdict(source) for source in baseline_sources],
+        )
 
     def test_empty_rewrite_falls_back_to_single_query_byte_equal(self):
         baseline = build_pipeline()
@@ -205,7 +210,10 @@ class QueryRewriteTests(unittest.TestCase):
         baseline_sources = baseline.retrieve("original question", top_k=2)
         fallback_sources = empty.retrieve("original question", top_k=2)
 
-        self.assertEqual([asdict(source) for source in fallback_sources], [asdict(source) for source in baseline_sources])
+        self.assertEqual(
+            [asdict(source) for source in fallback_sources],
+            [asdict(source) for source in baseline_sources],
+        )
 
 
 if __name__ == "__main__":

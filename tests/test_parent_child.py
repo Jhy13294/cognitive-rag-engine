@@ -55,7 +55,7 @@ class ParentChildSplitterTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.children), 2)
         for parent in result.parents:
             self.assertEqual(
-                document.content[parent.metadata["start_char"]:parent.metadata["end_char"]],
+                document.content[parent.metadata["start_char"] : parent.metadata["end_char"]],
                 parent.content,
             )
             self.assertLessEqual(len(parent.content), splitter.parent_chunk_size)
@@ -63,7 +63,7 @@ class ParentChildSplitterTests(unittest.TestCase):
             parent = parents_by_id[child.metadata["parent_id"]]
             self.assertIn(child.content, parent.content)
             self.assertEqual(
-                document.content[child.metadata["start_char"]:child.metadata["end_char"]],
+                document.content[child.metadata["start_char"] : child.metadata["end_char"]],
                 child.content,
             )
             self.assertLessEqual(len(child.content), splitter.child_chunk_size)
@@ -75,7 +75,9 @@ class ParentChildSplitterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ParentChildSplitter(parent_chunk_size=100, child_chunk_size=100)
         with self.assertRaises(ValueError):
-            ParentChildSplitter(parent_chunk_size=100, parent_chunk_overlap=100, child_chunk_size=40)
+            ParentChildSplitter(
+                parent_chunk_size=100, parent_chunk_overlap=100, child_chunk_size=40
+            )
 
 
 class ParentStoreTests(unittest.TestCase):
@@ -162,7 +164,9 @@ class ParentExpansionTests(unittest.TestCase):
 
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0].index, 1)
-        self.assertEqual(sources[0].content, "Alpha intro. Beta target detail. Gamma closing sentence.")
+        self.assertEqual(
+            sources[0].content, "Alpha intro. Beta target detail. Gamma closing sentence."
+        )
         self.assertEqual(sources[0].metadata["child_id"], "child-1")
         self.assertEqual(sources[0].metadata["collapsed_child_count"], 2)
         self.assertEqual(sources[0].metadata["collapsed_child_ids"], ["child-1", "child-2"])
@@ -172,7 +176,10 @@ class ParentExpansionTests(unittest.TestCase):
 
         sources = pipeline.retrieve("target detail", top_k=2)
 
-        self.assertEqual([source.content for source in sources], ["Beta target detail.", "Gamma closing sentence."])
+        self.assertEqual(
+            [source.content for source in sources],
+            ["Beta target detail.", "Gamma closing sentence."],
+        )
         self.assertNotIn("parent_expanded", sources[0].metadata)
 
 

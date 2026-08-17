@@ -123,7 +123,10 @@ class ContextPacker:
             if duplicate_position is None and self.near_dup_enabled:
                 source_shingles = shingles(source_copy.content)
                 for index, kept_shingles in enumerate(near_duplicate_shingles):
-                    if jaccard_similarity(source_shingles, kept_shingles) >= self.near_dup_threshold:
+                    if (
+                        jaccard_similarity(source_shingles, kept_shingles)
+                        >= self.near_dup_threshold
+                    ):
                         duplicate_position = index
                         duplicate_reason = "near"
                         break
@@ -146,7 +149,9 @@ class ContextPacker:
 
         return kept_sources, deduped_source_ids
 
-    def _truncate_oversized_source(self, source: Any, packed_index: int) -> Optional[Tuple[Any, str]]:
+    def _truncate_oversized_source(
+        self, source: Any, packed_index: int
+    ) -> Optional[Tuple[Any, str]]:
         """Truncate one oversized source only at sentence or paragraph boundaries."""
         boundary_positions = self._boundary_positions(source.content)
         for position in reversed(boundary_positions):
@@ -163,7 +168,9 @@ class ContextPacker:
                     "context_content_chars": len(truncated_content),
                 }
             )
-            candidate_source = replace(source, index=packed_index, content=truncated_content, metadata=metadata)
+            candidate_source = replace(
+                source, index=packed_index, content=truncated_content, metadata=metadata
+            )
             candidate_block = self._format_block(candidate_source)
             if self._measure(candidate_block) <= self._budget_limit():
                 return candidate_source, candidate_block
@@ -212,7 +219,11 @@ class ContextPacker:
 
     def _budget_limit(self) -> int:
         """Return the active budget limit."""
-        return self.max_context_tokens if self.max_context_tokens is not None else self.max_context_chars
+        return (
+            self.max_context_tokens
+            if self.max_context_tokens is not None
+            else self.max_context_chars
+        )
 
     def _budget_unit(self) -> str:
         """Return the active budget unit name."""
@@ -257,7 +268,7 @@ def shingles(text: str, size: int = 5) -> Set[str]:
         return set()
     if len(normalized) <= size:
         return {normalized}
-    return {normalized[index:index + size] for index in range(0, len(normalized) - size + 1)}
+    return {normalized[index : index + size] for index in range(0, len(normalized) - size + 1)}
 
 
 def jaccard_similarity(first: Set[str], second: Set[str]) -> float:

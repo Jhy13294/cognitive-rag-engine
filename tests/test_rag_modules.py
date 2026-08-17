@@ -3,13 +3,21 @@ import unittest
 from dataclasses import asdict
 
 import rag.pipeline as pipeline_module
-from parent_store import InMemoryParentStore
-from rag import PromptBuilder, RAGPipeline, RetrievalOrchestrator, SourceFinalizer
-from rag import models, prompt_builder, question_classifier, retrieval_orchestrator, source_finalizer
-from vector_store import InMemoryVectorStore, VectorRecord
-
 from document_loader import Document
 from embeddings.base import EmbeddingConfig, EmbeddingProvider
+from parent_store import InMemoryParentStore
+from rag import (
+    PromptBuilder,
+    RAGPipeline,
+    RetrievalOrchestrator,
+    SourceFinalizer,
+    models,
+    prompt_builder,
+    question_classifier,
+    retrieval_orchestrator,
+    source_finalizer,
+)
+from vector_store import InMemoryVectorStore, VectorRecord
 
 # The committed Ragas verdict fixture was recorded against exactly this system
 # prompt; a content change without a version bump would silently invalidate
@@ -42,7 +50,13 @@ def build_parent_child_pipeline():
     """Build a small parent-child pipeline exercising every split stage."""
     parent = Document(
         content="Full parent content with beta target detail and gamma closing sentence.",
-        metadata={"parent_id": "parent-1", "source": "policy.md", "parent_index": 0, "start_char": 0, "end_char": 72},
+        metadata={
+            "parent_id": "parent-1",
+            "source": "policy.md",
+            "parent_index": 0,
+            "start_char": 0,
+            "end_char": 72,
+        },
     )
     parent_store = InMemoryParentStore()
     parent_store.add_parents([parent])
@@ -169,7 +183,9 @@ class PipelineModuleSplitTests(unittest.TestCase):
         """Cache wrappers replace pipeline.retrieve on the instance; answer() must honor it."""
         pipeline = build_parent_child_pipeline()
         sentinel_sources = [
-            models.RetrievedSource(index=1, content="wrapped content", score=1.0, metadata={"source": "wrapped.md"})
+            models.RetrievedSource(
+                index=1, content="wrapped content", score=1.0, metadata={"source": "wrapped.md"}
+            )
         ]
         calls = []
 

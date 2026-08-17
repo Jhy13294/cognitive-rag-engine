@@ -226,7 +226,9 @@ class CachingRAGPipeline:
         payload.update(
             {
                 "scope": "answer",
-                "system_prompt_hash": namespaced_key("prompt", "system", {"text": self._pipeline.system_prompt}),
+                "system_prompt_hash": namespaced_key(
+                    "prompt", "system", {"text": self._pipeline.system_prompt}
+                ),
                 "chat_model": self._chat_model_name(),
             }
         )
@@ -260,7 +262,9 @@ class CachingRAGPipeline:
             "embedding_dimension": embedding_provider.dimension,
             "embedding_normalize": bool(embedding_provider.config.normalize),
             "vector_store_type": type(self._pipeline.vector_store).__name__,
-            "vector_store_collection": getattr(self._pipeline.vector_store, "collection_name", None),
+            "vector_store_collection": getattr(
+                self._pipeline.vector_store, "collection_name", None
+            ),
             "reranker_model": reranker.model_name if reranker else None,
             "rerank_fetch_k": reranker.fetch_k if reranker else None,
             "rerank_top_n": reranker.top_n if reranker else None,

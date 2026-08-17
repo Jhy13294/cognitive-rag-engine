@@ -1,8 +1,8 @@
 from .bm25 import (
     BM25Index,
+    bm25_score,
     build_bm25_index,
     build_idf,
-    bm25_score,
     contiguous_overlap_bonus,
     lexical_score,
 )

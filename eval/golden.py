@@ -38,4 +38,3 @@ def load_golden_set(path: str) -> List[GoldenExample]:
         raise ValueError(f"Golden set is empty: {golden_path}")
 
     return examples
-

@@ -6,7 +6,12 @@ import uuid
 
 from embeddings import HashEmbeddingProvider
 from rag_cli import build_rag_pipeline_from_index, run_single_question
-from vector_store import InMemoryVectorStore, QdrantVectorStore, VectorRecord, is_qdrant_client_available
+from vector_store import (
+    InMemoryVectorStore,
+    QdrantVectorStore,
+    VectorRecord,
+    is_qdrant_client_available,
+)
 
 
 class FakeChatClient:
@@ -57,15 +62,20 @@ class QdrantVectorStoreIntegrationTests(unittest.TestCase):
         qdrant_store.add_records(records)
 
         query_embedding = [1.0, 0.0]
-        memory_ids = [result.record.id for result in memory_store.similarity_search(query_embedding, top_k=2)]
-        qdrant_ids = [result.record.id for result in qdrant_store.similarity_search(query_embedding, top_k=2)]
+        memory_ids = [
+            result.record.id for result in memory_store.similarity_search(query_embedding, top_k=2)
+        ]
+        qdrant_ids = [
+            result.record.id for result in qdrant_store.similarity_search(query_embedding, top_k=2)
+        ]
 
         self.assertEqual(memory_ids, qdrant_ids)
         self.assertEqual(qdrant_store.count(), len(records))
 
         restarted_store = self.build_qdrant_store(recreate=False)
         persisted_ids = [
-            result.record.id for result in restarted_store.similarity_search(query_embedding, top_k=2)
+            result.record.id
+            for result in restarted_store.similarity_search(query_embedding, top_k=2)
         ]
 
         self.assertEqual(persisted_ids, memory_ids)

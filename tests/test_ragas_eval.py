@@ -56,7 +56,6 @@ from eval.ragas_run import main as ragas_main
 from eval.schemas import GoldenExample, RelevantItem
 from rag.pipeline import RAG_SYSTEM_PROMPT_VERSION
 
-
 METRICS = (
     "faithfulness",
     "answer_relevance",
@@ -249,7 +248,10 @@ class RagasEvaluationTests(unittest.TestCase):
             )
 
             self.assertTrue(
-                any(failure["kind"] == "insufficient_margin" for failure in report["gate"]["failures"])
+                any(
+                    failure["kind"] == "insufficient_margin"
+                    for failure in report["gate"]["failures"]
+                )
             )
 
     def test_median_gate_ignores_minority_zero_outliers(self):
@@ -556,7 +558,9 @@ class RagasEvaluationTests(unittest.TestCase):
                 )
 
             def _compute_score(self, verdicts):
-                return sum(int(item.verdict) for item in verdicts.statements) / len(verdicts.statements)
+                return sum(int(item.verdict) for item in verdicts.statements) / len(
+                    verdicts.statements
+                )
 
         trace = asyncio.run(
             trace_faithfulness_once(
@@ -952,8 +956,7 @@ class RagasEvaluationTests(unittest.TestCase):
         )
 
         answer = (
-            "Source [4] is relevant because it states that employees receive "
-            "ten pet vacation days."
+            "Source [4] is relevant because it states that employees receive ten pet vacation days."
         )
 
         class UnfaithfulClaimLLM(InstructorBaseRagasLLM):
@@ -1066,9 +1069,7 @@ class RagasEvaluationTests(unittest.TestCase):
             metadata["faithfulness_context_format"],
             FAITHFULNESS_CONTEXT_FORMAT,
         )
-        self.assertTrue(
-            metadata["faithfulness_context_format_change_invalidates_baseline"]
-        )
+        self.assertTrue(metadata["faithfulness_context_format_change_invalidates_baseline"])
         self.assertEqual(metadata["gated_metrics"], list(GATED_METRICS))
         self.assertEqual(metadata["reported_only_metrics"], list(REPORTED_METRICS))
         self.assertTrue(metadata["gating_scope_change_invalidates_baseline"])
@@ -1275,10 +1276,7 @@ class RagasEvaluationTests(unittest.TestCase):
                     "capability": "exact_name",
                     "answer_sha256": "a" * 64,
                     "contexts_sha256": "b" * 64,
-                    "runs": [
-                        {metric: value for metric in METRICS}
-                        for value in run_values
-                    ],
+                    "runs": [{metric: value for metric in METRICS} for value in run_values],
                 },
                 {
                     "record_type": "verdict",
@@ -1286,10 +1284,7 @@ class RagasEvaluationTests(unittest.TestCase):
                     "capability": "negative",
                     "answer_sha256": "c" * 64,
                     "contexts_sha256": "d" * 64,
-                    "negative_runs": [
-                        {"abstained": True, "fabricated": False}
-                        for _ in run_values
-                    ],
+                    "negative_runs": [{"abstained": True, "fabricated": False} for _ in run_values],
                 },
             ]
             metadata = {

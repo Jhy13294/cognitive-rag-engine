@@ -66,7 +66,9 @@ class APIClient:
         self._record_usage(response)
         return response
 
-    async def stream_chat(self, message: str, system_prompt: Optional[str] = None) -> AsyncIterator[str]:
+    async def stream_chat(
+        self, message: str, system_prompt: Optional[str] = None
+    ) -> AsyncIterator[str]:
         """Stream chat-completion deltas from the upstream provider."""
         payload = self._build_payload(message, system_prompt=system_prompt, stream=True)
         request_recorded = False
@@ -119,9 +121,7 @@ class APIClient:
             "model": Config.MODEL_NAME,
             "messages": messages,
             "temperature": (
-                self.temperature
-                if self.temperature is not None
-                else Config.TEMPERATURE
+                self.temperature if self.temperature is not None else Config.TEMPERATURE
             ),
             "max_tokens": Config.MAX_TOKENS,
         }
@@ -172,16 +172,30 @@ class APIClient:
                     raise
 
                 except httpx.TimeoutException as e:
-                    last_error = APIError("Request timed out", status_code=0, retryable=True, error_kind="timeout")
-                    logger.warning("Request timed out | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    last_error = APIError(
+                        "Request timed out", status_code=0, retryable=True, error_kind="timeout"
+                    )
+                    logger.warning(
+                        "Request timed out | attempt=%s/%s | error=%s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e,
+                    )
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
                     raise last_error from None
 
                 except httpx.RequestError as e:
-                    last_error = APIError(f"Network error: {e}", status_code=0, retryable=True, error_kind="network")
-                    logger.warning("Network error | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    last_error = APIError(
+                        f"Network error: {e}", status_code=0, retryable=True, error_kind="network"
+                    )
+                    logger.warning(
+                        "Network error | attempt=%s/%s | error=%s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e,
+                    )
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
@@ -223,16 +237,30 @@ class APIClient:
                     raise
 
                 except httpx.TimeoutException as e:
-                    last_error = APIError("Request timed out", status_code=0, retryable=True, error_kind="timeout")
-                    logger.warning("Streaming request timed out | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    last_error = APIError(
+                        "Request timed out", status_code=0, retryable=True, error_kind="timeout"
+                    )
+                    logger.warning(
+                        "Streaming request timed out | attempt=%s/%s | error=%s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e,
+                    )
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
                     raise last_error from None
 
                 except httpx.RequestError as e:
-                    last_error = APIError(f"Network error: {e}", status_code=0, retryable=True, error_kind="network")
-                    logger.warning("Streaming network error | attempt=%s/%s | error=%s", attempt + 1, self.max_retries + 1, e)
+                    last_error = APIError(
+                        f"Network error: {e}", status_code=0, retryable=True, error_kind="network"
+                    )
+                    logger.warning(
+                        "Streaming network error | attempt=%s/%s | error=%s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e,
+                    )
                     if attempt < self.max_retries:
                         await self._sleep_before_retry(attempt)
                         continue
@@ -240,7 +268,9 @@ class APIClient:
 
         raise last_error
 
-    async def _sleep_before_retry(self, attempt: int, response=None, retry_after: Optional[str] = None) -> None:
+    async def _sleep_before_retry(
+        self, attempt: int, response=None, retry_after: Optional[str] = None
+    ) -> None:
         """Sleep asynchronously before retrying a failed request."""
         if response is not None and retry_after is None:
             retry_after = response.headers.get("Retry-After")
@@ -266,7 +296,7 @@ class APIClient:
 
     def _calculate_delay(self, attempt: int) -> float:
         """Calculate exponential backoff delay with jitter."""
-        delay = self.BASE_DELAY * (2 ** attempt)
+        delay = self.BASE_DELAY * (2**attempt)
         delay += random.uniform(0, 0.1 * delay)
         delay = min(delay, self.MAX_DELAY)
 
@@ -366,7 +396,7 @@ def parse_chat_stream_line(line: str) -> Optional[str]:
     if not line.startswith("data:"):
         return None
 
-    raw_data = line[len("data:"):].strip()
+    raw_data = line[len("data:") :].strip()
     if raw_data == "[DONE]":
         return STREAM_DONE
 

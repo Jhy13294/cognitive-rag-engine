@@ -69,11 +69,11 @@ class Config:
     VECTOR_STORE_PORT = _env_int("VECTOR_STORE_PORT", _env_int("QDRANT_PORT", 6333))
     VECTOR_STORE_URL = os.getenv("VECTOR_STORE_URL") or os.getenv("QDRANT_URL")
     VECTOR_STORE_API_KEY = os.getenv("VECTOR_STORE_API_KEY") or os.getenv("QDRANT_API_KEY")
-    VECTOR_STORE_COLLECTION = (
-        os.getenv("VECTOR_STORE_COLLECTION") or os.getenv("QDRANT_COLLECTION", "enterprise_kb")
+    VECTOR_STORE_COLLECTION = os.getenv("VECTOR_STORE_COLLECTION") or os.getenv(
+        "QDRANT_COLLECTION", "enterprise_kb"
     )
-    VECTOR_STORE_DISTANCE_METRIC = (
-        os.getenv("VECTOR_STORE_DISTANCE_METRIC") or os.getenv("QDRANT_DISTANCE", "cosine")
+    VECTOR_STORE_DISTANCE_METRIC = os.getenv("VECTOR_STORE_DISTANCE_METRIC") or os.getenv(
+        "QDRANT_DISTANCE", "cosine"
     )
     VECTOR_STORE_BATCH_SIZE = _env_int("VECTOR_STORE_BATCH_SIZE", _env_int("QDRANT_BATCH_SIZE", 64))
     VECTOR_STORE_TIMEOUT = _env_float("VECTOR_STORE_TIMEOUT", _env_float("QDRANT_TIMEOUT", 30.0))
@@ -126,7 +126,9 @@ class Config:
 
     QUERY_REWRITE_ENABLED = _env_bool("QUERY_REWRITE_ENABLED", False)
     QUERY_REWRITE_PROVIDER = os.getenv("QUERY_REWRITE_PROVIDER", "deterministic")
-    QUERY_REWRITE_FIXTURE_PATH = os.getenv("QUERY_REWRITE_FIXTURE_PATH", "eval/fixtures/query_rewrites.jsonl")
+    QUERY_REWRITE_FIXTURE_PATH = os.getenv(
+        "QUERY_REWRITE_FIXTURE_PATH", "eval/fixtures/query_rewrites.jsonl"
+    )
     QUERY_REWRITE_NUM_QUERIES = _env_int("QUERY_REWRITE_NUM_QUERIES", 3)
     QUERY_REWRITE_TEMPERATURE = _env_float("QUERY_REWRITE_TEMPERATURE", 0.1)
     QUERY_REWRITE_CACHE_ENABLED = _env_bool("QUERY_REWRITE_CACHE_ENABLED", True)
@@ -249,7 +251,9 @@ class Config:
         """Validate embedding provider configuration."""
         if cls.EMBEDDING_PROVIDER.lower() == "openai" and not cls.EMBEDDING_API_KEY:
             logger.error("Embedding API key is not configured")
-            raise ValueError("Embedding API key is not configured. Set EMBEDDING_API_KEY or OPENAI_API_KEY.")
+            raise ValueError(
+                "Embedding API key is not configured. Set EMBEDDING_API_KEY or OPENAI_API_KEY."
+            )
 
         logger.debug("Embedding provider: %s", cls.EMBEDDING_PROVIDER)
         logger.debug("Embedding API URL: %s", cls.EMBEDDING_API_URL)
@@ -405,7 +409,9 @@ class Config:
         if cls.QUERY_REWRITE_WEIGHT_VARIANT < 0:
             raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
         if cls.QUERY_REWRITE_WEIGHT_ORIGINAL < cls.QUERY_REWRITE_WEIGHT_VARIANT:
-            raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+            raise ValueError(
+                "QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT."
+            )
         if cls.QUERY_REWRITE_WEIGHT_ORIGINAL + cls.QUERY_REWRITE_WEIGHT_VARIANT <= 0:
             raise ValueError("At least one query rewrite weight must be greater than 0.")
 
@@ -470,7 +476,9 @@ class Config:
         """Validate audit and metrics configuration."""
         if not cls.OBSERVABILITY_ENABLED:
             if cls.AUDIT_ENABLED or cls.METRICS_ENABLED:
-                raise ValueError("AUDIT_ENABLED and METRICS_ENABLED require OBSERVABILITY_ENABLED=true.")
+                raise ValueError(
+                    "AUDIT_ENABLED and METRICS_ENABLED require OBSERVABILITY_ENABLED=true."
+                )
             return True
 
         if not cls.AUDIT_ENABLED and not cls.METRICS_ENABLED:
@@ -493,8 +501,13 @@ class Config:
                 raise ValueError("AUDIT_QUEUE_SIZE must be greater than 0.")
 
         if cls.METRICS_ENABLED:
-            if not cls.METRICS_NAMESPACE or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cls.METRICS_NAMESPACE) is None:
-                raise ValueError("METRICS_NAMESPACE must contain only letters, numbers, and underscores.")
+            if (
+                not cls.METRICS_NAMESPACE
+                or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cls.METRICS_NAMESPACE) is None
+            ):
+                raise ValueError(
+                    "METRICS_NAMESPACE must contain only letters, numbers, and underscores."
+                )
             if not cls.METRICS_PATH or not cls.METRICS_PATH.startswith("/"):
                 raise ValueError("METRICS_PATH must start with '/'.")
 
@@ -564,7 +577,9 @@ class Config:
         if cls.RAGAS_EMBEDDING_BASE_DELAY < 0:
             raise ValueError("RAGAS_EMBEDDING_BASE_DELAY cannot be negative.")
         if cls.RAGAS_EMBEDDING_MAX_DELAY < cls.RAGAS_EMBEDDING_BASE_DELAY:
-            raise ValueError("RAGAS_EMBEDDING_MAX_DELAY must be greater than or equal to base delay.")
+            raise ValueError(
+                "RAGAS_EMBEDDING_MAX_DELAY must be greater than or equal to base delay."
+            )
         if cls.RAGAS_SIGMA_MULTIPLIER <= 0:
             raise ValueError("RAGAS_SIGMA_MULTIPLIER must be greater than 0.")
         if not cls.RAGAS_JUDGE_MODEL or not cls.RAGAS_JUDGE_MODEL.strip():

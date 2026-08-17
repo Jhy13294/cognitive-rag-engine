@@ -248,9 +248,11 @@ class ObservabilityManager:
                     request_id=observation.request_id,
                 )
 
-        embedding_requests, reported_embedding, embedding_counter_available = self._claim_usage_delta(
-            "embedding",
-            self._embedding_usage_counter(observation.pipeline),
+        embedding_requests, reported_embedding, embedding_counter_available = (
+            self._claim_usage_delta(
+                "embedding",
+                self._embedding_usage_counter(observation.pipeline),
+            )
         )
         if embedding_counter_available:
             if embedding_requests > 0 and reported_embedding > 0:
@@ -368,7 +370,11 @@ class ObservabilityManager:
                 stats_getter = getattr(chat_client, "usage_stats", None)
                 if stats_getter is not None:
                     stats = stats_getter()
-                    return id(chat_client), int(stats.get("request_count", 0)), int(stats.get("total_tokens", 0))
+                    return (
+                        id(chat_client),
+                        int(stats.get("request_count", 0)),
+                        int(stats.get("total_tokens", 0)),
+                    )
                 requests = getattr(chat_client, "request_count", None)
                 total = getattr(chat_client, "total_tokens", None)
                 if requests is not None and total is not None:

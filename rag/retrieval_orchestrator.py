@@ -9,7 +9,7 @@ other post-selection steps belong to the source finalizer.
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-from hybrid import RRFConfig, RankedRecord, ReciprocalRankFusion
+from hybrid import RankedRecord, ReciprocalRankFusion, RRFConfig
 from logger import setup_logger
 from query_rewrite import normalize_query_variants
 from vector_store import SearchResult
@@ -139,9 +139,14 @@ class RetrievalOrchestrator:
             logger.warning("Query rewrite failed; falling back to single query | error=%s", e)
             return None
 
-        variants = normalize_query_variants(question, raw_variants, pipeline.query_rewrite_num_queries)
+        variants = normalize_query_variants(
+            question, raw_variants, pipeline.query_rewrite_num_queries
+        )
         if not variants:
-            logger.warning("Query rewrite returned no variants; falling back to single query | question=%s", question)
+            logger.warning(
+                "Query rewrite returned no variants; falling back to single query | question=%s",
+                question,
+            )
             return None
         if len(variants) <= 1:
             return None
@@ -204,7 +209,9 @@ class RetrievalOrchestrator:
         pipeline = self._pipeline
         if pipeline.reranker is None and pipeline.bm25_retriever is None:
             return requested_top_k
-        default_fetch_k = pipeline.reranker.fetch_k if pipeline.reranker is not None else requested_top_k
+        default_fetch_k = (
+            pipeline.reranker.fetch_k if pipeline.reranker is not None else requested_top_k
+        )
         return max(pipeline.fetch_k or default_fetch_k, requested_top_k)
 
     def _hybrid_retrieve(
@@ -287,7 +294,9 @@ class RetrievalOrchestrator:
             )
         return sources
 
-    def _ranked_records_to_sources(self, ranked_records: List[RankedRecord]) -> List[RetrievedSource]:
+    def _ranked_records_to_sources(
+        self, ranked_records: List[RankedRecord]
+    ) -> List[RetrievedSource]:
         """Convert fused ranked records to RAG sources."""
         sources = []
         for index, record in enumerate(ranked_records, start=1):
@@ -302,7 +311,9 @@ class RetrievalOrchestrator:
         return sources
 
 
-def dense_search_results_to_ranked_records(search_results: List[SearchResult]) -> List[RankedRecord]:
+def dense_search_results_to_ranked_records(
+    search_results: List[SearchResult],
+) -> List[RankedRecord]:
     """Convert dense vector search results to stable ranked records."""
     ranked_records = []
     for result in search_results:

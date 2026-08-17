@@ -5,7 +5,6 @@ from typing import Dict, Iterable, List
 
 from document_loader import Document
 
-
 Vector = List[float]
 
 

@@ -26,7 +26,6 @@ from .ragas_evaluation import (
 )
 from .schemas import GoldenExample
 
-
 LIVE_PROFILES = (
     "baseline",
     "rerank",
@@ -136,8 +135,7 @@ class LiveRagasJudge:
 
             def embed_texts(self, texts: List[str], **kwargs) -> List[List[float]]:
                 return [
-                    normalize_embedding_l2(vector)
-                    for vector in self.provider.embed_texts(texts)
+                    normalize_embedding_l2(vector) for vector in self.provider.embed_texts(texts)
                 ]
 
             async def aembed_texts(
@@ -212,8 +210,7 @@ def clamp_live_score(
         raise ValueError(f"Ragas live score {label} must be finite.")
     if score < -tolerance or score > 1.0 + tolerance:
         raise ValueError(
-            f"Ragas live score {label} must be between 0 and 1 within "
-            f"tolerance {tolerance}."
+            f"Ragas live score {label} must be between 0 and 1 within tolerance {tolerance}."
         )
     return min(1.0, max(0.0, score))
 
@@ -240,9 +237,13 @@ def build_live_pipeline(profile: str, knowledge_path: str):
     if profile not in LIVE_PROFILES:
         raise ValueError(f"Unsupported Ragas live profile: {profile}")
     if Config.CACHE_ENABLED:
-        raise ValueError("Live Ragas capture requires CACHE_ENABLED=false so answers are freshly generated.")
+        raise ValueError(
+            "Live Ragas capture requires CACHE_ENABLED=false so answers are freshly generated."
+        )
     if Config.ACL_ENABLED:
-        raise ValueError("Live fixture evaluation requires ACL_ENABLED=false for the public test corpus.")
+        raise ValueError(
+            "Live fixture evaluation requires ACL_ENABLED=false for the public test corpus."
+        )
 
     profile_options = {
         "baseline": {},
@@ -302,10 +303,7 @@ async def collect_live_samples(
             top_k,
         )
         content_contexts = [source.content for source in response.sources]
-        faithfulness_contexts = [
-            format_faithfulness_context(source)
-            for source in response.sources
-        ]
+        faithfulness_contexts = [format_faithfulness_context(source) for source in response.sources]
         samples.append(
             LiveSample(
                 qid=example.qid,
@@ -353,21 +351,15 @@ async def record_live_verdicts(
             "capability": sample.capability,
             "answer_sha256": content_sha256([sample.answer]),
             "contexts_sha256": content_sha256(sample.contexts),
-            "faithfulness_contexts_sha256": content_sha256(
-                sample.faithfulness_contexts
-            ),
+            "faithfulness_contexts_sha256": content_sha256(sample.faithfulness_contexts),
         }
         if sample.capability == "negative":
             abstained = answer_is_abstention(sample.answer)
             base_record["negative_runs"] = [
-                {"abstained": abstained, "fabricated": not abstained}
-                for _ in range(repetitions)
+                {"abstained": abstained, "fabricated": not abstained} for _ in range(repetitions)
             ]
         else:
-            base_record["runs"] = [
-                await judge.score(sample)
-                for _ in range(repetitions)
-            ]
+            base_record["runs"] = [await judge.score(sample) for _ in range(repetitions)]
         cases.append(base_record)
     return cases
 

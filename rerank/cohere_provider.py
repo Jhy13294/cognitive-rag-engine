@@ -6,7 +6,7 @@ import requests
 
 from logger import mask_sensitive_info, setup_logger
 
-from .base import RerankConfig, RerankResult, Reranker, RerankerError
+from .base import RerankConfig, Reranker, RerankerError, RerankResult
 
 if TYPE_CHECKING:
     from rag import RetrievedSource
@@ -139,9 +139,13 @@ class CohereReranker(Reranker):
                     timeout=self.timeout,
                 )
                 if response.status_code in RETRYABLE_STATUS_CODES:
-                    raise _RetryableRerankError(f"Retryable Cohere rerank error: HTTP {response.status_code}")
+                    raise _RetryableRerankError(
+                        f"Retryable Cohere rerank error: HTTP {response.status_code}"
+                    )
                 if response.status_code >= 400:
-                    raise RerankerError(f"Cohere rerank error: HTTP {response.status_code}: {response.text}")
+                    raise RerankerError(
+                        f"Cohere rerank error: HTTP {response.status_code}: {response.text}"
+                    )
 
                 return response.json()
 

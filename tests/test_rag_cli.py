@@ -5,11 +5,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from config import Config
+from document_loader import Document
+from embeddings import HashEmbeddingProvider
 from rag_cli import (
     apply_acl_metadata_from_bindings,
+    build_arg_parser,
     build_cli_metadata_filter,
     build_loader_kwargs_from_config,
-    build_arg_parser,
     build_rag_pipeline_from_index,
     build_rag_pipeline_from_path,
     create_embedding_provider,
@@ -19,9 +22,6 @@ from rag_cli import (
     parse_metadata_filter,
     run_single_question,
 )
-from config import Config
-from document_loader import Document
-from embeddings import HashEmbeddingProvider
 from tests.test_document_ingestion import FIXTURES_DIR
 from vector_store import InMemoryVectorStore
 
@@ -188,8 +188,12 @@ class RAGCLITests(unittest.TestCase):
     def test_build_arg_parser_parses_ingest_and_query_subcommands(self):
         parser = build_arg_parser()
 
-        ingest_args = parser.parse_args(["ingest", "tests/fixtures", "--embedding-provider", "hash"])
-        query_args = parser.parse_args(["query", "What is indexed?", "--embedding-provider", "hash"])
+        ingest_args = parser.parse_args(
+            ["ingest", "tests/fixtures", "--embedding-provider", "hash"]
+        )
+        query_args = parser.parse_args(
+            ["query", "What is indexed?", "--embedding-provider", "hash"]
+        )
         oneshot_args = parser.parse_args(["oneshot", "tests/fixtures", "-q", "What is this?"])
 
         self.assertEqual(ingest_args.command, "ingest")
@@ -300,7 +304,9 @@ class RAGCLITests(unittest.TestCase):
             provider = HashEmbeddingProvider(dimension=64)
             store = InMemoryVectorStore(dimension=64)
 
-            with mock.patch("rag_cli.load_and_split_documents", side_effect=fake_load_and_split_documents):
+            with mock.patch(
+                "rag_cli.load_and_split_documents", side_effect=fake_load_and_split_documents
+            ):
                 ingest_documents(
                     "ignored-path",
                     clean=True,
@@ -361,7 +367,9 @@ class RAGCLITests(unittest.TestCase):
 
                 provider = HashEmbeddingProvider(dimension=64)
                 store = InMemoryVectorStore(dimension=64)
-                with mock.patch.dict(sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}):
+                with mock.patch.dict(
+                    sys.modules, {"pdfplumber": types.SimpleNamespace(open=fake_open)}
+                ):
                     result = ingest_documents(
                         str(path),
                         clean=False,
@@ -490,7 +498,9 @@ class RAGCLITests(unittest.TestCase):
             parent_child_enabled=False,
         )
         query_embedding = provider.embed_text("RAG ingestion prototype")
-        first_top_ids = [result.record.id for result in store.similarity_search(query_embedding, top_k=3)]
+        first_top_ids = [
+            result.record.id for result in store.similarity_search(query_embedding, top_k=3)
+        ]
 
         second = ingest_documents(
             str(FIXTURES_DIR),
@@ -502,7 +512,9 @@ class RAGCLITests(unittest.TestCase):
             vector_store=store,
             parent_child_enabled=False,
         )
-        second_top_ids = [result.record.id for result in store.similarity_search(query_embedding, top_k=3)]
+        second_top_ids = [
+            result.record.id for result in store.similarity_search(query_embedding, top_k=3)
+        ]
 
         self.assertEqual(store.count(), len(first.records))
         self.assertEqual(len(second.records), len(first.records))
@@ -689,7 +701,9 @@ class RAGCLITests(unittest.TestCase):
         self.assertTrue(pipeline.query_rewrite_enabled)
         self.assertIsNotNone(pipeline.query_rewriter)
         self.assertEqual(pipeline.query_rewrite_weight_original, 1.0)
-        self.assertGreaterEqual(pipeline.query_rewrite_weight_original, pipeline.query_rewrite_weight_variant)
+        self.assertGreaterEqual(
+            pipeline.query_rewrite_weight_original, pipeline.query_rewrite_weight_variant
+        )
 
     def test_format_response_includes_answer_and_sources(self):
         chat_client = FakeChatClient()

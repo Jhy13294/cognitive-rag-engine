@@ -21,7 +21,6 @@ from .ragas_live import (
 )
 from .schemas import GoldenExample
 
-
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
 DEFAULT_KNOWLEDGE_PATH = "eval/fixtures/knowledge_base"
 TARGET_QIDS: Tuple[str, ...] = ("q010", "q015")
@@ -198,11 +197,7 @@ async def trace_answer_relevance_repetitions(
         for question in generated_questions
     ]
     question_vector = await metric.embeddings.aembed_text(user_input)
-    generated_vectors = (
-        await metric.embeddings.aembed_texts(all_questions)
-        if all_questions
-        else []
-    )
+    generated_vectors = await metric.embeddings.aembed_texts(all_questions) if all_questions else []
 
     traces = []
     vector_index = 0
@@ -219,9 +214,7 @@ async def trace_answer_relevance_repetitions(
             continue
 
         run_traces = []
-        for question, noncommittal in zip(
-            generated_questions, noncommittal_flags, strict=True
-        ):
+        for question, noncommittal in zip(generated_questions, noncommittal_flags, strict=True):
             vector = generated_vectors[vector_index]
             vector_index += 1
             run_traces.append(
@@ -233,9 +226,7 @@ async def trace_answer_relevance_repetitions(
             )
 
         all_noncommittal = all(noncommittal_flags)
-        mean_cosine = math.fsum(
-            trace.cosine_to_original for trace in run_traces
-        ) / len(run_traces)
+        mean_cosine = math.fsum(trace.cosine_to_original for trace in run_traces) / len(run_traces)
         value = mean_cosine * int(not all_noncommittal)
         traces.append(
             AnswerRelevanceRunTrace(
@@ -259,11 +250,7 @@ async def trace_semantic_baselines(
 ) -> List[SemanticBaselineTrace]:
     """Measure direct Gemini cosine for equivalent and off-topic query variants."""
     original_vector = await embeddings.aembed_text(example.question)
-    items = [
-        (kind, text)
-        for kind, texts in variants.items()
-        for text in texts
-    ]
+    items = [(kind, text) for kind, texts in variants.items() for text in texts]
     if not items:
         return []
     vectors = await embeddings.aembed_texts([text for _, text in items])
@@ -362,15 +349,11 @@ async def build_answer_relevance_diagnostic_report(
                 "runs": [
                     {
                         **asdict(run),
-                        "reverse_questions": [
-                            asdict(trace) for trace in run.reverse_questions
-                        ],
+                        "reverse_questions": [asdict(trace) for trace in run.reverse_questions],
                     }
                     for run in runs
                 ],
-                "semantic_baselines": [
-                    asdict(trace) for trace in semantic_baselines
-                ],
+                "semantic_baselines": [asdict(trace) for trace in semantic_baselines],
             }
         )
 
@@ -386,9 +369,7 @@ async def build_answer_relevance_diagnostic_report(
             "target_qids": list(TARGET_QIDS),
             "control_qids": list(CONTROL_QIDS),
             "noncommittal_probe_qids": (
-                list(NONCOMMITTAL_PROBE_QIDS)
-                if include_noncommittal_probe
-                else []
+                list(NONCOMMITTAL_PROBE_QIDS) if include_noncommittal_probe else []
             ),
             "strictness": metric.strictness,
             "judge_model_id": Config.RAGAS_JUDGE_MODEL,

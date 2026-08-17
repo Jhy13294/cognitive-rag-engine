@@ -30,7 +30,6 @@ from .ragas_live import (
     record_live_verdicts,
 )
 
-
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
 DEFAULT_KNOWLEDGE_PATH = "eval/fixtures/knowledge_base"
 
@@ -42,7 +41,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    replay = subparsers.add_parser("replay", help="Replay recorded verdicts without network access.")
+    replay = subparsers.add_parser(
+        "replay", help="Replay recorded verdicts without network access."
+    )
     add_common_arguments(replay)
     replay.add_argument("--fixture", default=Config.RAGAS_FIXTURE_PATH)
 
@@ -79,7 +80,9 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     """Add report and golden-set arguments shared by all commands."""
     parser.add_argument("--golden-set", default=DEFAULT_GOLDEN_SET)
     parser.add_argument("--report-dir", default=Config.RAGAS_REPORT_DIR)
-    parser.add_argument("--timestamp", default=None, help="Stable report filename timestamp for automation.")
+    parser.add_argument(
+        "--timestamp", default=None, help="Stable report filename timestamp for automation."
+    )
     parser.add_argument("--no-write-report", action="store_true")
     parser.add_argument("--quiet", action="store_true")
 

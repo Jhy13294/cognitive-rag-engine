@@ -20,12 +20,17 @@ from urllib.parse import urlparse
 
 import httpx
 
-
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_OUTPUT_DIR = "bench/reports"
-DEFAULT_HOT_QUESTION = "Which service routes telemetry from connected devices into regional ingestion clusters?"
-DEFAULT_COLD_QUESTION = "Which service routes telemetry from connected devices into regional ingestion clusters?"
-DEFAULT_STREAM_QUESTION = "Which service routes telemetry from connected devices into regional ingestion clusters?"
+DEFAULT_HOT_QUESTION = (
+    "Which service routes telemetry from connected devices into regional ingestion clusters?"
+)
+DEFAULT_COLD_QUESTION = (
+    "Which service routes telemetry from connected devices into regional ingestion clusters?"
+)
+DEFAULT_STREAM_QUESTION = (
+    "Which service routes telemetry from connected devices into regional ingestion clusters?"
+)
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
 MIN_WARMUP = 20
 MIN_SAMPLES = 200
@@ -220,17 +225,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "The target defaults to localhost and the built-in chat stub must be hit."
         )
     )
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Service base URL. Defaults to localhost.")
+    parser.add_argument(
+        "--base-url", default=DEFAULT_BASE_URL, help="Service base URL. Defaults to localhost."
+    )
     parser.add_argument(
         "--allow-non-localhost",
         action="store_true",
         help="Allow a non-localhost benchmark target. This is off by default.",
     )
-    parser.add_argument("--principal", default="product", help="Trusted X-Principal value for ACL-filtered queries.")
-    parser.add_argument("--embedding-dimension", type=int, default=128, help="Hash embedding dimension used at ingest.")
-    parser.add_argument("--top-k", type=int, default=5, help="Top-k sources requested from the service.")
-    parser.add_argument("--warmup", type=int, default=MIN_WARMUP, help="Warmup requests to discard per scenario.")
-    parser.add_argument("--samples", type=int, default=MIN_SAMPLES, help="Measured requests per scenario.")
+    parser.add_argument(
+        "--principal", default="product", help="Trusted X-Principal value for ACL-filtered queries."
+    )
+    parser.add_argument(
+        "--embedding-dimension",
+        type=int,
+        default=128,
+        help="Hash embedding dimension used at ingest.",
+    )
+    parser.add_argument(
+        "--top-k", type=int, default=5, help="Top-k sources requested from the service."
+    )
+    parser.add_argument(
+        "--warmup", type=int, default=MIN_WARMUP, help="Warmup requests to discard per scenario."
+    )
+    parser.add_argument(
+        "--samples", type=int, default=MIN_SAMPLES, help="Measured requests per scenario."
+    )
     parser.add_argument(
         "--concurrency",
         type=int,
@@ -239,19 +259,35 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Closed-loop concurrency levels for gradient scenarios.",
     )
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds.")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for JSON and Markdown reports.")
+    parser.add_argument(
+        "--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for JSON and Markdown reports."
+    )
     parser.add_argument("--label", default="", help="Optional run label stored in the report.")
-    parser.add_argument("--cold-question", default=DEFAULT_COLD_QUESTION, help="Base question for unique cold requests.")
-    parser.add_argument("--hot-question", default=DEFAULT_HOT_QUESTION, help="Fixed question for hot L3-cache requests.")
-    parser.add_argument("--stream-question", default=DEFAULT_STREAM_QUESTION, help="Question for streaming timing.")
+    parser.add_argument(
+        "--cold-question",
+        default=DEFAULT_COLD_QUESTION,
+        help="Base question for unique cold requests.",
+    )
+    parser.add_argument(
+        "--hot-question",
+        default=DEFAULT_HOT_QUESTION,
+        help="Fixed question for hot L3-cache requests.",
+    )
+    parser.add_argument(
+        "--stream-question", default=DEFAULT_STREAM_QUESTION, help="Question for streaming timing."
+    )
     parser.add_argument(
         "--chat-stub",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Start a local deterministic OpenAI-compatible chat stub.",
     )
-    parser.add_argument("--chat-stub-host", default="127.0.0.1", help="Host for the local chat stub.")
-    parser.add_argument("--chat-stub-port", type=int, default=18080, help="Port for the local chat stub.")
+    parser.add_argument(
+        "--chat-stub-host", default="127.0.0.1", help="Host for the local chat stub."
+    )
+    parser.add_argument(
+        "--chat-stub-port", type=int, default=18080, help="Port for the local chat stub."
+    )
     parser.add_argument(
         "--require-stub-hit",
         action=argparse.BooleanOptionalAction,
@@ -261,7 +297,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_benchmark(args: argparse.Namespace, stub: Optional[DeterministicChatStub]) -> Dict[str, Any]:
+async def run_benchmark(
+    args: argparse.Namespace, stub: Optional[DeterministicChatStub]
+) -> Dict[str, Any]:
     """Run all benchmark scenarios and return a serializable report."""
     ensure_allowed_base_url(args.base_url, args.allow_non_localhost)
     ensure_sampling_contract(args.warmup, args.samples, args.concurrency)
@@ -291,9 +329,7 @@ async def run_benchmark(args: argparse.Namespace, stub: Optional[DeterministicCh
                 cache_check=False,
             )
         )
-        scenarios.append(
-            await run_hot_scenario(client, args, concurrency=1)
-        )
+        scenarios.append(await run_hot_scenario(client, args, concurrency=1))
 
         streams.append(await run_live_stream(client, args))
         streams.append(await run_replay_stream(client, args))
@@ -351,7 +387,9 @@ async def verify_zero_paid_path(
     )
     body = response.text
     if response.status_code != 200:
-        raise RuntimeError(f"Zero-paid preflight query failed with HTTP {response.status_code}: {body[:300]}")
+        raise RuntimeError(
+            f"Zero-paid preflight query failed with HTTP {response.status_code}: {body[:300]}"
+        )
     after = stub.snapshot() if stub is not None else {"requests": 0, "streams": 0}
     delta = {
         "requests": after["requests"] - before["requests"],
@@ -370,10 +408,16 @@ async def verify_zero_paid_path(
     }
 
 
-async def run_hot_scenario(client: httpx.AsyncClient, args: argparse.Namespace, concurrency: int) -> ScenarioResult:
+async def run_hot_scenario(
+    client: httpx.AsyncClient, args: argparse.Namespace, concurrency: int
+) -> ScenarioResult:
     """Run a fixed-question hot L3-cache scenario and cross-check Prometheus counters."""
     question = args.hot_question
-    await client.post("/query", json=query_payload(question, args, multi_query=True), headers=principal_headers(args.principal))
+    await client.post(
+        "/query",
+        json=query_payload(question, args, multi_query=True),
+        headers=principal_headers(args.principal),
+    )
     await run_warmup(client, args, concurrency, lambda _i: question, multi_query=True)
     metrics_before = await metrics_snapshot(client)
     cache_before = await cache_stats(client)
@@ -389,7 +433,12 @@ async def run_hot_scenario(client: httpx.AsyncClient, args: argparse.Namespace, 
     )
     metrics_after = await metrics_snapshot(client)
     cache_after = await cache_stats(client)
-    l3_hit_delta = counter_delta(metrics_before, metrics_after, "rag_cache_operations_total", {"cache_layer": "L3", "outcome": "hit"})
+    l3_hit_delta = counter_delta(
+        metrics_before,
+        metrics_after,
+        "rag_cache_operations_total",
+        {"cache_layer": "L3", "outcome": "hit"},
+    )
     cache_error_delta = numeric_delta(cache_before, cache_after, "errors")
     result.cache_delta = {
         "prometheus_l3_hit_delta": l3_hit_delta,
@@ -426,11 +475,19 @@ async def run_query_scenario(
             index = await counter.next()
             if index >= args.samples:
                 return
-            samples.append(await post_query(client, args, question_factory(index), multi_query=multi_query))
+            samples.append(
+                await post_query(client, args, question_factory(index), multi_query=multi_query)
+            )
 
     await asyncio.gather(*(worker() for _ in range(concurrency)))
     elapsed = time.perf_counter() - started
-    return summarize_scenario(name, concurrency, samples, elapsed, notes=[] if not cache_check else ["cache checked separately"])
+    return summarize_scenario(
+        name,
+        concurrency,
+        samples,
+        elapsed,
+        notes=[] if not cache_check else ["cache checked separately"],
+    )
 
 
 async def run_warmup(
@@ -512,7 +569,9 @@ async def run_replay_stream(client: httpx.AsyncClient, args: argparse.Namespace)
     return await post_stream(client, args, question, name="stream_l3_replay")
 
 
-async def post_stream(client: httpx.AsyncClient, args: argparse.Namespace, question: str, *, name: str) -> StreamResult:
+async def post_stream(
+    client: httpx.AsyncClient, args: argparse.Namespace, question: str, *, name: str
+) -> StreamResult:
     """Post one streaming query and measure SSE timing."""
     started = time.perf_counter()
     first_event: Optional[float] = None
@@ -596,7 +655,9 @@ async def get_json(client: httpx.AsyncClient, path: str) -> Dict[str, Any]:
     """Fetch JSON from a service endpoint."""
     response = await client.get(path)
     if response.status_code >= 400:
-        raise RuntimeError(f"GET {path} failed with HTTP {response.status_code}: {response.text[:300]}")
+        raise RuntimeError(
+            f"GET {path} failed with HTTP {response.status_code}: {response.text[:300]}"
+        )
     return response.json()
 
 
@@ -607,7 +668,9 @@ async def assert_metrics_available(client: httpx.AsyncClient) -> None:
         raise RuntimeError("GET /metrics must be enabled for cache cross-checks.")
 
 
-async def metrics_snapshot(client: httpx.AsyncClient) -> Dict[Tuple[str, Tuple[Tuple[str, str], ...]], float]:
+async def metrics_snapshot(
+    client: httpx.AsyncClient,
+) -> Dict[Tuple[str, Tuple[Tuple[str, str], ...]], float]:
     """Read and parse the Prometheus text endpoint."""
     response = await client.get("/metrics")
     response.raise_for_status()
@@ -830,7 +893,9 @@ def write_reports(report: Mapping[str, Any], output_dir: str) -> Tuple[Path, Pat
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     json_path = path / f"bench-{timestamp}.json"
     markdown_path = path / f"bench-{timestamp}.md"
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    json_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     markdown_path.write_text(format_markdown_report(report), encoding="utf-8")
     return json_path, markdown_path
 

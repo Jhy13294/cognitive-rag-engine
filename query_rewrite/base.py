@@ -32,7 +32,9 @@ class QueryRewriteConfig:
         if self.weight_variant < 0:
             raise ValueError("QUERY_REWRITE_WEIGHT_VARIANT must be non-negative.")
         if self.weight_original < self.weight_variant:
-            raise ValueError("QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT.")
+            raise ValueError(
+                "QUERY_REWRITE_WEIGHT_ORIGINAL must be greater than or equal to QUERY_REWRITE_WEIGHT_VARIANT."
+            )
         if self.weight_original + self.weight_variant <= 0:
             raise ValueError("At least one query rewrite weight must be greater than 0.")
 

@@ -4,7 +4,6 @@ from typing import Iterable, List, Optional
 
 from logger import setup_logger
 
-
 logger = setup_logger(__name__)
 
 
@@ -75,7 +74,9 @@ class BGEEmbeddingProvider:
 
         self.model_name = normalized_model
         self.dimension = dimension
-        self.cache_dir = cache_dir.strip() if isinstance(cache_dir, str) and cache_dir.strip() else None
+        self.cache_dir = (
+            cache_dir.strip() if isinstance(cache_dir, str) and cache_dir.strip() else None
+        )
         self.request_count = 0
         self.total_inputs = 0
         # Lazy: the ONNX model loads on first embed call, not at construction, so
@@ -115,8 +116,7 @@ class BGEEmbeddingProvider:
         raw_vectors = list(self._ensure_model().embed(text_list))
         if len(raw_vectors) != len(text_list):
             raise BGEEmbeddingError(
-                f"BGE embedding count mismatch: expected {len(text_list)}, "
-                f"got {len(raw_vectors)}."
+                f"BGE embedding count mismatch: expected {len(text_list)}, got {len(raw_vectors)}."
             )
 
         vectors: List[List[float]] = []

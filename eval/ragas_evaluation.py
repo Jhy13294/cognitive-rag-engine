@@ -8,7 +8,6 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .schemas import GoldenExample
 
-
 GATED_METRICS: Tuple[str, ...] = (
     "faithfulness",
     "answer_relevance",
@@ -90,9 +89,7 @@ def load_verdict_fixture(path: str) -> Dict:
 def validate_fixture(metadata: Dict, cases: Sequence[Dict]) -> None:
     """Validate fixture provenance, score bounds, and case uniqueness."""
     if metadata.get("schema_version") != FIXTURE_SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported Ragas fixture schema: {metadata.get('schema_version')}"
-        )
+        raise ValueError(f"Unsupported Ragas fixture schema: {metadata.get('schema_version')}")
     required_metadata = (
         "judge_model_id",
         "ragas_version",
@@ -309,9 +306,7 @@ def build_replay_report(
             "capability": capability,
             "answer_sha256": case.get("answer_sha256"),
             "contexts_sha256": case.get("contexts_sha256"),
-            "faithfulness_contexts_sha256": case.get(
-                "faithfulness_contexts_sha256"
-            ),
+            "faithfulness_contexts_sha256": case.get("faithfulness_contexts_sha256"),
         }
         if capability == "negative":
             abstained = [bool(run["abstained"]) for run in case["negative_runs"]]
@@ -366,10 +361,7 @@ def build_replay_report(
                 }
             if metric_summary["mad"] > max_case_mad[metric]["value"]:
                 max_case_mad[metric] = {"qid": qid, "value": metric_summary["mad"]}
-            if (
-                metric in GATED_METRICS
-                and metric_summary["median"] < thresholds[metric]
-            ):
+            if metric in GATED_METRICS and metric_summary["median"] < thresholds[metric]:
                 failures.append(
                     {
                         "kind": "quality_threshold",
@@ -436,9 +428,7 @@ def build_replay_report(
     }
 
     positive_count = sum(1 for example in examples if example.capability != "negative")
-    metadata = {
-        key: value for key, value in fixture_metadata.items() if key != "record_type"
-    }
+    metadata = {key: value for key, value in fixture_metadata.items() if key != "record_type"}
     metadata.update(
         {
             "mode": "deterministic_fixture_replay",
@@ -501,7 +491,9 @@ def write_verdict_fixture(metadata: Dict, cases: Sequence[Dict], path: str) -> P
     ]
     with temporary_path.open("w", encoding="utf-8", newline="\n") as stream:
         for record in records:
-            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            stream.write(
+                json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            )
             stream.write("\n")
     temporary_path.replace(output_path)
     return output_path

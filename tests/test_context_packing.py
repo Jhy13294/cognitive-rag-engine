@@ -111,9 +111,15 @@ class ContextPackerTests(unittest.TestCase):
 
     def test_packer_skips_oversized_remaining_block_and_renumbers_sources(self):
         first = make_source(1, "Alpha complete.", record_id="first")
-        second = make_source(2, "Beta sentence one. Beta sentence two. Beta sentence three.", record_id="second")
+        second = make_source(
+            2, "Beta sentence one. Beta sentence two. Beta sentence three.", record_id="second"
+        )
         third = make_source(3, "Gamma complete.", record_id="third")
-        limit = len(block_for(first)) + 2 + len(block_for(make_source(2, third.content, record_id="third")))
+        limit = (
+            len(block_for(first))
+            + 2
+            + len(block_for(make_source(2, third.content, record_id="third")))
+        )
         packer = ContextPacker(max_context_chars=limit, label_formatter=label)
 
         packed = packer.pack([first, second, third])
@@ -128,10 +134,18 @@ class ContextPackerTests(unittest.TestCase):
         self.assertEqual(packed.used_sources[1].metadata["original_index"], 3)
 
     def test_exact_dedup_reuses_budget_and_records_dropped_ids(self):
-        duplicate_one = make_source(1, "Duplicate content.", record_id="dup-1", start_char=10, end_char=28)
-        duplicate_two = make_source(2, "Duplicate content.", record_id="dup-2", start_char=10, end_char=28)
-        distinct = make_source(3, "Distinct content.", record_id="distinct", start_char=40, end_char=57)
-        renumbered_distinct = make_source(2, distinct.content, record_id="distinct", start_char=40, end_char=57)
+        duplicate_one = make_source(
+            1, "Duplicate content.", record_id="dup-1", start_char=10, end_char=28
+        )
+        duplicate_two = make_source(
+            2, "Duplicate content.", record_id="dup-2", start_char=10, end_char=28
+        )
+        distinct = make_source(
+            3, "Distinct content.", record_id="distinct", start_char=40, end_char=57
+        )
+        renumbered_distinct = make_source(
+            2, distinct.content, record_id="distinct", start_char=40, end_char=57
+        )
         limit = len(block_for(duplicate_one)) + 2 + len(block_for(renumbered_distinct))
         packer = ContextPacker(
             max_context_chars=limit,
@@ -148,8 +162,12 @@ class ContextPackerTests(unittest.TestCase):
         self.assertEqual(packed.used_sources[0].metadata["dedup_reasons"], ["exact"])
 
     def test_near_duplicate_dedup_is_disabled_by_default(self):
-        first = make_source(1, "Alpha beta gamma delta.", record_id="near-1", start_char=0, end_char=23)
-        second = make_source(2, "Alpha beta gamma delta!", record_id="near-2", start_char=40, end_char=63)
+        first = make_source(
+            1, "Alpha beta gamma delta.", record_id="near-1", start_char=0, end_char=23
+        )
+        second = make_source(
+            2, "Alpha beta gamma delta!", record_id="near-2", start_char=40, end_char=63
+        )
         default_packer = ContextPacker(
             max_context_chars=500,
             label_formatter=label,
@@ -191,8 +209,12 @@ class ContextPackerTests(unittest.TestCase):
 
     def test_context_packing_does_not_change_retrieve_ranked_list(self):
         vector_records = [
-            VectorRecord(id="a", content="Alpha target.", embedding=[1.0, 0.0], metadata={"id": "a"}),
-            VectorRecord(id="b", content="Beta target.", embedding=[0.9, 0.1], metadata={"id": "b"}),
+            VectorRecord(
+                id="a", content="Alpha target.", embedding=[1.0, 0.0], metadata={"id": "a"}
+            ),
+            VectorRecord(
+                id="b", content="Beta target.", embedding=[0.9, 0.1], metadata={"id": "b"}
+            ),
         ]
         store_off = InMemoryVectorStore(dimension=2)
         store_on = InMemoryVectorStore(dimension=2)
@@ -203,7 +225,9 @@ class ContextPackerTests(unittest.TestCase):
             "chat_client": FakeChatClient(),
             "top_k": 2,
         }
-        pipeline_off = RAGPipeline(vector_store=store_off, context_packing_enabled=False, **common_kwargs)
+        pipeline_off = RAGPipeline(
+            vector_store=store_off, context_packing_enabled=False, **common_kwargs
+        )
         pipeline_on = RAGPipeline(
             vector_store=store_on,
             context_packing_enabled=True,
@@ -215,7 +239,9 @@ class ContextPackerTests(unittest.TestCase):
         off_sources = pipeline_off.retrieve("target", top_k=2)
         on_sources = pipeline_on.retrieve("target", top_k=2)
 
-        self.assertEqual([asdict(source) for source in off_sources], [asdict(source) for source in on_sources])
+        self.assertEqual(
+            [asdict(source) for source in off_sources], [asdict(source) for source in on_sources]
+        )
 
     def test_config_validates_context_packing_values(self):
         original = {

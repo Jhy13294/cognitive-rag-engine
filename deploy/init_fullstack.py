@@ -7,9 +7,10 @@ from typing import Dict, Iterable, List
 from access.mysql import MYSQL_SCHEMA_SQL, MySQLACLResolver
 from config import Config
 
-
 DEMO_KB_NAME = os.getenv("COMPOSE_INIT_KB_NAME", "compose-demo")
-DEMO_KB_PATH = Path(os.getenv("COMPOSE_INIT_KNOWLEDGE_BASE_PATH", "/app/eval/fixtures/knowledge_base"))
+DEMO_KB_PATH = Path(
+    os.getenv("COMPOSE_INIT_KNOWLEDGE_BASE_PATH", "/app/eval/fixtures/knowledge_base")
+)
 
 DEMO_PRINCIPALS: Dict[str, List[str]] = {
     "alice": ["role:finance", "role:employee"],
@@ -23,7 +24,13 @@ DEMO_FILE_ACL: Dict[str, List[str]] = {
     "security-policy.md": ["role:legal"],
     "support-runbook.md": ["role:support"],
     "product-glossary.md": ["role:product"],
-    "employee-handbook.md": ["role:finance", "role:legal", "role:support", "role:product", "role:employee"],
+    "employee-handbook.md": [
+        "role:finance",
+        "role:legal",
+        "role:support",
+        "role:product",
+        "role:employee",
+    ],
 }
 
 
