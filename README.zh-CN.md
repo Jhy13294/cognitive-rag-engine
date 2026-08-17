@@ -618,6 +618,14 @@ pipeline = RAGPipeline(
 python -m unittest discover -s tests -v
 ```
 
+安装精确锁定的 lint 依赖，并运行与 Lint Gate 一致的全仓检查：
+
+```bash
+pip install -r requirements-lint.txt
+ruff format --check .
+ruff check . --output-format github
+```
+
 运行确定性检索基线：
 
 ```bash

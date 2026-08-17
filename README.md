@@ -618,6 +618,14 @@ Run the test suite:
 python -m unittest discover -s tests -v
 ```
 
+Install the pinned lint dependency and run the same repository-wide checks as the Lint Gate:
+
+```bash
+pip install -r requirements-lint.txt
+ruff format --check .
+ruff check . --output-format github
+```
+
 Run the deterministic retrieval baseline:
 
 ```bash
