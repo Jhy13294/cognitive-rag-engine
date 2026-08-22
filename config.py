@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -25,6 +26,14 @@ def _env_float(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None or raw_value == "":
         return default
+    return float(raw_value)
+
+
+def _env_optional_float(name: str) -> Optional[float]:
+    """Read an optional float without assigning a product threshold default."""
+    raw_value = os.getenv(name)
+    if raw_value is None or raw_value == "":
+        return None
     return float(raw_value)
 
 
@@ -134,6 +143,12 @@ class Config:
     QUERY_REWRITE_CACHE_ENABLED = _env_bool("QUERY_REWRITE_CACHE_ENABLED", True)
     QUERY_REWRITE_WEIGHT_ORIGINAL = _env_float("QUERY_REWRITE_WEIGHT_ORIGINAL", 1.0)
     QUERY_REWRITE_WEIGHT_VARIANT = _env_float("QUERY_REWRITE_WEIGHT_VARIANT", 0.7)
+
+    RELEVANCE_GATE_ENABLED = _env_bool("RELEVANCE_GATE_ENABLED", False)
+    RELEVANCE_GATE_MIN_DENSE_COSINE = _env_optional_float("RELEVANCE_GATE_MIN_DENSE_COSINE")
+    RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE = _env_optional_float(
+        "RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE"
+    )
 
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     CACHE_NAMESPACE = os.getenv("CACHE_NAMESPACE", "rag-cache")
@@ -350,6 +365,31 @@ class Config:
         logger.debug("RRF k: %s", cls.RRF_K)
         logger.debug("BM25 k1: %s", cls.BM25_K1)
         logger.debug("BM25 b: %s", cls.BM25_B)
+        return True
+
+    @classmethod
+    def validate_relevance_gate(
+        cls,
+        min_dense_cosine: Optional[float] = None,
+        min_cohere_rerank_score: Optional[float] = None,
+    ):
+        """Validate independent thresholds without requiring either one."""
+        dense_threshold = (
+            cls.RELEVANCE_GATE_MIN_DENSE_COSINE if min_dense_cosine is None else min_dense_cosine
+        )
+        cohere_threshold = (
+            cls.RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE
+            if min_cohere_rerank_score is None
+            else min_cohere_rerank_score
+        )
+        if dense_threshold is not None and not -1.0 <= dense_threshold <= 1.0:
+            raise ValueError("RELEVANCE_GATE_MIN_DENSE_COSINE must be between -1 and 1.")
+        if cohere_threshold is not None and not 0.0 <= cohere_threshold <= 1.0:
+            raise ValueError("RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE must be between 0 and 1.")
+
+        logger.debug("Relevance gate enabled: %s", cls.RELEVANCE_GATE_ENABLED)
+        logger.debug("Relevance gate dense cosine threshold: %s", dense_threshold)
+        logger.debug("Relevance gate Cohere rerank threshold: %s", cohere_threshold)
         return True
 
     @classmethod

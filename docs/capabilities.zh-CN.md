@@ -19,6 +19,7 @@
 - 重排层可插拔：确定性词法重排用于离线测试，Cohere 用作外部 neural provider；失败时回退 dense 原序。
 - Multi-Query 支持原始 query 加确定性 fixture 或 chat-backed 改写，随后进入跨 query RRF、既有重排和父块展开阶段。
 - 父块展开只发生在最终子块选择之后，并按 parent id 折叠兄弟子块命中。
+- 一个可选、默认关闭的相关性门位于最终 source 选择与 prompt 构造之间。它只在显式支持且校准过的分数空间里作拒绝决定；RRF、BM25、确定性 lexical、hash 与未知分数只做可观测 no-op，不会被当作"不相关"的隐式证据。拒绝时返回规范弃答、空 sources、零次 chat 调用。
 - `ContextPacker` 在生成输入侧执行整块装填、精确及可选近重复折叠、连续引用编号与 token-aware 预算。
 - RAG pipeline 组装检索上下文，调用 OpenAI-compatible chat client，并返回带来源记录的答案。
 
@@ -45,4 +46,4 @@
 
 ## 明确缺口
 
-内置认证、JWT 校验与 session 管理尚未实现，生产部署必须置于受信认证网关之后。冻结语料规模刻意保持很小，负样本弃答尚未实现，live provider 的质量与容量仍取决于具体部署。
+内置认证、JWT 校验与 session 管理尚未实现，生产部署必须置于受信认证网关之后。冻结语料规模刻意保持很小。相关性门没有产品默认阈值、默认关闭，仅在 eval-only 的 BGE profile 用一个 fixture 专属阈值跑通，不是可外推的生产分类器。live provider 的质量与容量仍取决于具体部署。

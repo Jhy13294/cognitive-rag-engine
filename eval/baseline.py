@@ -2,12 +2,12 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from cache import maybe_wrap_embedding_provider, maybe_wrap_pipeline
 from document_loader import load_and_split_documents, load_and_split_documents_hierarchical
-from embeddings import HashEmbeddingProvider
+from embeddings import EmbeddingProvider, HashEmbeddingProvider
 from hybrid import BM25Retriever, RankedRecord, ReciprocalRankFusion, RRFConfig
 from logger import setup_logger
 from parent_store import InMemoryParentStore
 from query_rewrite import create_query_rewriter, normalize_query_variants
-from rag import RAGPipeline, RetrievedSource
+from rag import RAGPipeline, RelevanceGate, RelevanceGateConfig, RetrievedSource
 from rerank import Reranker
 from vector_store import InMemoryVectorStore
 from vector_store.base import embedded_document_to_record
@@ -43,6 +43,11 @@ def build_hash_retriever(
     query_rewrite_weight_original: float = 1.0,
     query_rewrite_weight_variant: float = 0.7,
     cache_enabled: bool = False,
+    embedding_provider: Optional[EmbeddingProvider] = None,
+    relevance_gate_enabled: bool = False,
+    relevance_gate_min_dense_cosine: Optional[float] = None,
+    relevance_gate_min_cohere_rerank_score: Optional[float] = None,
+    relevance_gate_dense_score_space: Optional[str] = None,
 ) -> Tuple[Callable[[str, int], List[RetrievedSource]], Dict]:
     """Build a deterministic offline retriever for evaluation baselines.
 
@@ -77,7 +82,7 @@ def build_hash_retriever(
     if not chunks:
         raise ValueError(f"No supported documents loaded from knowledge path: {knowledge_path}")
 
-    embedding_provider = HashEmbeddingProvider(dimension=embedding_dimension)
+    embedding_provider = embedding_provider or HashEmbeddingProvider(dimension=embedding_dimension)
     if cache_enabled:
         embedding_provider = maybe_wrap_embedding_provider(embedding_provider)
     embedded_documents = embedding_provider.embed_documents(chunks)
@@ -128,9 +133,23 @@ def build_hash_retriever(
         query_rewrite_num_queries=query_rewrite_num_queries,
         query_rewrite_weight_original=query_rewrite_weight_original,
         query_rewrite_weight_variant=query_rewrite_weight_variant,
+        relevance_gate_enabled=relevance_gate_enabled,
+        relevance_gate_min_dense_cosine=relevance_gate_min_dense_cosine,
+        relevance_gate_min_cohere_rerank_score=relevance_gate_min_cohere_rerank_score,
+        relevance_gate_dense_score_space=relevance_gate_dense_score_space,
     )
     if cache_enabled:
         pipeline = maybe_wrap_pipeline(pipeline, vector_records)
+
+    bm25_gate = RelevanceGate(
+        RelevanceGateConfig(
+            enabled=relevance_gate_enabled,
+            min_dense_cosine=relevance_gate_min_dense_cosine,
+            min_cohere_rerank_score=relevance_gate_min_cohere_rerank_score,
+            dense_score_space="bm25",
+            query_rewrite_enabled=query_rewrite_enabled,
+        )
+    )
 
     def retrieve(question: str, top_k: int) -> List[RetrievedSource]:
         if normalized_mode == "bm25":
@@ -146,9 +165,14 @@ def build_hash_retriever(
                     weight_variant=query_rewrite_weight_variant,
                 )
                 if multi_query_sources is not None:
-                    return multi_query_sources
-            return ranked_records_to_sources(bm25_retriever.retrieve(question, top_k=top_k))
+                    return bm25_gate.apply(multi_query_sources)
+            sources = ranked_records_to_sources(bm25_retriever.retrieve(question, top_k=top_k))
+            return bm25_gate.apply(sources)
         return pipeline.retrieve(question, top_k=top_k)
+
+    retrieve.relevance_gate_stats = (
+        bm25_gate.stats if normalized_mode == "bm25" else pipeline.relevance_gate_stats
+    )
 
     metadata = {
         "embedding_provider": embedding_provider.model_name,
@@ -171,6 +195,17 @@ def build_hash_retriever(
         "record_count": len(vector_records),
         "cache_enabled": cache_enabled,
     }
+    if relevance_gate_enabled:
+        metadata.update(
+            {
+                "relevance_gate_enabled": True,
+                "relevance_gate_min_dense_cosine": relevance_gate_min_dense_cosine,
+                "relevance_gate_min_cohere_rerank_score": (relevance_gate_min_cohere_rerank_score),
+                "relevance_gate_dense_score_space": (
+                    pipeline.relevance_gate.config.dense_score_space
+                ),
+            }
+        )
     if query_rewrite_enabled:
         metadata.update(
             {

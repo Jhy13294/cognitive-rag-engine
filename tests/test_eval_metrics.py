@@ -4,9 +4,15 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from document_loader import Document
 from eval.baseline import build_hash_retriever
 from eval.golden import load_golden_set
 from eval.metrics import evaluate_retriever
+from eval.probes import NEGATIVE_PROBE_CATEGORIES, load_negative_probes
+from eval.retrieval_embeddings import (
+    BGE_RETRIEVAL_QUERY_PREFIX,
+    BGERetrievalEmbeddingProvider,
+)
 from eval.run import main as eval_main
 from eval.schemas import GoldenExample, RelevantItem
 
@@ -72,10 +78,96 @@ class RetrievalEvaluationTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["1"]["mrr"], 0.5)
         self.assertEqual(report["metrics"]["1"]["recall"], 0.25)
         self.assertEqual(report["metrics"]["1"]["negative_false_recall_rate"], 1.0)
+        self.assertEqual(report["metrics"]["1"]["positive_false_abstention_rate"], 0.0)
 
         self.assertEqual(report["metrics"]["3"]["hit_rate"], 1.0)
         self.assertEqual(report["metrics"]["3"]["mrr"], 0.75)
         self.assertEqual(report["metrics"]["3"]["recall"], 1.0)
+
+    def test_positive_false_abstention_rate_reports_reverse_gate_cost(self):
+        examples = [
+            GoldenExample(
+                qid="q1",
+                question="kept",
+                relevant=[RelevantItem(source="a.md")],
+                capability="exact_name",
+                note="manual",
+            ),
+            GoldenExample(
+                qid="q2",
+                question="rejected",
+                relevant=[RelevantItem(source="b.md")],
+                capability="paraphrase",
+                note="manual",
+            ),
+        ]
+
+        report = evaluate_retriever(
+            lambda question, top_k: [make_source("a.md")] if question == "kept" else [],
+            examples,
+            k_values=[1],
+        )
+
+        self.assertEqual(report["metrics"]["1"]["positive_false_abstention_rate"], 0.5)
+        rejected_case = next(case for case in report["cases"] if case["qid"] == "q2")
+        self.assertTrue(rejected_case["per_k"]["1"]["positive_false_abstention"])
+
+    def test_negative_probes_are_separate_unlabeled_four_category_fixture(self):
+        golden = load_golden_set("eval/golden_set.jsonl")
+        probes = load_negative_probes("eval/fixtures/negative_probes.jsonl")
+
+        self.assertEqual(len(golden), 20)
+        self.assertEqual(len(probes), 20)
+        self.assertEqual(
+            {example.capability.removeprefix("negative_probe_") for example in probes},
+            NEGATIVE_PROBE_CATEGORIES,
+        )
+        self.assertTrue(all(example.relevant == [] for example in probes))
+        first_payload = json.loads(
+            Path("eval/fixtures/negative_probes.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        self.assertNotIn("relevant", first_payload)
+
+    def test_adding_negative_probes_does_not_change_positive_mrr_denominator(self):
+        examples = load_golden_set("eval/golden_set.jsonl")
+        probes = load_negative_probes("eval/fixtures/negative_probes.jsonl")
+        retrieve, metadata = build_hash_retriever("eval/fixtures/knowledge_base")
+
+        golden_report = evaluate_retriever(retrieve, examples, k_values=[3], metadata=metadata)
+        combined_report = evaluate_retriever(
+            retrieve,
+            [*examples, *probes],
+            k_values=[3],
+            metadata=metadata,
+        )
+
+        self.assertEqual(
+            golden_report["metrics"]["3"]["mrr"],
+            combined_report["metrics"]["3"]["mrr"],
+        )
+
+    def test_bge_retrieval_adapter_prefixes_queries_but_not_passages(self):
+        class FakeBGE:
+            def __init__(self):
+                self.batches = []
+
+            def embed_texts(self, texts):
+                batch = list(texts)
+                self.batches.append(batch)
+                return [[1.0, 0.0] for _ in batch]
+
+        fake = FakeBGE()
+        provider = BGERetrievalEmbeddingProvider(
+            model_name="fake-bge",
+            dimension=2,
+            provider=fake,
+        )
+
+        provider.embed_text("find policy")
+        provider.embed_documents([Document(content="policy passage", metadata={"source": "a.md"})])
+
+        self.assertEqual(fake.batches[0], [f"{BGE_RETRIEVAL_QUERY_PREFIX}find policy"])
+        self.assertEqual(fake.batches[1], ["policy passage"])
 
     def test_evaluator_calls_retrieve_callable_once_with_max_k(self):
         examples = [
@@ -225,6 +317,36 @@ class RetrievalEvaluationTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertTrue(any(path.suffix == ".json" for path in report_files))
         self.assertTrue(any(path.suffix == ".md" for path in report_files))
+
+    def test_eval_run_reports_gate_noop_counters_and_both_error_directions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            exit_code = eval_main(
+                [
+                    "--golden-set",
+                    "eval/golden_set.jsonl",
+                    "--negative-probes",
+                    "eval/fixtures/negative_probes.jsonl",
+                    "--knowledge-path",
+                    "eval/fixtures/knowledge_base",
+                    "--report-dir",
+                    temp_dir,
+                    "--relevance-gate",
+                    "--relevance-gate-min-dense-cosine",
+                    "0.5",
+                    "--quiet",
+                ]
+            )
+            report = json.loads(next(Path(temp_dir).glob("*.json")).read_text(encoding="utf-8"))
+
+        metrics = report["metrics"]["3"]
+        gate_stats = report["metadata"]["relevance_gate_stats"]
+        self.assertEqual(exit_code, 0)
+        self.assertIn("negative_empty_rate", metrics)
+        self.assertIn("positive_false_abstention_rate", metrics)
+        self.assertEqual(report["metadata"]["golden_count"], 20)
+        self.assertEqual(report["metadata"]["negative_probe_count"], 20)
+        self.assertEqual(gate_stats["actions"]["skipped"], 40)
+        self.assertEqual(gate_stats["score_spaces"]["hash_cosine"], 40)
 
     def test_eval_run_rejects_expand_parents_for_scored_metrics(self):
         exit_code = eval_main(

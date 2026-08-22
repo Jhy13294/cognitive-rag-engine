@@ -119,6 +119,18 @@ Query rewrite 是检索侧增强，允许指标变化，但必须防 query drift
 - `QUERY_REWRITE_WEIGHT_ORIGINAL >= QUERY_REWRITE_WEIGHT_VARIANT`。
 - negative fixture 零覆盖时不能声称 multi-query-on-negative 安全。
 
+## 检索相关性门：默认关闭、阈值分空间
+
+检索漏斗最后一步到 prompt 之间，我加了一道可选的相关性门：在最终 source 选择之后、上下文装填之前，按分数对候选做一次"够不够相关"的判断，不够就提前返回规范弃答、跳过生成调用。它的定位很窄——只做"无关上下文提前拒绝"，不承诺提升检索质量，也不替代生成侧的弃答。
+
+为什么默认关闭、不设产品默认阈值：
+
+- 我在 20 条 golden 上量过五个分数空间（hash cosine、BM25 原始分、deterministic lexical、RRF 融合分、bge 语义 cosine），没有一个能被单阈值干净分开正负样本。最窄的 bge + query 前缀窗口只有 0.0263 宽，n=4 的负样本撑不起一个产品常量——一条新查询就能把阈值关掉。
+- RRF 融合分是结构性不可用：它只读 rank、从不读底层分数，正负样本区间四位小数完全重合。更关键的是跨空间共用一个常量是数量级错误——RRF 最大值比 BM25 最小值还小两个数量级。所以一个分数空间一套配置键（`RELEVANCE_GATE_MIN_DENSE_COSINE` / `RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE`），禁止跨空间键。
+- 不可判 ⇒ 不拒 + 出声。BM25-only、`lexical_score`、hash provider、未知 reranker 这些空间没有可用阈值，闸必须 no-op 并留下计数/日志，禁止静默跳过——否则"功能开着其实从不触发"的假绿会活下来。
+
+机制、接线和双向指标都做实了，但阈值本身只作为部署参数：eval 侧用一个 bge-only profile 显式开、显式设阈值、单独跑 reported-only 报告。报告必须同时给出"拒绝收益"（negative_empty_rate）和"反向代价"（positive_false_abstention_rate），只报单向指标的报告我不采信——单向指标必然"成功"。
+
 ## Service：FastAPI + SSE
 
 选择 FastAPI 的原因：

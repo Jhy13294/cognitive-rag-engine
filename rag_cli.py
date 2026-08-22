@@ -27,6 +27,7 @@ from rag import (
     IndexNotReadyError,
     RAGPipeline,
     RAGResponse,
+    infer_dense_score_space,
 )
 from rerank import create_reranker
 from tokenization import validate_tokenizer_encoding
@@ -519,6 +520,9 @@ def build_rag_pipeline_from_index(
     query_rewrite_cache_enabled: Optional[bool] = None,
     query_rewrite_weight_original: Optional[float] = None,
     query_rewrite_weight_variant: Optional[float] = None,
+    relevance_gate_enabled: Optional[bool] = None,
+    relevance_gate_min_dense_cosine: Optional[float] = None,
+    relevance_gate_min_cohere_rerank_score: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
     embedding_provider: Optional[EmbeddingProvider] = None,
@@ -571,6 +575,9 @@ def build_rag_pipeline_from_index(
         query_rewrite_cache_enabled=query_rewrite_cache_enabled,
         query_rewrite_weight_original=query_rewrite_weight_original,
         query_rewrite_weight_variant=query_rewrite_weight_variant,
+        relevance_gate_enabled=relevance_gate_enabled,
+        relevance_gate_min_dense_cosine=relevance_gate_min_dense_cosine,
+        relevance_gate_min_cohere_rerank_score=relevance_gate_min_cohere_rerank_score,
         top_k=top_k,
         max_context_chars=max_context_chars,
     )
@@ -607,6 +614,9 @@ def build_rag_pipeline_from_records(
     query_rewrite_cache_enabled: Optional[bool] = None,
     query_rewrite_weight_original: Optional[float] = None,
     query_rewrite_weight_variant: Optional[float] = None,
+    relevance_gate_enabled: Optional[bool] = None,
+    relevance_gate_min_dense_cosine: Optional[float] = None,
+    relevance_gate_min_cohere_rerank_score: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
     acl: Optional[List[str]] = None,
@@ -669,6 +679,19 @@ def build_rag_pipeline_from_records(
         if query_rewrite_weight_variant is not None
         else Config.QUERY_REWRITE_WEIGHT_VARIANT
     )
+    use_relevance_gate = (
+        Config.RELEVANCE_GATE_ENABLED if relevance_gate_enabled is None else relevance_gate_enabled
+    )
+    selected_relevance_dense_threshold = (
+        Config.RELEVANCE_GATE_MIN_DENSE_COSINE
+        if relevance_gate_min_dense_cosine is None
+        else relevance_gate_min_dense_cosine
+    )
+    selected_relevance_cohere_threshold = (
+        Config.RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE
+        if relevance_gate_min_cohere_rerank_score is None
+        else relevance_gate_min_cohere_rerank_score
+    )
 
     if use_context_packing or use_context_dedup or use_context_near_dup:
         if selected_context_threshold < 0 or selected_context_threshold > 1:
@@ -684,6 +707,16 @@ def build_rag_pipeline_from_records(
             temperature=selected_query_rewrite_temperature,
             weight_original=selected_query_rewrite_weight_original,
             weight_variant=selected_query_rewrite_weight_variant,
+        )
+
+    if (
+        use_relevance_gate
+        or selected_relevance_dense_threshold is not None
+        or selected_relevance_cohere_threshold is not None
+    ):
+        Config.validate_relevance_gate(
+            min_dense_cosine=selected_relevance_dense_threshold,
+            min_cohere_rerank_score=selected_relevance_cohere_threshold,
         )
 
     if use_parent_child and parent_store is None:
@@ -764,6 +797,13 @@ def build_rag_pipeline_from_records(
         use_context_dedup,
         use_query_rewrite,
     )
+    if use_relevance_gate:
+        logger.info(
+            "Relevance gate ready | dense_score_space=%s | min_dense_cosine=%s | min_cohere_rerank_score=%s",
+            infer_dense_score_space(embedding_provider, vector_store),
+            selected_relevance_dense_threshold,
+            selected_relevance_cohere_threshold,
+        )
     pipeline = RAGPipeline(
         embedding_provider=embedding_provider,
         vector_store=vector_store,
@@ -786,6 +826,9 @@ def build_rag_pipeline_from_records(
         query_rewrite_num_queries=selected_query_rewrite_num_queries,
         query_rewrite_weight_original=selected_query_rewrite_weight_original,
         query_rewrite_weight_variant=selected_query_rewrite_weight_variant,
+        relevance_gate_enabled=use_relevance_gate,
+        relevance_gate_min_dense_cosine=selected_relevance_dense_threshold,
+        relevance_gate_min_cohere_rerank_score=selected_relevance_cohere_threshold,
     )
     return maybe_wrap_pipeline(pipeline, vector_records)
 
@@ -965,6 +1008,9 @@ def build_rag_pipeline_from_path(
     query_rewrite_cache_enabled: Optional[bool] = None,
     query_rewrite_weight_original: Optional[float] = None,
     query_rewrite_weight_variant: Optional[float] = None,
+    relevance_gate_enabled: Optional[bool] = None,
+    relevance_gate_min_dense_cosine: Optional[float] = None,
+    relevance_gate_min_cohere_rerank_score: Optional[float] = None,
     top_k: int = 5,
     max_context_chars: int = 4000,
     acl: Optional[List[str]] = None,
@@ -1016,6 +1062,9 @@ def build_rag_pipeline_from_path(
         query_rewrite_cache_enabled=query_rewrite_cache_enabled,
         query_rewrite_weight_original=query_rewrite_weight_original,
         query_rewrite_weight_variant=query_rewrite_weight_variant,
+        relevance_gate_enabled=relevance_gate_enabled,
+        relevance_gate_min_dense_cosine=relevance_gate_min_dense_cosine,
+        relevance_gate_min_cohere_rerank_score=relevance_gate_min_cohere_rerank_score,
         top_k=top_k,
         max_context_chars=max_context_chars,
     )

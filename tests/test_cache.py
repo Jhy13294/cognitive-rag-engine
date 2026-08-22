@@ -88,6 +88,32 @@ class CountingHashEmbeddingProvider(HashEmbeddingProvider):
         return super().embed_text(text)
 
 
+class GateEmbeddingProvider(EmbeddingProvider):
+    """Semantic test provider whose rejection query is orthogonal to the corpus."""
+
+    def __init__(self):
+        super().__init__(EmbeddingConfig(model_name="semantic-cache-test", dimension=2))
+        self.embed_text_calls = 0
+
+    def embed_text(self, text):
+        self.embed_text_calls += 1
+        return [0.0, 1.0] if "reject" in text else [1.0, 0.0]
+
+    def embed_texts(self, texts):
+        return [self.embed_text(text) for text in texts]
+
+
+class ExplodingGateChatClient:
+    """Make any generation call on a rejected retrieval fail the test."""
+
+    def __init__(self):
+        self.chat_calls = 0
+
+    def chat(self, message, system_prompt=None):
+        self.chat_calls += 1
+        raise AssertionError("Retrieval rejection must not call chat generation")
+
+
 class CountingVectorStore(InMemoryVectorStore):
     """In-memory vector store that counts similarity searches."""
 
@@ -187,6 +213,34 @@ def build_cached_pipeline(cache_store=None):
     return cached, provider, vector_store, chat_client
 
 
+def build_gated_cached_pipeline(cache_store=None):
+    provider = GateEmbeddingProvider()
+    vector_store = CountingVectorStore(dimension=2)
+    vector_store.add_records(
+        [
+            VectorRecord(
+                id="gate-record",
+                content="supported cache policy",
+                embedding=[1.0, 0.0],
+                metadata={"id": "gate-record", "source": "gate.md"},
+            )
+        ]
+    )
+    chat_client = ExplodingGateChatClient()
+    pipeline = RAGPipeline(
+        embedding_provider=provider,
+        vector_store=vector_store,
+        chat_client=chat_client,
+        top_k=1,
+        relevance_gate_enabled=True,
+        relevance_gate_min_dense_cosine=0.5,
+    )
+    cached = CachingRAGPipeline(
+        pipeline, cache_store or build_cache_store(), corpus_identity="gate-corpus"
+    )
+    return cached, provider, vector_store, chat_client
+
+
 def parse_sse(raw_event):
     lines = [line for line in raw_event.strip().splitlines() if line]
     return lines[0].split(":", 1)[1].strip(), json.loads(lines[1].split(":", 1)[1].strip())
@@ -216,6 +270,48 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.embed_text_calls, 1)
         self.assertEqual(vector_store.search_calls, 1)
         self.assertEqual(pipeline.cache_stats()["hits"]["l2"], 2)
+
+    async def test_l2_caches_rejected_empty_results_with_gate_provenance(self):
+        fake_redis = FakeRedis()
+        store = build_cache_store(fake_redis, answer_enabled=False)
+        pipeline, provider, vector_store, chat = build_gated_cached_pipeline(store)
+
+        cold = pipeline.retrieve("reject unrelated", top_k=1)
+        hot = pipeline.retrieve("reject unrelated", top_k=1)
+        first_answer = pipeline.answer("reject unrelated", top_k=1)
+        second_answer = pipeline.answer("reject unrelated", top_k=1)
+
+        self.assertEqual(cold, [])
+        self.assertEqual(hot, [])
+        self.assertTrue(cold.relevance_gate_decision.rejected)
+        self.assertTrue(hot.relevance_gate_decision.rejected)
+        self.assertEqual(first_answer.answer, second_answer.answer)
+        self.assertEqual(chat.chat_calls, 0)
+        self.assertEqual(provider.embed_text_calls, 1)
+        self.assertEqual(vector_store.search_calls, 1)
+        cached_payloads = []
+        for raw_value in fake_redis.data.values():
+            try:
+                payload = json.loads(raw_value)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and "relevance_gate" in payload:
+                cached_payloads.append(payload)
+        self.assertEqual(len(cached_payloads), 1)
+        self.assertEqual(cached_payloads[0]["sources"], [])
+        self.assertEqual(cached_payloads[0]["relevance_gate"]["action"], "rejected")
+
+    async def test_l3_caches_deterministic_gate_abstention(self):
+        pipeline, provider, vector_store, chat = build_gated_cached_pipeline()
+
+        cold = pipeline.answer("reject unrelated", top_k=1)
+        hot = pipeline.answer("reject unrelated", top_k=1)
+
+        self.assertEqual(asdict(cold), asdict(hot))
+        self.assertEqual(chat.chat_calls, 0)
+        self.assertEqual(provider.embed_text_calls, 1)
+        self.assertEqual(vector_store.search_calls, 1)
+        self.assertEqual(pipeline.cache_stats()["hits"]["l3"], 1)
 
     async def test_l2_key_includes_top_k_and_metadata_filter(self):
         pipeline, _provider, vector_store, _chat = build_cached_pipeline()
@@ -422,6 +518,25 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(invalidated_answer.answer, first_answer.answer)
             self.assertEqual(chat.chat_calls, 2)
+
+            gated_pipeline, gated_provider, gated_store, gated_chat = build_gated_cached_pipeline(
+                store
+            )
+            first_empty = await asyncio.to_thread(gated_pipeline.retrieve, "reject unrelated", 1)
+            second_empty = await asyncio.to_thread(gated_pipeline.retrieve, "reject unrelated", 1)
+            first_abstention = await asyncio.to_thread(gated_pipeline.answer, "reject unrelated", 1)
+            second_abstention = await asyncio.to_thread(
+                gated_pipeline.answer, "reject unrelated", 1
+            )
+
+            self.assertEqual(first_empty, [])
+            self.assertEqual(second_empty, [])
+            self.assertTrue(first_empty.relevance_gate_decision.rejected)
+            self.assertTrue(second_empty.relevance_gate_decision.rejected)
+            self.assertEqual(asdict(first_abstention), asdict(second_abstention))
+            self.assertEqual(gated_provider.embed_text_calls, 1)
+            self.assertEqual(gated_store.search_calls, 1)
+            self.assertEqual(gated_chat.chat_calls, 0)
 
             final_stats = store.stats()
             self.assertGreaterEqual(final_stats["hits"]["l2"], 1)

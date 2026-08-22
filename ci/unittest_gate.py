@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict
 
-EXPECTED_RAN = 321
+EXPECTED_RAN = 339
 EXPECTED_FAILURES = 0
 EXPECTED_ERRORS = 0
 EXPECTED_SKIPPED = 19

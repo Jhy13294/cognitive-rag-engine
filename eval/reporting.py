@@ -44,19 +44,20 @@ def render_markdown_report(report: Dict) -> str:
         "",
         "## Overall Metrics",
         "",
-        "| k | hit_rate | MRR | recall | negative_empty_rate | negative_false_recall_rate |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| k | hit_rate | MRR | recall | positive_false_abstention_rate | negative_empty_rate | negative_false_recall_rate |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     insert_parent_child_metadata(lines, metadata, after="- rerank_top_n")
     insert_query_rewrite_metadata(lines, metadata, after="- rerank_top_n")
 
     for k, values in report.get("metrics", {}).items():
         lines.append(
-            "| {k} | {hit_rate:.6f} | {mrr:.6f} | {recall:.6f} | {neg_empty:.6f} | {neg_false:.6f} |".format(
+            "| {k} | {hit_rate:.6f} | {mrr:.6f} | {recall:.6f} | {pos_false:.6f} | {neg_empty:.6f} | {neg_false:.6f} |".format(
                 k=k,
                 hit_rate=values.get("hit_rate", 0.0),
                 mrr=values.get("mrr", 0.0),
                 recall=values.get("recall", 0.0),
+                pos_false=values.get("positive_false_abstention_rate", 0.0),
                 neg_empty=values.get("negative_empty_rate", 0.0),
                 neg_false=values.get("negative_false_recall_rate", 0.0),
             )
@@ -68,18 +69,19 @@ def render_markdown_report(report: Dict) -> str:
             [
                 f"### {capability}",
                 "",
-                "| k | query_count | hit_rate | MRR | recall | negative_empty_rate | negative_false_recall_rate |",
-                "|---|---:|---:|---:|---:|---:|---:|",
+                "| k | query_count | hit_rate | MRR | recall | positive_false_abstention_rate | negative_empty_rate | negative_false_recall_rate |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for k, values in per_k.items():
             lines.append(
-                "| {k} | {query_count} | {hit_rate:.6f} | {mrr:.6f} | {recall:.6f} | {neg_empty:.6f} | {neg_false:.6f} |".format(
+                "| {k} | {query_count} | {hit_rate:.6f} | {mrr:.6f} | {recall:.6f} | {pos_false:.6f} | {neg_empty:.6f} | {neg_false:.6f} |".format(
                     k=k,
                     query_count=values.get("query_count", 0),
                     hit_rate=values.get("hit_rate", 0.0),
                     mrr=values.get("mrr", 0.0),
                     recall=values.get("recall", 0.0),
+                    pos_false=values.get("positive_false_abstention_rate", 0.0),
                     neg_empty=values.get("negative_empty_rate", 0.0),
                     neg_false=values.get("negative_false_recall_rate", 0.0),
                 )
@@ -147,8 +149,8 @@ def render_hybrid_comparison_report(report: Dict) -> str:
         "",
         "## Overall Comparison",
         "",
-        "| mode | k | MRR | hit_rate | recall | negative_false_recall_rate |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| mode | k | MRR | hit_rate | recall | positive_false_abstention_rate | negative_false_recall_rate |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     insert_parent_child_metadata(lines, metadata, after="- hybrid_fetch_k")
     insert_query_rewrite_metadata(lines, metadata, after="- hybrid_fetch_k")
@@ -157,12 +159,13 @@ def render_hybrid_comparison_report(report: Dict) -> str:
         for k in k_values:
             metric = values.get("metrics", {}).get(k, {})
             lines.append(
-                "| {mode} | {k} | {mrr:.6f} | {hit_rate:.6f} | {recall:.6f} | {neg_false:.6f} |".format(
+                "| {mode} | {k} | {mrr:.6f} | {hit_rate:.6f} | {recall:.6f} | {pos_false:.6f} | {neg_false:.6f} |".format(
                     mode=mode,
                     k=k,
                     mrr=metric.get("mrr", 0.0),
                     hit_rate=metric.get("hit_rate", 0.0),
                     recall=metric.get("recall", 0.0),
+                    pos_false=metric.get("positive_false_abstention_rate", 0.0),
                     neg_false=metric.get("negative_false_recall_rate", 0.0),
                 )
             )

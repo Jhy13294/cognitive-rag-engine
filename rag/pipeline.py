@@ -53,6 +53,12 @@ from .question_classifier import (
     is_source_relevance_question,
     is_workaround_question,
 )
+from .relevance_gate import (
+    RelevanceGate,
+    RelevanceGateConfig,
+    infer_dense_score_space,
+    relevance_gate_decision_for,
+)
 from .retrieval_orchestrator import (
     RetrievalOrchestrator,
     dense_search_results_to_ranked_records,
@@ -125,6 +131,10 @@ class RAGPipeline:
         query_rewrite_num_queries: int = 3,
         query_rewrite_weight_original: float = 1.0,
         query_rewrite_weight_variant: float = 0.7,
+        relevance_gate_enabled: bool = False,
+        relevance_gate_min_dense_cosine: Optional[float] = None,
+        relevance_gate_min_cohere_rerank_score: Optional[float] = None,
+        relevance_gate_dense_score_space: Optional[str] = None,
     ):
         """Initialize the RAG pipeline."""
         if top_k <= 0:
@@ -170,6 +180,25 @@ class RAGPipeline:
         self.query_rewrite_weight_original = query_rewrite_weight_original
         self.query_rewrite_weight_variant = query_rewrite_weight_variant
 
+        reranker_provider = None
+        if reranker is not None:
+            reranker_provider = str(reranker.config.metadata.get("provider") or "") or None
+        dense_score_space = relevance_gate_dense_score_space or infer_dense_score_space(
+            embedding_provider,
+            vector_store,
+        )
+        self.relevance_gate = RelevanceGate(
+            RelevanceGateConfig(
+                enabled=relevance_gate_enabled,
+                min_dense_cosine=relevance_gate_min_dense_cosine,
+                min_cohere_rerank_score=relevance_gate_min_cohere_rerank_score,
+                dense_score_space=dense_score_space,
+                hybrid_enabled=bm25_retriever is not None,
+                reranker_provider=reranker_provider,
+                query_rewrite_enabled=query_rewrite_enabled,
+            )
+        )
+
         self.retrieval_orchestrator = RetrievalOrchestrator(self)
         self.source_finalizer = SourceFinalizer(self)
         self.prompt_builder = PromptBuilder(self)
@@ -199,7 +228,8 @@ class RAGPipeline:
             requested_top_k=requested_top_k,
             metadata_filter=metadata_filter,
         )
-        return self.source_finalizer.finalize(candidates)
+        sources = self.source_finalizer.finalize(candidates)
+        return self.relevance_gate.apply(sources)
 
     def build_prompt(self, question: str, sources: List[RetrievedSource]) -> str:
         """Build the user prompt sent to the chat client."""
@@ -214,6 +244,17 @@ class RAGPipeline:
     ) -> RAGResponse:
         """Retrieve context and generate an answer."""
         sources = self.retrieve(question, top_k=top_k, metadata_filter=metadata_filter)
+        gate_decision = relevance_gate_decision_for(sources)
+        if gate_decision is not None and gate_decision.rejected:
+            logger.info("RAG answer short-circuited by relevance gate")
+            return RAGResponse(
+                question=question,
+                answer=CANONICAL_ABSTENTION_RESPONSE,
+                sources=[],
+                prompt="",
+                raw_response={"relevance_gate": gate_decision.to_dict()},
+            )
+
         prompt, used_sources = self.prompt_builder.build(question, sources)
         raw_response = self.chat_client.chat(prompt, system_prompt=self.system_prompt)
         answer = extract_chat_content(raw_response)
@@ -228,6 +269,10 @@ class RAGPipeline:
             prompt=prompt,
             raw_response=raw_response,
         )
+
+    def relevance_gate_stats(self) -> Dict:
+        """Expose gate actions and explicit no-op reasons."""
+        return self.relevance_gate.stats()
 
     def _build_prompt_and_sources(
         self,

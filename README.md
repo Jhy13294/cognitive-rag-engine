@@ -21,6 +21,7 @@ Document ingestion (TXT / Markdown / PDF+OCR / Word)
   → RRF hybrid fusion
   → rerank
   → parent expansion
+  → optional relevance gate
   → context packing
   → generation with citations
   → evaluation / metrics / cache / ACL pre-filtering
@@ -33,6 +34,7 @@ ACL pre-filtering, Redis caching, and observability wrap this funnel rather than
 - **Evaluated retrieval** — deterministic golden-set evaluation (hit rate, MRR, recall, negative-query metrics) with a frozen baseline the CI gate asserts to six decimals on every push.
 - **Hybrid retrieval** — dense + BM25 with RRF fusion, plus deterministic multi-query rewriting and cross-query fusion.
 - **Rerank and parent-child chunking** — pluggable reranking with dense fallback; child chunks for retrieval, parent chunks expanded for generation.
+- **Retrieval relevance gate** — an optional, default-off short circuit between final source selection and prompt construction. Thresholds are configured per supported score space; RRF, BM25, deterministic lexical, hash, and unknown scores are observable no-ops rather than implicit evidence of irrelevance.
 - **Context packing** — whole-block inclusion, deterministic deduplication, contiguous citations, and token-aware budgets on the generation input.
 - **Async FastAPI service** — `/ingest`, `/query`, and SSE `/query/stream`, with a threadpool offload for the synchronous funnel and sanitized error mapping.
 - **Redis cache and ACL/RBAC pre-filtering** — three cache layers (query embedding / retrieval / answer) with atomic corpus-version invalidation, and fail-closed ACL filtering applied before candidate scoring with the effective ACL folded into cache keys.
@@ -53,7 +55,7 @@ For a full end-to-end walk-through (offline eval **and** a zero-key full-stack H
 
 Retrieval and generation quality are evaluated on separate tracks, and the offline replay path is the default reproducible one:
 
-- **Deterministic retrieval evaluation** — `python -m eval.run` scores 20 labeled queries (16 positive and 4 negative) against five synthetic Markdown documents of 765–887 bytes with `HashEmbeddingProvider`. CI re-runs dense, hybrid, parent-child, and rerank profiles and asserts positive-query MRR@3 to six decimals; negative-query behavior is reported separately.
+- **Deterministic retrieval evaluation** — `python -m eval.run` scores 20 labeled queries (16 positive and 4 negative) against five synthetic Markdown documents of 765–887 bytes with `HashEmbeddingProvider`. CI re-runs dense, hybrid, parent-child, and rerank profiles and asserts positive-query MRR@3 to six decimals. Reports expose both negative empty/false-recall rates and positive false-abstention rate; an optional BGE profile can append a separate unlabeled negative-probe set without changing the frozen MRR denominator.
 - **Generation quality (Ragas)** — a live LLM-as-judge track scores Faithfulness, Answer Relevance, and Context Precision/Recall with pinned temperatures, repetition, and median-based gating; CI replays a frozen verdict fixture fully offline. Scores are noisy judge estimates on a small hand-labeled set, not a production quality floor.
 
 See [Generation Quality Evaluation](#generation-quality-evaluation) below and [docs/benchmark.md](docs/benchmark.md) for the zero-paid local latency/QPS methodology.
@@ -66,16 +68,18 @@ This is an enterprise-oriented, production-shaped RAG backend, not a turnkey pro
 - **ACL depends on a trusted upstream gateway.** The principal is read from a trusted upstream header; you must deploy behind an authentication gateway that owns that header. Body-provided principals are rejected unless explicitly enabled for local testing.
 - **The offline replay/golden baseline is the default reproducible path.** Live LLM-as-judge evaluation and paid retrieval require API keys; the frozen baselines and offline gates are what run keyless in CI.
 - **Evaluation scores are judge estimates on a small set.** The golden set is roughly 20 hand-labeled queries; treat scores as directional, not as a production quality guarantee.
+- **The retrieval relevance gate has no product threshold default.** It is disabled by default and only rejects in explicitly supported, separately calibrated score spaces. A local BGE fixture result is not a portable production threshold or an out-of-domain classifier guarantee.
 
 ## Project Status
 
-Current milestone: evaluated retrieval funnel plus async HTTP service layer, optional Redis caching, ACL/RBAC pre-filtering, fail-open observability, and deployment health gates.
+Current milestone: evaluated retrieval funnel with an optional relevance short circuit, plus an async HTTP service layer, optional Redis caching, ACL/RBAC pre-filtering, fail-open observability, and deployment health gates.
 
 Current highlights:
 
 - Deterministic dense, hybrid, parent-child, and rerank evaluation profiles are enforced in CI to six decimal places.
 - TXT, Markdown, PDF/OCR, and Word ingestion feed exact source-slice chunks; fenced Markdown code remains searchable by default.
 - Dense and BM25 retrieval, RRF fusion, reranking, multi-query rewriting, parent expansion, and token-aware context packing share one staged pipeline.
+- The default-off relevance gate can return the canonical abstention before prompt construction and generation; unsupported score spaces remain non-rejecting and emit counters/logs.
 - The async FastAPI service provides ingest, query, SSE streaming, Redis caching, ACL/RBAC pre-filtering, observability, and split liveness/readiness probes.
 - Memory providers support keyless local verification; Qdrant, MySQL, Redis, OpenAI-compatible generation, OpenAI embeddings, and Cohere reranking are optional integrations.
 
@@ -139,9 +143,11 @@ Start here when you want to understand the engineering choices behind the projec
 ├── eval/
 │   ├── golden_set.jsonl       # Retrieval golden set with relevant source lists
 │   ├── baseline.py            # Deterministic HashEmbeddingProvider baseline
-│   ├── metrics.py             # hit_rate, MRR, recall, negative metrics
+│   ├── metrics.py             # Retrieval metrics in both rejection directions
+│   ├── probes.py              # Separate unlabeled negative-probe loader and validation
 │   ├── reporting.py           # JSON and Markdown report rendering
 │   ├── run.py                 # python -m eval.run entry point
+│   ├── retrieval_embeddings.py # Eval-only BGE query/passage adapter
 │   ├── ragas_run.py           # python -m eval.ragas_run replay/live/compare entry point
 │   ├── ragas_evaluation.py    # Ragas replay gate, fixture validation, and gating rules
 │   ├── ragas_live.py          # Gated live judge recording
@@ -149,7 +155,8 @@ Start here when you want to understand the engineering choices behind the projec
 │   ├── gemini_embedding.py    # Optional Gemini embedding for answer relevance
 │   ├── fixtures/              # Evaluation knowledge base and frozen fixtures
 │   │   ├── ragas_verdicts.jsonl   # Committed Ragas verdict baseline (replay gate input)
-│   │   └── query_rewrites.jsonl   # Deterministic query rewrite fixture
+│   │   ├── query_rewrites.jsonl   # Deterministic query rewrite fixture
+│   │   └── negative_probes.jsonl  # Separate unlabeled negative probes (not frozen MRR labels)
 │   └── reports/               # Generated evaluation reports
 ├── bench/
 │   ├── run.py                 # python -m bench.run zero-paid local latency/QPS benchmark
@@ -178,6 +185,7 @@ Start here when you want to understand the engineering choices behind the projec
 ├── rag/
 │   ├── pipeline.py            # High-level RAG orchestration and compatibility exports
 │   ├── retrieval_orchestrator.py # Dense/hybrid/multi-query retrieval and rerank
+│   ├── relevance_gate.py      # Score-space-aware early rejection and no-op accounting
 │   ├── source_finalizer.py    # Parent expansion and sibling-child collapse
 │   ├── prompt_builder.py      # System prompt, scope instructions, context assembly
 │   ├── question_classifier.py # Deterministic question-shape heuristics
@@ -285,6 +293,11 @@ QUERY_REWRITE_CACHE_ENABLED=true
 QUERY_REWRITE_WEIGHT_ORIGINAL=1.0
 QUERY_REWRITE_WEIGHT_VARIANT=0.7
 
+RELEVANCE_GATE_ENABLED=false
+# Leave each threshold blank until it is calibrated for that exact score space.
+RELEVANCE_GATE_MIN_DENSE_COSINE=
+RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE=
+
 REDIS_URL=redis://localhost:6379/0
 CACHE_NAMESPACE=rag-cache
 CACHE_ENABLED=false
@@ -315,6 +328,8 @@ METRICS_NAMESPACE=rag
 METRICS_PATH=/metrics
 READINESS_TIMEOUT=2.0
 ```
+
+Keep `RELEVANCE_GATE_ENABLED=false` until the active provider and score space have been measured. `RELEVANCE_GATE_MIN_DENSE_COSINE` applies only to supported semantic cosine scores; hybrid retrieval always uses its preserved dense score and never the RRF score. `RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE` is a separate Cohere rerank scale. Enabling the gate without a usable, matching threshold produces a logged and counted no-op rather than a rejection.
 
 ## Usage
 
@@ -656,15 +671,29 @@ Run deterministic multi-query retrieval evaluation:
 python -m eval.run --multi-query
 ```
 
+Run the reported-only semantic relevance-gate profile. The threshold below belongs only to this BGE fixture profile; it is not a product default:
+
+```bash
+python -m eval.run \
+  --embedding-provider bge \
+  --relevance-gate \
+  --relevance-gate-min-dense-cosine 0.63 \
+  --negative-probes eval/fixtures/negative_probes.jsonl \
+  --k 3 \
+  --no-cache
+```
+
 Force evaluation to bypass Redis cache wrappers:
 
 ```bash
 python -m eval.run --no-cache
 ```
 
-The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility.
+The evaluator only depends on a `retrieve(question, top_k)` callable. It does not call the chat model, and the default baseline uses `HashEmbeddingProvider` for offline reproducibility. Retrieval reports include `negative_empty_rate`, `negative_false_recall_rate`, and the reverse-cost metric `positive_false_abstention_rate`.
 
-The frozen fixture contains five synthetic Markdown documents of 765–887 bytes and 20 queries: 16 positive and 4 negative. MRR and recall claims below apply to the positive queries. At top-k 3 the four negative queries still return non-empty results (`negative_false_recall_rate = 1.000000`), so this system does not yet demonstrate abstention.
+The frozen fixture contains five synthetic Markdown documents of 765–887 bytes and 20 queries: 16 positive and 4 negative. MRR and recall claims below apply to the positive queries. With the gate at its default `off` setting, all four negatives still return non-empty top-3 results (`negative_false_recall_rate = 1.000000`). This describes the frozen hash CI baseline; hash similarity is deliberately unsupported for relevance rejection.
+
+The explicit BGE command above appends 20 separate unlabeled probes across four negative categories. In the local 40-query report (16 positive / 24 negative), `min_dense_cosine=0.63` produced `negative_empty_rate@3 = 0.833333`, `negative_false_recall_rate@3 = 0.166667`, and `positive_false_abstention_rate@3 = 0.000000`; three of the four frozen negatives were rejected. This is a reported-only fixture result on `BAAI/bge-small-en-v1.5`, not a CI baseline, production floor, or provider-independent threshold.
 
 Current rerank baseline, using `HashEmbeddingProvider` plus `DeterministicReranker`, improves MRR@3 from `0.677083` to `1.000000` and long_tail MRR@3 from `0.566667` to `1.000000` while keeping recall@5 at `1.000000`. The rerank profile is asserted by `ci/retrieval_baseline_gate.py`; each run writes local reports and CI uploads them as workflow artifacts.
 
@@ -674,10 +703,10 @@ Current parent-child retrieval mode uses child chunks for retrieval and parent c
 
 Current context packing is a generation-input assembly step. It does not enter `retrieve()` and must not be reported as MRR/recall improvement. With all context flags off, the legacy character-based `_build_context` path is preserved. When enabled, packing includes whole blocks or skips them, renumbers citations contiguously, folds exact duplicates, optionally folds near duplicates behind a flag, and uses `TokenCounter` for token budgets. tiktoken is optional; when it is unavailable, the system falls back to a deterministic heuristic counter. For Chinese text, true token counting may create more but legal smaller batches; the benefit is correctness and zero over-limit requests, not claiming fewer batches. Generation quality and coherence remain deferred to Ragas-style answer-quality evaluation.
 
-Current multi-query retrieval is a retrieval-side change, so hit_rate/MRR/recall are valid measurement surfaces. The deterministic fixture keeps the original query as `q0`, adds frozen variants for paraphrase and long-tail cases, fuses per-query results with the existing RRF implementation, and then reuses the existing rerank, parent expansion, and context packing stages. In the offline HashEmbeddingProvider baseline, `python -m eval.run --multi-query` improves paraphrase recall@3 from `0.800000` to `1.000000`, keeps long_tail recall@3 at `0.900000`, and improves long_tail MRR@3 from `0.566667` to `0.900000`. The four negative queries have no fixture rewrite, so multi-query is fully bypassed for them and their results are byte-identical to the single-path baseline; multi-query-on-negative risk is not covered offline and is deferred to the abstain/threshold work in the roadmap. These deterministic fixture gains are a controlled demonstration that RRF fusion plumbing delivers the targeted paraphrase/long_tail gains when fed known-good rewrites. Production LLM rewrites may land above or below this, and query drift can fall below single-path. This is not a production floor.
+Current multi-query retrieval is a retrieval-side change, so hit_rate/MRR/recall are valid measurement surfaces. The deterministic fixture keeps the original query as `q0`, adds frozen variants for paraphrase and long-tail cases, fuses per-query results with the existing RRF implementation, and then reuses the existing rerank, parent expansion, and context packing stages. In the offline HashEmbeddingProvider baseline, `python -m eval.run --multi-query` improves paraphrase recall@3 from `0.800000` to `1.000000`, keeps long_tail recall@3 at `0.900000`, and improves long_tail MRR@3 from `0.566667` to `0.900000`. The four negative queries have no fixture rewrite, so the gate-off baseline still bypasses multi-query for them and remains byte-identical to the single path. When the relevance gate is enabled, it never treats the cross-query RRF score as relevance evidence; unsupported or missing physical scores remain observable no-ops. No calibrated multi-query negative-quality claim is made. These deterministic fixture gains are a controlled demonstration that RRF fusion plumbing delivers the targeted paraphrase/long_tail gains when fed known-good rewrites. Production LLM rewrites may land above or below this, and query drift can fall below single-path. This is not a production floor.
 
-Current Redis caching is an outer wrapper, not a second retrieval pipeline. With `CACHE_ENABLED=false`, providers and pipelines are returned unwrapped. With cache enabled, L1 wraps `EmbeddingProvider.embed_text`, L2 wraps `retrieve`, and L3 wraps `answer`; `rag/pipeline.py` remains unchanged. L1 does not include `corpus_version` because text embeddings are a model+text function. L2/L3 include the Redis-persisted corpus version so `/ingest` makes stale retrieval and answer entries unreachable across process restarts and multiple service replicas. Negative answers are cached like any other exact query result but remain bounded by TTL and corpus version. The default unit tests use a FakeRedis substitute; true `redis.asyncio` coverage is gated behind `REDIS_URL` and must include both live Redis commands and cross-event-loop calls.
-The live Redis path has passed the production-shape regression: repeated synchronous and service-thread calls reuse a store-owned Redis loop, hit L1/L2/L3 on the second call, and keep Redis error counts at zero.
+Current Redis caching is an outer wrapper, not a second retrieval pipeline. With `CACHE_ENABLED=false`, providers and pipelines are returned unwrapped. With cache enabled, L1 wraps `EmbeddingProvider.embed_text`, L2 wraps `retrieve`, and L3 wraps `answer`. L1 does not include `corpus_version` because text embeddings are a model+text function. L2/L3 include the Redis-persisted corpus version so `/ingest` makes stale retrieval and answer entries unreachable across process restarts and multiple service replicas. L2 uses an envelope to retain the distinction between a relevance-gate rejection and an ordinary empty result such as ACL pre-filtering; L3 can cache the canonical abstention under the same TTL and corpus-version bounds. The default unit tests use a FakeRedis substitute; true `redis.asyncio` coverage is gated behind `REDIS_URL` and must include both live Redis commands and cross-event-loop calls.
+The live Redis path has passed the production-shape regression: repeated synchronous and service-thread calls reuse a store-owned Redis loop, hit L1/L2/L3 on the second call, preserve an empty relevance rejection through L2/L3, make zero chat calls for that rejection, and keep Redis error counts at zero.
 
 Current ACL/RBAC support is fail-closed pre-filtering, not post-filtering. The effective ACL filter is built on the server side from a trusted principal, then ANDed with any client metadata filter so clients can narrow results but cannot widen access. Records are authorized when `record.acl` intersects the resolved allowed ACL subjects; records with missing or empty ACL are restricted for ordinary users. The same filter is applied before dense scoring, BM25 sparse scoring, each multi-query variant, and cache key construction. MySQL is the metadata source for principal membership and optional document/chunk ACL bindings, while Qdrant payloads are execution snapshots used for fast retrieval. Updating bindings in MySQL requires re-ingest or re-sync before the vector-store payload changes. The FastAPI service does not validate JWTs or sessions; production deployments must put it behind a trusted authentication gateway that owns the principal header.
 
@@ -733,7 +762,7 @@ This repository is licensed under the [MIT License](LICENSE).
 ## Roadmap
 
 1. Add more ingestion edge-case fixtures.
-2. Add score thresholding or abstain logic for negative queries.
+2. Calibrate provider-specific relevance thresholds on larger multilingual hard-negative sets; the mechanism remains default-off until then.
 3. Add external alert routing for the existing observability hooks.
 4. Add production deployment checks around Qdrant version compatibility.
 5. Add built-in authentication or gateway integration checks for production deployments.

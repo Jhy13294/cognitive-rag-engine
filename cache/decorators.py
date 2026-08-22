@@ -14,8 +14,8 @@ from .serialization import (
     encode_vector,
     response_from_payload,
     response_to_payload,
-    sources_from_payload,
-    sources_to_payload,
+    retrieval_sources_from_payload,
+    retrieval_sources_to_payload,
 )
 
 logger = setup_logger(__name__)
@@ -147,15 +147,18 @@ class CachingRAGPipeline:
         key = self._retrieval_key(question, top_k, metadata_filter, version)
         cached_payload = await self._cache_store.get_json("l2", key)
         if cached_payload is not None:
-            return sources_from_payload(cached_payload)
+            return retrieval_sources_from_payload(cached_payload)
 
         sources = self._source_retrieve(question, top_k=top_k, metadata_filter=metadata_filter)
+        retrieval_payload = retrieval_sources_to_payload(sources)
         await self._cache_store.set_json(
             "l2",
             key,
-            sources_to_payload(sources),
+            retrieval_payload,
             self._cache_store.settings.retrieval_ttl,
         )
+        if isinstance(retrieval_payload, dict):
+            return retrieval_sources_from_payload(retrieval_payload)
         return list(sources)
 
     async def _answer_cached(
@@ -257,7 +260,8 @@ class CachingRAGPipeline:
         bm25_retriever = self._pipeline.bm25_retriever
         rrf = self._pipeline.rrf
         query_rewriter = self._pipeline.query_rewriter
-        return {
+        relevance_gate_config = self._pipeline.relevance_gate.config
+        config = {
             "embedding_model": embedding_provider.model_name,
             "embedding_dimension": embedding_provider.dimension,
             "embedding_normalize": bool(embedding_provider.config.normalize),
@@ -289,6 +293,18 @@ class CachingRAGPipeline:
             "query_rewrite_weight_original": self._pipeline.query_rewrite_weight_original,
             "query_rewrite_weight_variant": self._pipeline.query_rewrite_weight_variant,
         }
+        if relevance_gate_config.enabled:
+            config.update(
+                {
+                    "relevance_gate_enabled": True,
+                    "relevance_gate_dense_score_space": relevance_gate_config.dense_score_space,
+                    "relevance_gate_min_dense_cosine": relevance_gate_config.min_dense_cosine,
+                    "relevance_gate_min_cohere_rerank_score": (
+                        relevance_gate_config.min_cohere_rerank_score
+                    ),
+                }
+            )
+        return config
 
     def _chat_model_name(self) -> Dict:
         return {

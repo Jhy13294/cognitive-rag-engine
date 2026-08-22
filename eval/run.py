@@ -11,7 +11,9 @@ from rerank import create_reranker
 from .baseline import build_hash_retriever
 from .golden import load_golden_set
 from .metrics import evaluate_retriever
+from .probes import load_negative_probes
 from .reporting import render_markdown_report, write_reports
+from .retrieval_embeddings import BGERetrievalEmbeddingProvider
 
 DEFAULT_GOLDEN_SET = "eval/golden_set.jsonl"
 DEFAULT_KNOWLEDGE_PATH = "eval/fixtures/knowledge_base"
@@ -42,6 +44,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--embedding-dimension", type=int, default=64, help="Hash embedding dimension."
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        choices=["hash", "bge"],
+        default="hash",
+        help="Eval embedding provider; BGE remains eval-only.",
+    )
+    parser.add_argument(
+        "--negative-probes",
+        default=None,
+        help="Optional unlabeled negative-probe JSONL appended outside the golden set.",
     )
     parser.add_argument(
         "--match-scope", choices=["source", "chunk"], default="source", help="Hit matching scope."
@@ -167,6 +180,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Cross-query RRF weight for rewritten query paths.",
     )
     parser.add_argument(
+        "--relevance-gate",
+        action="store_true",
+        help="Enable the retrieval relevance gate for this profile.",
+    )
+    parser.add_argument(
+        "--relevance-gate-min-dense-cosine",
+        type=float,
+        default=None,
+        help="Dense cosine threshold for this profile; no product default is implied.",
+    )
+    parser.add_argument(
+        "--relevance-gate-min-cohere-rerank-score",
+        type=float,
+        default=None,
+        help="Cohere rerank threshold for this profile; independent of dense cosine.",
+    )
+    parser.add_argument(
         "--fail-under-hit-rate",
         type=float,
         default=None,
@@ -190,7 +220,7 @@ def main(argv: List[str] = None) -> int:
     if args.multi_query:
         validate_query_rewrite_args(args)
 
-    examples = load_golden_set(args.golden_set)
+    examples = load_evaluation_examples(args)
     if args.compare_hybrid:
         report = build_hybrid_comparison_report(args, examples)
         if not args.no_write_report:
@@ -237,17 +267,18 @@ def main(argv: List[str] = None) -> int:
         query_rewrite_weight_original=args.query_rewrite_weight_original,
         query_rewrite_weight_variant=args.query_rewrite_weight_variant,
         cache_enabled=Config.CACHE_ENABLED and not args.no_cache,
+        embedding_provider=build_eval_embedding_provider(args),
+        relevance_gate_enabled=args.relevance_gate,
+        relevance_gate_min_dense_cosine=args.relevance_gate_min_dense_cosine,
+        relevance_gate_min_cohere_rerank_score=(args.relevance_gate_min_cohere_rerank_score),
+        relevance_gate_dense_score_space=(
+            "dense_cosine" if args.embedding_provider == "bge" else None
+        ),
     )
 
     metadata = {
         **baseline_metadata,
-        "golden_path": args.golden_set,
-        "golden_count": len(examples),
-        "golden_version": file_sha256(args.golden_set),
-        "git_sha": git_sha(),
-        "k_values": sorted(set(args.k)),
-        "match_scope": args.match_scope,
-        "evaluator_contract": "retrieve(question, top_k)",
+        **base_metadata(args, examples),
     }
     if args.multi_query:
         metadata.update(query_rewrite_metadata(args))
@@ -258,6 +289,7 @@ def main(argv: List[str] = None) -> int:
         match_scope=args.match_scope,
         metadata=metadata,
     )
+    attach_relevance_gate_stats(report, retrieve)
 
     if not args.no_write_report:
         json_path, markdown_path = write_reports(report, args.report_dir)
@@ -358,6 +390,13 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
             query_rewrite_weight_original=args.query_rewrite_weight_original,
             query_rewrite_weight_variant=args.query_rewrite_weight_variant,
             cache_enabled=Config.CACHE_ENABLED and not args.no_cache,
+            embedding_provider=build_eval_embedding_provider(args),
+            relevance_gate_enabled=args.relevance_gate,
+            relevance_gate_min_dense_cosine=args.relevance_gate_min_dense_cosine,
+            relevance_gate_min_cohere_rerank_score=(args.relevance_gate_min_cohere_rerank_score),
+            relevance_gate_dense_score_space=(
+                "dense_cosine" if args.embedding_provider == "bge" else None
+            ),
         )
         reports[label] = evaluate_retriever(
             retrieve=retrieve,
@@ -371,6 +410,7 @@ def build_hybrid_comparison_report(args, examples) -> Dict:
                 "reranker": None,
             },
         )
+        attach_relevance_gate_stats(reports[label], retrieve)
 
     metadata = {
         **common_metadata,
@@ -421,10 +461,14 @@ def summarize_comparison(reports: Dict[str, Dict]) -> Dict:
 
 def base_metadata(args, examples) -> Dict:
     """Return metadata shared by single and comparison reports."""
+    probe_examples = [
+        example for example in examples if example.capability.startswith("negative_probe_")
+    ]
     metadata = {
         "golden_path": args.golden_set,
-        "golden_count": len(examples),
+        "golden_count": len(examples) - len(probe_examples),
         "golden_version": file_sha256(args.golden_set),
+        "evaluated_query_count": len(examples),
         "git_sha": git_sha(),
         "k_values": sorted(set(args.k)),
         "match_scope": args.match_scope,
@@ -432,7 +476,43 @@ def base_metadata(args, examples) -> Dict:
     }
     if args.multi_query:
         metadata.update(query_rewrite_metadata(args))
+    if args.negative_probes:
+        metadata.update(
+            {
+                "negative_probe_path": args.negative_probes,
+                "negative_probe_count": len(probe_examples),
+                "negative_probe_version": file_sha256(args.negative_probes),
+            }
+        )
     return metadata
+
+
+def load_evaluation_examples(args) -> list:
+    """Load the frozen golden set plus an optional separate negative probe set."""
+    examples = list(load_golden_set(args.golden_set))
+    if args.negative_probes:
+        examples.extend(load_negative_probes(args.negative_probes))
+    return examples
+
+
+def build_eval_embedding_provider(args):
+    """Build the optional semantic provider without exposing BGE in product wiring."""
+    if args.embedding_provider == "hash":
+        return None
+    return BGERetrievalEmbeddingProvider(
+        model_name=Config.RAGAS_EMBEDDING_MODEL,
+        dimension=Config.RAGAS_EMBEDDING_DIMENSION,
+        cache_dir=Config.RAGAS_EMBEDDING_CACHE_DIR,
+    )
+
+
+def attach_relevance_gate_stats(report: Dict, retrieve) -> None:
+    """Add explicit rejection/no-op counters after all queries have run."""
+    stats_getter = getattr(retrieve, "relevance_gate_stats", None)
+    if stats_getter is not None:
+        stats = stats_getter()
+        if stats.get("enabled"):
+            report.setdefault("metadata", {})["relevance_gate_stats"] = stats
 
 
 def single_report_fetch_k(args, has_reranker: bool) -> Optional[int]:

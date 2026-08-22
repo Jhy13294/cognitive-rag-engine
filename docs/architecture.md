@@ -90,19 +90,23 @@ flowchart TD
     PE -- "yes" --> PARENT["replace child content with parent content"]
     PE -- "no" --> SOURCES["retrieved sources"]
     PARENT --> SOURCES
-    SOURCES --> PACK{"Context packing enabled?"}
+    SOURCES --> GATE{"Relevance gate enabled?\n(per supported score space)"}
+    GATE -- "rejected" --> ABS["canonical abstention\nempty sources / 0 chat calls"]
+    GATE -- "accepted / no-op / off" --> PACK{"Context packing enabled?"}
     PACK -- "yes" --> CP["ContextPacker\nwhole blocks / dedup / token budget"]
     PACK -- "no" --> LEGACY["legacy character context"]
     CP --> PROMPT["prompt"]
     LEGACY --> PROMPT
     PROMPT --> CHAT["chat client"]
     CHAT --> ANSWER["RAGResponse"]
+    ABS --> ANSWER
 ```
 
 关键边界：
 
 - Multi-query 位于 retrieve 顶端，属于检索侧，指标可以变化。
 - Parent expansion 位于 top-k 之后，只替换生成内容，不应被当作检索提升。
+- 相关性门位于最终 source 选择之后、prompt 构造之前；默认关闭，按受支持的分数空间分别配置阈值，RRF、BM25、hash 等不可判空间只做可观测 no-op，不会把"证据缺失"当作不相关来拒。
 - Context packing 只在 prompt/answer 路径，不进入 `retrieve()`。
 - Cache 是外层装饰器，不重写检索漏斗。
 
@@ -185,6 +189,7 @@ flowchart TD
 - `redis.asyncio` 客户端绑定在 store 自有后台事件循环上，避免同步桥或服务线程池跨已关闭 loop 复用连接。
 - live 验证必须覆盖同步 CLI/eval 形态和服务 threadpool 形态，不能只跑单个 async test loop。
 - `/query/stream` 的 L3 命中是 replay，不是 live token generation。
+- L2 用 envelope 区分"相关性门拒绝的空结果"与 ACL 前置过滤等普通空结果；L3 可在相同 TTL 与 corpus version 边界内缓存规范弃答。默认关闭的相关性门不改变缓存结构，只多一条可被命中的拒绝语义。
 
 ## 服务层架构
 

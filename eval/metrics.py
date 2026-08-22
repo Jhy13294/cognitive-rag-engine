@@ -32,6 +32,8 @@ def evaluate_retriever(
       results.
     - negative_false_recall_rate@k: fraction of negative queries with at least
       one retrieved result.
+    - positive_false_abstention_rate@k: fraction of positive queries with no
+      retrieved results.
 
     The evaluator accepts retrieve(question, top_k) instead of a pipeline so
     rerankers, hybrid retrievers, and query rewrite variants can reuse the
@@ -128,6 +130,7 @@ def evaluate_case_at_k(
             "recall": None,
             "negative_empty": is_empty,
             "negative_false_recall": not is_empty,
+            "positive_false_abstention": False,
             "retrieved": retrieved_items,
             "miss_reason": "Negative query returned no results."
             if is_empty
@@ -149,6 +152,7 @@ def evaluate_case_at_k(
     recall = hit_count / relevant_count if relevant_count else 0.0
     hit = first_hit_rank is not None
     reciprocal_rank = 1.0 / first_hit_rank if first_hit_rank else 0.0
+    positive_false_abstention = len(retrieved_items) == 0
 
     return {
         "k": k,
@@ -161,6 +165,7 @@ def evaluate_case_at_k(
         "recall": recall,
         "negative_empty": False,
         "negative_false_recall": False,
+        "positive_false_abstention": positive_false_abstention,
         "retrieved": retrieved_items,
         "miss_reason": miss_reason(hit=hit, hit_count=hit_count, relevant_count=relevant_count),
     }
@@ -180,6 +185,9 @@ def summarize_cases(cases: Sequence[Dict], k_key: str) -> Dict:
     negative_false_recall_rate = _mean(
         1.0 if item["negative_false_recall"] else 0.0 for item in negative
     )
+    positive_false_abstention_rate = _mean(
+        1.0 if item["positive_false_abstention"] else 0.0 for item in positive
+    )
 
     return {
         "query_count": len(cases),
@@ -190,6 +198,7 @@ def summarize_cases(cases: Sequence[Dict], k_key: str) -> Dict:
         "recall": recall,
         "negative_empty_rate": negative_empty_rate,
         "negative_false_recall_rate": negative_false_recall_rate,
+        "positive_false_abstention_rate": positive_false_abstention_rate,
     }
 
 

@@ -11,7 +11,9 @@ The CI contract runs `python -m ci.retrieval_baseline_gate` without network acce
 | parent_child | `0.625000` | `0.614583` | intentionally re-pinned after the span migration |
 | rerank | not gated | `1.000000` | added to the gate |
 
-These MRR values are computed over positive queries. At top-k 3, all four negative queries still return non-empty results, so `negative_false_recall_rate` is `1.000000`. A perfect rerank or hybrid MRR on this fixture is a mechanism check on a small corpus, not evidence of large-corpus quality or abstention.
+These MRR values are computed over positive queries. At top-k 3, all four negative queries still return non-empty results, so `negative_false_recall_rate` is `1.000000`. This is the frozen hash baseline with the relevance gate at its default `off` setting; hash similarity is deliberately unsupported for relevance rejection. A perfect rerank or hybrid MRR on this fixture is a mechanism check on a small corpus, not evidence of large-corpus quality or abstention.
+
+A separate, non-frozen BGE profile appends 20 unlabeled negative probes across four categories without touching the golden set or its MRR denominator. With `min_dense_cosine=0.63` it reports `negative_empty_rate@3 = 0.833333`, `negative_false_recall_rate@3 = 0.166667`, and `positive_false_abstention_rate@3 = 0.000000` on the 40-query merged report. This is a reported-only fixture result on `BAAI/bge-small-en-v1.5`, not a CI baseline or a portable production threshold.
 
 ## Why parent_child changed
 

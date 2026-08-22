@@ -262,9 +262,28 @@ class RetrievalOrchestrator:
 
             dense_source = sources[result.index]
             metadata = dict(dense_source.metadata)
+            preserve_hybrid_dense = (
+                self._pipeline.relevance_gate.config.enabled
+                and self._pipeline.bm25_retriever is not None
+                and metadata.get("retrieval_mode") == "hybrid_rrf"
+            )
+            had_hybrid_dense_score = "dense_score" in metadata
+            hybrid_dense_score = metadata.get("dense_score")
+            had_hybrid_dense_rank = "dense_rank" in metadata
+            hybrid_dense_rank = metadata.get("dense_rank")
             metadata.update(result.metadata)
-            metadata.setdefault("dense_score", dense_source.score)
-            metadata.setdefault("dense_rank", dense_source.index)
+            if preserve_hybrid_dense:
+                if had_hybrid_dense_score:
+                    metadata["dense_score"] = hybrid_dense_score
+                else:
+                    metadata.pop("dense_score", None)
+                if had_hybrid_dense_rank:
+                    metadata["dense_rank"] = hybrid_dense_rank
+                else:
+                    metadata.pop("dense_rank", None)
+            else:
+                metadata.setdefault("dense_score", dense_source.score)
+                metadata.setdefault("dense_rank", dense_source.index)
             metadata["rerank_model"] = reranker.model_name
 
             reranked_sources.append(

@@ -15,7 +15,8 @@ from cache import get_default_cache_store
 from config import Config
 from logger import setup_logger
 from observability import QueryObservation, RequestIDMiddleware, create_observability_manager
-from rag import RAGPipeline, RAGResponse
+from rag import RAGPipeline, RAGResponse, relevance_gate_decision_for
+from rag.prompt_builder import CANONICAL_ABSTENTION_RESPONSE
 from rag_cli import build_rag_pipeline_from_index, ingest_documents
 from vector_store import check_qdrant_connectivity
 
@@ -454,6 +455,42 @@ async def stream_query_events(
             request.top_k,
             metadata_filter,
         )
+        gate_decision = relevance_gate_decision_for(sources)
+        if gate_decision is not None and gate_decision.rejected:
+            final_sources = []
+            final_answer = CANONICAL_ABSTENTION_RESPONSE
+            final_raw_response = {"relevance_gate": gate_decision.to_dict()}
+            yield sse_event(
+                "sources",
+                {"sources": [], "relevance_gate": gate_decision.to_dict()},
+            )
+            yield sse_event(
+                "token",
+                {"delta": CANONICAL_ABSTENTION_RESPONSE, "relevance_gate": True},
+            )
+
+            store_answer = getattr(pipeline, "store_answer", None)
+            if store_answer is not None:
+                abstention_response = RAGResponse(
+                    question=request.question,
+                    answer=CANONICAL_ABSTENTION_RESPONSE,
+                    sources=[],
+                    prompt="",
+                    raw_response=final_raw_response,
+                )
+                await asyncio.to_thread(
+                    store_answer,
+                    abstention_response,
+                    request.top_k,
+                    metadata_filter,
+                )
+
+            yield sse_event(
+                "done",
+                {"answer": CANONICAL_ABSTENTION_RESPONSE, "relevance_gate": True},
+            )
+            return
+
         prompt, used_sources = await asyncio.to_thread(
             pipeline._build_prompt_and_sources,
             request.question,

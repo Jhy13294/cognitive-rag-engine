@@ -1,8 +1,14 @@
 import json
 import struct
-from typing import Dict, List
+from typing import Any, Dict, List
 
-from rag import RAGResponse, RetrievedSource
+from rag import (
+    RAGResponse,
+    RelevanceGateDecision,
+    RelevanceGatedSources,
+    RetrievedSource,
+    relevance_gate_decision_for,
+)
 
 
 def encode_vector(vector: List[float]) -> bytes:
@@ -55,6 +61,34 @@ def sources_to_payload(sources: List[RetrievedSource]) -> List[Dict]:
 def sources_from_payload(payload: List[Dict]) -> List[RetrievedSource]:
     """Deserialize retrieved sources with fresh objects."""
     return [source_from_dict(item) for item in payload]
+
+
+def retrieval_sources_to_payload(sources: List[RetrievedSource]) -> Any:
+    """Serialize L2 sources while preserving relevance-vs-ACL empty provenance."""
+    decision = relevance_gate_decision_for(sources)
+    if decision is None:
+        return sources_to_payload(sources)
+    return {
+        "sources": sources_to_payload(sources),
+        "relevance_gate": decision.to_dict(),
+    }
+
+
+def retrieval_sources_from_payload(payload: Any) -> List[RetrievedSource]:
+    """Deserialize current relevance envelopes and legacy raw source lists."""
+    if isinstance(payload, list):
+        return sources_from_payload(payload)
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid cached retrieval payload")
+
+    raw_sources = payload.get("sources")
+    raw_decision = payload.get("relevance_gate")
+    if not isinstance(raw_sources, list) or not isinstance(raw_decision, dict):
+        raise ValueError("Invalid cached relevance retrieval payload")
+    return RelevanceGatedSources(
+        sources_from_payload(raw_sources),
+        RelevanceGateDecision.from_dict(raw_decision),
+    )
 
 
 def response_to_payload(response: RAGResponse) -> Dict:

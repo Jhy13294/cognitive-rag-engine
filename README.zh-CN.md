@@ -21,6 +21,7 @@
   → RRF 混合融合
   → 重排
   → 父块展开
+  → 可选相关性门
   → 上下文装填
   → 带引用生成
   → 评估 / 指标 / 缓存 / ACL 检索前过滤
@@ -33,6 +34,7 @@ ACL 检索前过滤、Redis 缓存和可观测性是包裹这条漏斗、而非�
 - **可评估检索** —— 确定性 golden set 评估（hit rate、MRR、recall、负样本指标），逐位可复现的冻结基线，CI 门禁每次 push 对 MRR@3 做六位小数精确断言。
 - **混合检索** —— Dense + BM25 经 RRF 融合，外加确定性多查询改写与跨查询融合。
 - **重排与父子分块** —— 可插拔重排、失败降级回 dense；子块用于检索，父块展开供给生成。
+- **检索相关性门** —— 位于最终 source 选择与 prompt 构造之间的可选、默认关闭短路。阈值按受支持的分数空间分别配置；RRF、BM25、确定性 lexical、hash 与未知分数只做可观测 no-op，不会被当作“不相关”的隐式证据。
 - **上下文装填** —— 生成输入侧的整块纳入、确定性去重、引用连号和 token 预算。
 - **异步 FastAPI 服务** —— `/ingest`、`/query` 与 SSE `/query/stream`，同步漏斗走线程池 offload、异常统一脱敏映射。
 - **Redis 缓存与 ACL/RBAC 检索前过滤** —— 三层缓存（query embedding / 检索结果 / 答案）+ 原子 corpus version 失效；ACL fail-closed 且前置于候选评分，有效 ACL 进入缓存 key。
@@ -53,7 +55,7 @@ python -m eval.run
 
 检索质量与生成质量分两轨评估，离线回放是默认的可复现路径：
 
-- **确定性检索评估** —— `python -m eval.run` 用 `HashEmbeddingProvider` 在 5 篇 765–887 字节的合成 Markdown 上评估 20 条标注 query（16 条正样本、4 条负样本）。CI 每次实跑 dense、hybrid、parent-child、rerank 四个 profile，对正样本 MRR@3 做六位小数精确断言；负样本行为单独报告。
+- **确定性检索评估** —— `python -m eval.run` 用 `HashEmbeddingProvider` 在 5 篇 765–887 字节的合成 Markdown 上评估 20 条标注 query（16 条正样本、4 条负样本）。CI 每次实跑 dense、hybrid、parent-child、rerank 四个 profile，对正样本 MRR@3 做六位小数精确断言。报告同时给出负样本空结果/误召回率与正样本误拒率；可选 BGE profile 能追加独立、无 relevance 标注的负样本探针，且不改变冻结 MRR 分母。
 - **生成质量（Ragas）** —— live LLM-as-judge 轨对 Faithfulness、Answer Relevance、Context Precision/Recall 打分，温度钉死、多次重复、median 门禁；CI 只离线回放冻结 verdict fixture。分数是小样本上带方差的判官估计，不是 production 质量下限。
 
 详见下方 [生成质量评估](#生成质量评估)，零付费本机延迟/QPS 口径见 [docs/benchmark.md](docs/benchmark.md)。
@@ -66,16 +68,18 @@ python -m eval.run
 - **ACL 依赖受信上游网关。** principal 从受信上游 header 读取；必须部署在一个持有该 header 的认证网关之后。body 传入的 principal 默认拒绝，除非为本地测试显式开启。
 - **离线回放/golden 基线是默认可复现路径。** live LLM-as-judge 评估和付费检索需要 API key；在 CI 里无密钥跑的是冻结基线和离线门禁。
 - **评估分数是小样本上的判官估计。** golden set 约 20 条人工标注查询；分数当方向参考、不是 production 质量保证。
+- **检索相关性门没有产品默认阈值。** 它默认关闭，只会在显式支持且分别校准的分数空间中作拒绝决定。本地 BGE fixture 结果不能外推为通用生产阈值或域外分类器保证。
 
 ## 当前进度
 
-当前阶段：可评估的检索漏斗、异步 HTTP 服务层、可选 Redis 缓存、ACL/RBAC 检索前过滤、fail-open 可观测性，以及部署健康门禁。
+当前阶段：带可选相关性短路的可评估检索漏斗、异步 HTTP 服务层、可选 Redis 缓存、ACL/RBAC 检索前过滤、fail-open 可观测性，以及部署健康门禁。
 
 当前能力高光：
 
 - CI 对 dense、hybrid、parent-child、rerank 四个确定性 profile 的 MRR@3 做六位小数精确断言。
 - TXT、Markdown、PDF/OCR、Word 入库统一生成原文连续切片；Markdown fenced code 默认进入可检索正文。
 - Dense、BM25、RRF、重排、Multi-Query、父块展开和 token-aware 上下文装填共用一条分阶段管线。
+- 默认关闭的相关性门可在 prompt 构造与生成前返回规范弃答；不支持的分数空间保持不拒绝，并留下计数与日志。
 - 异步 FastAPI 服务提供入库、问答、SSE 流式响应、Redis 缓存、ACL/RBAC 检索前过滤、可观测性和双健康探针。
 - Memory provider 支持无密钥本地验证；Qdrant、MySQL、Redis、OpenAI-compatible 生成、OpenAI embedding 与 Cohere 重排均为可选集成。
 
@@ -139,9 +143,11 @@ python -m eval.run
 ├── eval/
 │   ├── golden_set.jsonl       # 使用 relevant 列表标注的检索 golden set
 │   ├── baseline.py            # HashEmbeddingProvider 确定性基线
-│   ├── metrics.py             # hit_rate、MRR、recall、negative 指标
+│   ├── metrics.py             # 同时报拒绝收益与反向误拒代价的检索指标
+│   ├── probes.py              # 独立无标注负样本探针加载与校验
 │   ├── reporting.py           # JSON 和 Markdown 报告
 │   ├── run.py                 # python -m eval.run 入口
+│   ├── retrieval_embeddings.py # 仅用于 eval 的 BGE query/passage 适配器
 │   ├── ragas_run.py           # python -m eval.ragas_run replay/live/compare 入口
 │   ├── ragas_evaluation.py    # Ragas replay 门禁、fixture 校验与门禁规则
 │   ├── ragas_live.py          # gated live 判官录制
@@ -149,7 +155,8 @@ python -m eval.run
 │   ├── gemini_embedding.py    # answer relevance 可选 Gemini embedding
 │   ├── fixtures/              # 评估知识库与冻结 fixture
 │   │   ├── ragas_verdicts.jsonl   # 已提交的 Ragas 判官冻结基线（replay 门禁输入）
-│   │   └── query_rewrites.jsonl   # 确定性 query rewrite fixture
+│   │   ├── query_rewrites.jsonl   # 确定性 query rewrite fixture
+│   │   └── negative_probes.jsonl  # 独立无标注负样本探针（不进入冻结 MRR 标注）
 │   └── reports/               # 生成的评估报告
 ├── bench/
 │   ├── run.py                 # python -m bench.run 零付费本机延迟/QPS 基准入口
@@ -178,6 +185,7 @@ python -m eval.run
 ├── rag/
 │   ├── pipeline.py            # 高层 RAG 编排与兼容导出
 │   ├── retrieval_orchestrator.py # dense/hybrid/multi-query 检索与重排
+│   ├── relevance_gate.py      # 分数空间感知的提前拒绝与 no-op 账目
 │   ├── source_finalizer.py    # 父块展开与兄弟子块折叠
 │   ├── prompt_builder.py      # 系统提示、scope 指令、上下文组装
 │   ├── question_classifier.py # 确定性问题形状启发式
@@ -285,6 +293,11 @@ QUERY_REWRITE_CACHE_ENABLED=true
 QUERY_REWRITE_WEIGHT_ORIGINAL=1.0
 QUERY_REWRITE_WEIGHT_VARIANT=0.7
 
+RELEVANCE_GATE_ENABLED=false
+# 各阈值须按对应分数空间单独校准，校准前保持为空。
+RELEVANCE_GATE_MIN_DENSE_COSINE=
+RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE=
+
 REDIS_URL=redis://localhost:6379/0
 CACHE_NAMESPACE=rag-cache
 CACHE_ENABLED=false
@@ -315,6 +328,8 @@ METRICS_NAMESPACE=rag
 METRICS_PATH=/metrics
 READINESS_TIMEOUT=2.0
 ```
+
+在量过当前 provider 与分数空间之前，保持 `RELEVANCE_GATE_ENABLED=false`。`RELEVANCE_GATE_MIN_DENSE_COSINE` 只适用于受支持的语义 cosine；hybrid 始终读取保留下来的 dense 分，绝不读取 RRF 分。`RELEVANCE_GATE_MIN_COHERE_RERANK_SCORE` 属于独立的 Cohere rerank 分数尺度。启用相关性门但没有可用且匹配的阈值时，系统会留下日志与计数后 no-op，不会作拒绝决定。
 
 ## 使用
 
@@ -656,15 +671,29 @@ python -m eval.run --parent-child
 python -m eval.run --multi-query
 ```
 
+运行 reported-only 语义相关性门 profile。下面的阈值只属于这组 BGE fixture profile，不是产品默认值：
+
+```bash
+python -m eval.run \
+  --embedding-provider bge \
+  --relevance-gate \
+  --relevance-gate-min-dense-cosine 0.63 \
+  --negative-probes eval/fixtures/negative_probes.jsonl \
+  --k 3 \
+  --no-cache
+```
+
 强制评估绕过 Redis 缓存装饰器：
 
 ```bash
 python -m eval.run --no-cache
 ```
 
-评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。
+评估器只依赖 `retrieve(question, top_k)` 可调用对象，不调用聊天模型。默认基线使用 `HashEmbeddingProvider`，因此可以离线复现。检索报告同时包含 `negative_empty_rate`、`negative_false_recall_rate` 与反向代价指标 `positive_false_abstention_rate`。
 
-冻结 fixture 包含 5 篇 765–887 字节的合成 Markdown，以及 20 条 query（16 条正样本、4 条负样本）。下述 MRR 与 recall 只针对正样本。top-k 为 3 时，4 条负样本仍全部返回非空结果（`negative_false_recall_rate = 1.000000`），因此当前系统尚未证明弃答能力。
+冻结 fixture 包含 5 篇 765–887 字节的合成 Markdown，以及 20 条 query（16 条正样本、4 条负样本）。下述 MRR 与 recall 只针对正样本。相关性门保持默认 `off` 时，4 条负样本仍全部返回非空 top-3（`negative_false_recall_rate = 1.000000`）。这描述的是冻结 hash CI 基线；hash similarity 被明确排除在相关性拒绝判据之外。
+
+上面的显式 BGE 命令会追加 20 条独立无标注探针，覆盖四类 negative。40 条本机报告（16 正 / 24 负）中，`min_dense_cosine=0.63` 得到 `negative_empty_rate@3 = 0.833333`、`negative_false_recall_rate@3 = 0.166667`、`positive_false_abstention_rate@3 = 0.000000`，冻结的 4 条负样本拒绝 3 条。这只是 `BAAI/bge-small-en-v1.5` 在当前 fixture 上的 reported-only 结果，不是 CI 基线、production 保底或跨 provider 通用阈值。
 
 当前重排基线使用 `HashEmbeddingProvider` + `DeterministicReranker`：整体 MRR@3 从 `0.677083` 提升到 `1.000000`，long_tail MRR@3 从 `0.566667` 提升到 `1.000000`，recall@5 保持 `1.000000`。`ci/retrieval_baseline_gate.py` 会断言 rerank profile；报告在每次本地运行时生成，并由 CI 作为 workflow artifact 上传。
 
@@ -674,10 +703,10 @@ python -m eval.run --no-cache
 
 当前上下文装填只属于生成输入组装，不进入 `retrieve()`，不能被拿来声明 MRR 或 recall 提升。所有 context flag 关闭时，旧的字符制 `_build_context` 路径保持兼容；显式开启后，ContextPacker 会整块纳入或跳过，引用重新连号，精确重复默认由开关控制，可选近重复去重由独立 flag 守卫，并使用 TokenCounter 计算 token 预算。tiktoken 是可选依赖，缺失时自动使用确定性启发式兜底。对中文文本，真实 token 计数可能让 batch 变多、变小但合法；收益是避免超限请求，而不是“批数下降”。生成质量和连贯性结论仍延后到 Ragas 质量评估。
 
-当前 Multi-Query retrieval 是检索侧改动，因此 hit_rate、MRR、recall 是合法测量面。确定性 fixture 保证原始 query 始终作为 `q0`，只给 paraphrase 和 long_tail 样本增加冻结改写变体，多路检索后复用既有 RRF 融合，再进入既有 rerank、父块展开和上下文装填。离线 HashEmbeddingProvider 基线下，`python -m eval.run --multi-query` 将 paraphrase recall@3 从 `0.800000` 提升到 `1.000000`，long_tail recall@3 保持 `0.900000`，long_tail MRR@3 从 `0.566667` 提升到 `0.900000`。4 条 negative query 没有 fixture 改写，因此 multi-query 对它们整段旁路，结果与单路基线逐字节一致；multi-query 在 negative 上触发的风险没有被离线门禁覆盖，后续交给 roadmap 中的阈值 / abstain 工作处理。这些确定性 fixture 涨幅只是“给定已知优质改写时，RRF 融合管线能带来目标 paraphrase/long_tail 收益”的机制受控演示。线上 LLM 改写可能高于也可能低于这组数字，query drift 甚至可能跌破单路；这不是生产保底。
+当前 Multi-Query retrieval 是检索侧改动，因此 hit_rate、MRR、recall 是合法测量面。确定性 fixture 保证原始 query 始终作为 `q0`，只给 paraphrase 和 long_tail 样本增加冻结改写变体，多路检索后复用既有 RRF 融合，再进入既有 rerank、父块展开和上下文装填。离线 HashEmbeddingProvider 基线下，`python -m eval.run --multi-query` 将 paraphrase recall@3 从 `0.800000` 提升到 `1.000000`，long_tail recall@3 保持 `0.900000`，long_tail MRR@3 从 `0.566667` 提升到 `0.900000`。4 条 negative query 没有 fixture 改写，因此 gate-off 基线仍对它们旁路 multi-query，并与单路结果逐字节一致。显式开启相关性门后，跨 query RRF 分绝不会被当作相关性证据；不支持或缺失物理分数时保持可观测 no-op。目前不宣称已校准 Multi-Query 的负样本质量。这些确定性 fixture 涨幅只是“给定已知优质改写时，RRF 融合管线能带来目标 paraphrase/long_tail 收益”的机制受控演示。线上 LLM 改写可能高于也可能低于这组数字，query drift 甚至可能跌破单路；这不是生产保底。
 
-当前 Redis 缓存是包在现有漏斗外的装饰层，不是第二条检索管线。`CACHE_ENABLED=false` 时 provider 和 pipeline 不会被包装；启用后，L1 包 `EmbeddingProvider.embed_text`，L2 包 `retrieve`，L3 包 `answer`，`rag/pipeline.py` 不改。L1 不含 `corpus_version`，因为文本向量是 model+text 的函数；L2/L3 必须含 Redis 持久化 corpus version，使 `/ingest` 后旧检索和旧答案跨进程、跨副本都不可达。negative/abstain 类结果按精确 query 正常缓存，但受 TTL 和 corpus version 双重约束。默认单测使用 FakeRedis 替身；真实 `redis.asyncio` 覆盖必须由 `REDIS_URL` 守卫，并同时覆盖真实 Redis 命令和跨事件循环调用。
-真实 Redis 路径已通过生产形态回归：连续同步调用和服务线程池调用会复用 store 自有 Redis loop，第二次命中 L1/L2/L3，并保持 Redis error 计数为 0。
+当前 Redis 缓存是包在现有漏斗外的装饰层，不是第二条检索管线。`CACHE_ENABLED=false` 时 provider 和 pipeline 不会被包装；启用后，L1 包 `EmbeddingProvider.embed_text`，L2 包 `retrieve`，L3 包 `answer`。L1 不含 `corpus_version`，因为文本向量是 model+text 的函数；L2/L3 必须含 Redis 持久化 corpus version，使 `/ingest` 后旧检索和旧答案跨进程、跨副本都不可达。L2 用 envelope 保留“相关性门拒绝”与 ACL 检索前过滤等普通空结果的区别；L3 可在相同 TTL 与 corpus version 边界内缓存规范弃答。默认单测使用 FakeRedis 替身；真实 `redis.asyncio` 覆盖必须由 `REDIS_URL` 守卫，并同时覆盖真实 Redis 命令和跨事件循环调用。
+真实 Redis 路径已通过生产形态回归：连续同步调用和服务线程池调用会复用 store 自有 Redis loop，第二次命中 L1/L2/L3，相关性拒绝的空结果可经 L2/L3 保持语义，拒绝路径 chat 调用为 0，并保持 Redis error 计数为 0。
 
 当前 ACL/RBAC 支持的是 fail-closed 检索前过滤，不是检索后过滤。有效 ACL filter 由服务端根据受信 principal 构造，再与客户端 metadata filter 做 AND，因此客户端只能收窄结果，不能放宽权限。记录授权条件为 `record.acl` 与解析出的 allowed ACL subjects 有交集；缺失或空 ACL 的记录对普通用户视为受限。同一个 filter 会在 dense scoring、BM25 sparse scoring、multi-query 每个变体和缓存 key 构造前生效。MySQL 作为 principal membership 和可选 document/chunk ACL binding 的 metadata 真相源，Qdrant payload 作为高性能检索执行快照；修改 MySQL binding 后需要 re-ingest 或 re-sync 才会进入向量库 payload。FastAPI 服务本身不验证 JWT 或 session，生产部署必须由受信认证网关持有 principal header。
 
@@ -733,7 +762,7 @@ live 评估是受控数据出境面：正样本会把 question、生成 answer�
 ## 后续路线
 
 1. 增加更多文档入库边界样例。
-2. 增加分数阈值或拒答逻辑，改善 negative query。
+2. 在更大的多语言 hard-negative 集上按 provider 校准相关性阈值；校准完成前机制保持默认关闭。
 3. 为现有观测钩子增加外部告警路由。
 4. 增加 Qdrant 版本兼容等生产部署检查。
 5. 增加内置认证或生产网关集成检查。

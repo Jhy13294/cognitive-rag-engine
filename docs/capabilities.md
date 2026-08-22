@@ -19,6 +19,7 @@ This inventory carries the detailed implementation status that was formerly embe
 - Reranking is pluggable: deterministic lexical reranking supports offline tests, Cohere is available as an external neural provider, and failures fall back to dense order.
 - Multi-query retrieval supports the original query plus deterministic fixtures or chat-backed rewrites, followed by cross-query RRF and the existing rerank/parent-expansion stages.
 - Parent expansion happens after final child selection and collapses sibling child hits by parent id.
+- An optional, default-off relevance gate sits between final source selection and prompt construction. It rejects only in explicitly supported score spaces with calibrated thresholds; RRF, BM25, deterministic lexical, hash, and unknown scores are observable no-ops, never treated as implicit irrelevance. A rejection returns the canonical abstention with empty sources and zero chat calls.
 - `ContextPacker` performs whole-block packing, exact and optional near-duplicate folding, contiguous citation numbering, and token-aware budgets on generation input.
 - The RAG pipeline assembles retrieved context, invokes an OpenAI-compatible chat client, and returns the answer with source records.
 
@@ -45,4 +46,4 @@ This inventory carries the detailed implementation status that was formerly embe
 
 ## Explicit gaps
 
-Built-in authentication, JWT validation, and session management are not implemented. Production deployments must place the service behind a trusted authentication gateway. The frozen corpus is deliberately small, negative-query abstention is not implemented, and live provider quality and capacity remain deployment-specific concerns.
+Built-in authentication, JWT validation, and session management are not implemented. Production deployments must place the service behind a trusted authentication gateway. The frozen corpus is deliberately small. The relevance gate has no product threshold default and is disabled by default; it is exercised only by an eval-only BGE profile with a fixture-specific threshold, not a portable production classifier. Live provider quality and capacity remain deployment-specific concerns.
